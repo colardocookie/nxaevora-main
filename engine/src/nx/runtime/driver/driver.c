@@ -405,15 +405,25 @@ static int setting_known(const char* option) {
     key[n] = 0;
     return snx_setting_known(key);
 }
+/* The exit code of a failed dump: a program that cannot be loaded is the game's files, a failed write or a failure of
+   the host is inside the runtime */
+int dump_exit_code(SnxDumpResult result) {
+    return result == SNX_DUMP_INPUT ? SNX_EXIT_GAME_FILES : SNX_EXIT_INTERNAL;
+}
 /* --dump-modules PROGRAM DIR: each module's image and symbols, at the bases the runtime gives them (loader.h's
    snx_dump_program has the format). Tools read game code through it */
 static int dump_modules(int argc, char** argv) {
     char error[1024];
+    SnxDumpResult result;
     if (argc != 4) {
         snx_error("--dump-modules takes a program (an extracted game or an NRO) and a folder");
         return SNX_EXIT_USAGE;
     }
-    if (snx_dump_program(argv[2], argv[3], error, sizeof error)) return snx_error("%s", error);
+    result = snx_dump_program(argv[2], argv[3], error, sizeof error);
+    if (result != SNX_DUMP_OK) {
+        snx_error("%s", error);
+        return dump_exit_code(result);
+    }
     return SNX_EXIT_OK;
 }
 /* the setup in the terminal for the program at argv0: all of it, or what setup.ini has left. 0 once done */

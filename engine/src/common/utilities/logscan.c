@@ -1671,14 +1671,20 @@ int snx_logscan_main(int argc, char** argv, SnxDemangle demangle) {
     int i, markdown = 0, files = 0, rc = 0;
     const char* name = NULL;
     for (i = 1; i < argc; i++)
-        if (!strcmp(argv[i], "--name") && i + 1 < argc)
-            name = argv[++i];
-        else if (!strcmp(argv[i], "--format") && i + 1 < argc) {
-            if (strcmp(argv[i + 1], "json") && strcmp(argv[i + 1], "markdown")) {
-                fprintf(stderr, "%s: --format is json or markdown\n", argv[0]);
+        if (!strcmp(argv[i], "--name") || !strcmp(argv[i], "--format")) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "%s: %s needs a value (--format json|markdown, --name NAME)\n", argv[0], argv[i]);
                 return SNX_EXIT_USAGE;
             }
-            markdown = !strcmp(argv[++i], "markdown");
+            if (!strcmp(argv[i], "--name"))
+                name = argv[++i];
+            else {
+                if (strcmp(argv[i + 1], "json") && strcmp(argv[i + 1], "markdown")) {
+                    fprintf(stderr, "%s: --format is json or markdown\n", argv[0]);
+                    return SNX_EXIT_USAGE;
+                }
+                markdown = !strcmp(argv[++i], "markdown");
+            }
         } else
             files++;
     if (!files) {

@@ -36,6 +36,8 @@ void fatal(const char* fmt, ...) __attribute__((format(printf, 1, 2), noreturn))
 /* the same, for a missing or unreadable game program: SNX_EXIT_GAME_FILES before the renderer runs, where fatal's own
    code would be SNX_EXIT_START */
 void fatal_game_files(const char* fmt, ...) __attribute__((format(printf, 1, 2), noreturn));
+/* the same, for a failure inside the runtime: SNX_EXIT_INTERNAL before the renderer runs */
+void fatal_internal(const char* fmt, ...) __attribute__((format(printf, 1, 2), noreturn));
 
 /* set once the renderer runs, in a window or headless, by the window backend (backend/sdl3.c): fatal shows its box
    only after it, and exits SNX_EXIT_START before it. Atomic, set before any other thread reads it */

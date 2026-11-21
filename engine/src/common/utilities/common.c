@@ -513,6 +513,18 @@ int snx_path_exists(const char* path) {
     return !lstat(path, &st);
 #endif
 }
+int snx_path_missing(const char* path) {
+#ifdef _WIN32
+    DWORD code;
+    if (attributes(path) != INVALID_FILE_ATTRIBUTES) return 0;
+    code = GetLastError();
+    return code == ERROR_FILE_NOT_FOUND || code == ERROR_PATH_NOT_FOUND;
+#else
+    struct stat st;
+    if (!lstat(path, &st)) return 0;
+    return errno == ENOENT || errno == ENOTDIR;
+#endif
+}
 static int mkdir_one(const char* path) {
 #ifdef _WIN32
     wchar_t* p = wide(path);

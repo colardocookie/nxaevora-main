@@ -21,9 +21,11 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #include "common/utilities/common.h"
+#include "common/utilities/exit_codes.h"
 #include "common/utilities/game_ini.h"
 #include "common/utilities/mods.h"
 #include "common/utilities/patches.h"
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -64,6 +66,27 @@ static u32 tree_result(FsTreeResult r) {
     }
 }
 
+/* The text of a failure to index a part of the game's files: its message and the path it names fit */
+#define FS_FATAL_TEXT_MAX 4096
+
+/* The exit code of a failure to index a part of the game's files: FS_TREE_NOMEM is the host's memory, not the game's
+   files, and every other failure status is the game's files */
+static int tree_exit_code(FsTreeResult r) {
+    return r == FS_TREE_NOMEM ? SNX_EXIT_INTERNAL : SNX_EXIT_GAME_FILES;
+}
+
+/* Ends the run for a failure to index a part of the game's files, with the message and the code of tree_exit_code */
+static void fatal_tree(FsTreeResult r, const char* fmt, ...) __attribute__((format(printf, 2, 3), noreturn));
+static void fatal_tree(FsTreeResult r, const char* fmt, ...) {
+    char text[FS_FATAL_TEXT_MAX];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(text, sizeof text, fmt, ap);
+    va_end(ap);
+    if (tree_exit_code(r) == SNX_EXIT_INTERNAL) fatal_internal("%s", text);
+    fatal_game_files("%s", text);
+}
+
 /* The RomFS of a game recompiled from a folder (romfs=): the folder of the user, grafted as romfs:/ with no copy. An
    add-on's RomFS replaces the game's whole; the game's own data folder with a RomFS and the setting are two sources,
    an error. Under tree.lock, at startup */
@@ -99,7 +122,7 @@ static void romfs_from_setting(void) {
     r = fs_tree_graft(&g_hle.fs.tree, "romfs", g_settings.game_romfs);
     if (r != FS_TREE_OK) {
         LOG("fs: could not index the RomFS in %s (error %d)\n", g_settings.game_romfs, r);
-        fatal_game_files("Could not index the folder of the game's RomFS, romfs= (error %d)", r);
+        fatal_tree(r, "Could not index the folder of the game's RomFS, romfs= (error %d)", r);
     }
     LOG("fs: RomFS from %s (romfs=)\n", g_settings.game_romfs);
 }
@@ -223,20 +246,20 @@ static void overlays(void) {
         snx_title_text(ids[i].id, text);
         folder = snx_format("%s%s_%s_data/", g_exedir, g_gamename, text);
         r = snx_is_dir(folder) ? fs_tree_overlay(&g_hle.fs.tree, folder, whole, merged) : FS_TREE_OK;
-        if (r != FS_TREE_OK) fatal_game_files("Could not index the DLC's files %s (error %d)", folder, r);
+        if (r != FS_TREE_OK) fatal_tree(r, "Could not index the DLC's files %s (error %d)", folder, r);
         free(folder);
     }
     free(ids);
     if (g_addon && snx_is_dir(g_addondir)) { /* the update's, on top */
         r = fs_tree_overlay(&g_hle.fs.tree, g_addondir, whole, merged);
-        if (r != FS_TREE_OK) fatal_game_files("Could not index the update's files %s (error %d)", g_addondir, r);
+        if (r != FS_TREE_OK) fatal_tree(r, "Could not index the update's files %s (error %d)", g_addondir, r);
     }
 }
 
 void fs_init(void) {
     static const char* const apart[] = {"mods", NULL}; /* mods_open's */
     FsTreeResult r = fs_tree_init_skipping(&g_hle.fs.tree, g_datadir, apart);
-    if (r != FS_TREE_OK) fatal_game_files("Could not index game filesystem %s (error %d)", g_datadir, r);
+    if (r != FS_TREE_OK) fatal_tree(r, "Could not index game filesystem %s (error %d)", g_datadir, r);
     size_t n = strlen(g_hle.fs.tree.base);
     if (n + 2 > sizeof g_datadir) fatal("Game filesystem path is too long");
     memcpy(g_datadir, g_hle.fs.tree.base, n);

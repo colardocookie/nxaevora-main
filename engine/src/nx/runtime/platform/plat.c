@@ -364,3 +364,12 @@ void fatal_game_files(const char* fmt, ...) {
     va_end(ap);
     fatal_code(SNX_EXIT_GAME_FILES, msg);
 }
+
+void fatal_internal(const char* fmt, ...) {
+    char msg[LINE_MAX_];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(msg, sizeof msg, fmt, ap);
+    va_end(ap);
+    fatal_code(SNX_EXIT_INTERNAL, msg);
+}

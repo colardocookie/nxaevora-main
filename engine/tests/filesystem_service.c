@@ -203,6 +203,11 @@ void fatal_game_files(const char* format, ...) {
     va_start(args, format);
     test_fatal(format, args, 1);
 }
+void fatal_internal(const char* format, ...) {
+    va_list args;
+    va_start(args, format);
+    test_fatal(format, args, 2); /* 2: inside the runtime, which is not the game's files */
+}
 void frontend_frame(void) {}
 
 SvcObj* svcobj_new(const char* name, int (*dispatch)(SvcObj*, IpcCtx*)) {
@@ -1827,9 +1832,20 @@ static void test_rhash(void) {
     CHECK(rhash(0x18, "Data") == 0x0418D017u);
     CHECK(rhash(0, "\xC3\xA9") == 0x5D41D65Cu);
 }
+/* fs.c's exit code for a failure to index a part of the game's files: out of memory is the host's (1), every other
+   failure status is the game's files (3), as the table in exit_codes.h says */
+static void test_tree_exit_code(void) {
+    static const FsTreeResult failures[] = {FS_TREE_NOTFOUND, FS_TREE_EXISTS, FS_TREE_NOTEMPTY, FS_TREE_INVALID,
+                                            FS_TREE_TOOLONG, FS_TREE_IO, FS_TREE_READONLY, FS_TREE_NOTDELETABLE,
+                                            FS_TREE_NOTRENAMABLE};
+    size_t i;
+    CHECK(tree_exit_code(FS_TREE_NOMEM) == 1);
+    for (i = 0; i < sizeof failures / sizeof failures[0]; i++) CHECK(tree_exit_code(failures[i]) == 3);
+}
 int main(int argc, char** argv) {
     hle_init();
     test_rhash();
+    test_tree_exit_code();
     g_hle.kernel.title_id = 0x0100000000010000ull; /* the title the test was written for */
     CHECK((argc == 3 || argc == 4) && strstr(argv[1], "scarletnx-fs-tree-") != NULL);
     CHECK(!test_chdir(argv[1]));
@@ -1875,7 +1891,7 @@ int main(int argc, char** argv) {
         }
         test_fatal_jump = NULL;
         CHECK(strstr(test_fatal_text, "has no exefs/") != NULL && strstr(test_fatal_text, "-r") != NULL);
-        CHECK(test_game_files);
+        CHECK(test_game_files == 1);
         CHECK(strstr(test_log_text, "fs: source=noexefs-data/Game.nsp") != NULL);
         cleanup_service();
         free(g_mem);
@@ -1902,7 +1918,7 @@ int main(int argc, char** argv) {
         test_fatal_jump = NULL;
         CHECK(strstr(test_fatal_text, g_addondir) != NULL && strstr(test_fatal_text, "has no exefs/") != NULL &&
               strstr(test_fatal_text, "-r") != NULL);
-        CHECK(test_game_files);
+        CHECK(test_game_files == 1);
         cleanup_service();
         free(g_mem);
         printf("PASS %u checks: an update's data folder without exefs/ stops the game\n", test_checks);
@@ -1945,7 +1961,7 @@ int main(int argc, char** argv) {
             }
             free(said);
             CHECK(test_fatal_text[0] && !strstr(test_fatal_text, romfs));
-            CHECK(test_game_files);
+            CHECK(test_game_files == 1);
             cleanup_service();
             free(g_mem);
             free(romfs);

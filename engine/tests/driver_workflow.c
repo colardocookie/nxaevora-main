@@ -655,6 +655,24 @@ int main(int argc, char** argv) {
         free(home);
     }
 #endif
+    /* --dump-modules: a program that cannot be loaded is the game's files, 3 */
+    {
+        char* out = snx_path_join(root, "dump out");
+        char* missing = snx_path_join(root, "no such program");
+        char* dump[4];
+        dump[0] = exe;
+        dump[1] = "--dump-modules";
+        dump[2] = missing;
+        dump[3] = out;
+        CHECK(snx_driver(4, dump) == 3);
+        free(missing);
+        free(out);
+    }
+    /* --dump-modules' code of a failed dump, from exit_codes.h: the program's files 3, a failed write or a failure of
+       the host 1 */
+    CHECK(dump_exit_code(SNX_DUMP_INPUT) == 3);
+    CHECK(dump_exit_code(SNX_DUMP_OUTPUT) == 1);
+    CHECK(dump_exit_code(SNX_DUMP_INTERNAL) == 1);
     CHECK(!snx_remove_tree(root));
     free(exe);
     free(root);
