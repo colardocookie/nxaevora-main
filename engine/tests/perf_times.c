@@ -855,6 +855,36 @@ static void test_waits(void) {
     perf_waits_line(&g_waits4, 1, line, sizeof line);
     CHECK(strstr(line, " release.cond=80000.0/0.080 lost=0 sites ") && strstr(line, "@+0x47=10000.0/0.010"));
 }
+/* PERF-36G: vk_lock's contended takes by thread.holder, then the GPU thread's callers with their phases added up */
+static void test_vklock(void) {
+    static PerfWaits w;
+    static PerfVkx x;
+    char line[PERF_COPIES_LINE];
+    memset(&w, 0, sizeof w);
+    w.base = 0x100000;
+    for (int i = 0; i < 600 * 6; i++) perf_waits_note(&w, PTH_GPU, VKH_GRAPHICS, (const void*)0x100040, 100000);
+    for (int i = 0; i < 600 * 2; i++) perf_waits_note(&w, PTH_GPU, VKH_RELEASES, (const void*)0x100040, 50000);
+    for (int i = 0; i < 600; i++) perf_waits_note(&w, PTH_GPU, VKH_COMPUTE, (const void*)0x100080, 400000);
+    perf_waits_note(&w, PTH_GPU, VKH_OTHER, (const void*)0xFFF00, 600 * 1000ull);
+    perf_waits_note(&w, PTH_RECORDER, VKH_RELEASES, (const void*)0x100040, 600 * 3000000ull); /* not a GPU caller */
+    for (uint32_t i = 0; i < 9; i++) perf_waits_note(&w, PTH_GPU, VKH_OTHER, (const void*)(uintptr_t)(0x200000 + i), 1);
+    x.rt_add = 1200, x.own_begin = 60, x.holds = 7200, x.holds_owned = 600, x.composed = 480000;
+    x.composed_submitted = 300000, x.unlocked[VKU_PENDING] = 600, x.unlocked[VKU_OUT_NEW] = 6;
+    perf_vklock_line(&w, &x, 600, line, sizeof line);
+    CHECK(strstr(line, "perf-vklock: frames=600 (PERF-36G, ") && strstr(line, " gpu.other=0.0/0.001 "));
+    CHECK(strstr(line, " rt_add=2.0 own_begin=0.1 holds=12.0/1.0 unlocked=1.0/0.0/0.0/0.0/0.0/0.0/0.0 "
+                       "composed=800.0/500.0"));
+    CHECK(strstr(line, " gpu.compute=1.0/0.400 gpu.graphics=6.0/0.600 gpu.releases=2.0/0.100 "));
+    CHECK(strstr(line, " recorder.releases=0.0/3.000 lost=0 callers "));
+    /* the first caller's two phases in one entry, most ms first, the recorder's take on the same address left out */
+    CHECK(strstr(line, " callers gpu@+0x40=8.0/0.700(0.000/0.600/0.100/0.000) gpu@+0x80=1.0/0.400(0.400/0.000/0.000/"
+                       "0.000) gpu@-0x100=0.0/0.001(0.000/0.000/0.000/0.001) "));
+    int callers = 0;
+    for (const char* c = strstr(line, " callers "); (c = strstr(c + 1, " gpu@"));) callers++;
+    CHECK(callers == 8); /* 12 GPU-thread callers, the 8 with most ms */
+    perf_vklock_line(&w, &x, 600, line, sizeof line); /* taken: nothing again */
+    CHECK(strstr(line, ") lost=0 callers rt_add=0.0 ") && !strstr(line, "@") && strstr(line, " composed=0.0/0.0"));
+}
 static void test_p29(void) {
     static PerfP29 p;
     char line[PERF_COPIES_LINE];
@@ -1306,6 +1336,7 @@ int main(void) {
     test_p29();
     test_mem();
     test_waits();
+    test_vklock();
     test_handoff();
     test_land();
     test_same();

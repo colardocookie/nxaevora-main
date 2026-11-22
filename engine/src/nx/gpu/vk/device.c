@@ -10,6 +10,7 @@
 #include "nx/runtime/platform/plat.h"
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/perf_times.h"
 #include "common/gpu/vk/swapchain.h"
 #include "common/gpu/vk/vk_common.h"
 
@@ -23,13 +24,17 @@ VkState g_vk;
 static PMutex g_vklock;
 static _Thread_local int t_vkdepth;
 static u32 g_vk_owner; /* the thread holding it (plat_tid), 0 when none: a trap's fault on it can't be answered */
+int vk_lock_depth(void) { return t_vkdepth; }
 void vk_lock(void) {
     if (!t_vkdepth++) {
         if (!pm_trylock(&g_vklock)) { /* held: the GPU thread says so for the stall report */
             /* Only a contended acquisition gets a zone. */
             SNX_ZONE(z_wait, "vk lock wait");
             gpu_wait_note("vk_lock, which another thread holds", 0);
+            const int phase = g_perf_probes ? __atomic_load_n(&g_vk_hold_phase, __ATOMIC_RELAXED) : 0;
+            const u64 w0 = g_perf_probes ? plat_ns() : 0; /* PERF-36G: the wait by caller and holder */
             pm_lock(&g_vklock);
+            if (w0) perf_vklock_note(phase, __builtin_return_address(0), plat_ns() - w0);
             gpu_wait_note(NULL, 0);
         }
         __atomic_store_n(&g_vk_owner, plat_tid(), __ATOMIC_RELAXED);

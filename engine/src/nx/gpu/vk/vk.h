@@ -128,6 +128,7 @@ extern u32 g_vk_validation_messages;
    signals the event slots this thread's syncpoint releases under it reached (vk_release_events): that takes nvdrv's
    nvev_lk and the kernel's lock, so a hold that performs releases is never let go under either */
 void vk_lock(void);
+int vk_lock_depth(void); /* this thread's holds of vk_lock, 0 when it has none */
 void vk_unlock(void);
 int vk_trylock(void); /* vk_lock unless another thread holds it: 1 when taken */
 u32 vk_lock_owner(void); /* the thread (plat_tid) holding vk_lock, 0 when none */

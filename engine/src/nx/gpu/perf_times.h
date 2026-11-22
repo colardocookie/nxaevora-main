@@ -658,6 +658,23 @@ void perf_who_set(int who); /* the calling thread's label, PWHO_OTHER until set 
 void perf_waits_note(PerfWaits* w, int who, int kind, const void* at, uint64_t ns);
 void perf_wait_note(int kind, const void* at, uint64_t ns); /* the hook's: g_perf_waits, this thread's label */
 size_t perf_waits_line(PerfWaits* w, uint32_t frames, char* out, size_t size);
+/* PERF-36G (research 2026-11-22 13:48), log only, with SNX_ARCEUS_PERF_PROBES=1: vk_lock's contended takes by thread,
+   vk_lock's caller, and what the holder was doing as the wait began: the release thread's hold in its compute
+   landings, graphics landings or releases (release_through sets g_vk_hold_phase), or any other hold */
+enum { VKH_OTHER, VKH_COMPUTE, VKH_GRAPHICS, VKH_RELEASES, VKH_N };
+extern int g_vk_hold_phase; /* atomic, written only with the probes */
+extern PerfWaits g_perf_vklock;
+void perf_vklock_note(int phase, const void* at, uint64_t ns); /* this thread's label, kind = the phase */
+/* and for PERF-36's design (research 13:59): render targets made pending over pages (rt_pages +1), ownership armed
+   (own_begin), the release thread's holds and those with an owned range (g_own_any), the result calls made without
+   vk_lock by entry, and composed captures and those meeting a result of a submitted frame */
+enum { VKU_PENDING, VKU_UNSUBMITTED, VKU_COPY_WRITABLE, VKU_COMMIT, VKU_BARRIER, VKU_MEM_NEED, VKU_OUT_NEW, VKU_N };
+typedef struct {
+    uint64_t rt_add, own_begin, holds, holds_owned, composed, composed_submitted; /* atomic */
+    uint64_t unlocked[VKU_N];                                                    /* atomic */
+} PerfVkx;
+extern PerfVkx g_perf_vkx;
+size_t perf_vklock_line(PerfWaits* w, PerfVkx* x, uint32_t frames, char* out, size_t size);
 void perf_copy_wpage(PerfCopies* c, uint64_t page, uint64_t frame);
 /* PERF-23's, the same, with the stamps' counts since the last and the cost of one clock read. real NULL: the record as
    written is not kept (SNX_ARCEUS_PERF_TIMES=1), its columns not printed */

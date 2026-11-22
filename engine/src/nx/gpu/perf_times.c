@@ -1277,6 +1277,12 @@ void perf_waits_note(PerfWaits* w, int who, int kind, const void* at, uint64_t n
     __atomic_fetch_add(&w->lost, 1, __ATOMIC_RELAXED);
 }
 void perf_wait_note(int kind, const void* at, uint64_t ns) { perf_waits_note(&g_perf_waits, t_perf_who, kind, at, ns); }
+int g_vk_hold_phase;
+PerfWaits g_perf_vklock;
+PerfVkx g_perf_vkx;
+void perf_vklock_note(int phase, const void* at, uint64_t ns) {
+    perf_waits_note(&g_perf_vklock, t_perf_who, phase, at, ns);
+}
 typedef struct {
     uint64_t key, n, ns;
 } WaitSite;
@@ -1402,6 +1408,65 @@ size_t perf_waits_line(PerfWaits* w, uint32_t frames, char* out, size_t size) {
                   ra >= w->base ? '+' : '-', (unsigned long long)(ra >= w->base ? ra - w->base : w->base - ra),
                   site[i].n / f, site[i].ns / f / 1e6);
     }
+    return at < size ? at : size - 1;
+}
+size_t perf_vklock_line(PerfWaits* w, PerfVkx* x, uint32_t frames, char* out, size_t size) {
+    static const char* const who[PWHO_N] = {"gpu", "release", "recorder", "guest", "scanner", "other"};
+    static const char* const phase[VKH_N] = {"other", "compute", "graphics", "releases"};
+    static WaitSite site[PERF_WAIT_SLOTS]; /* the GPU thread's callers, the phases of each added up */
+    static uint64_t by[PERF_WAIT_SLOTS][VKH_N];
+    uint64_t tn[PWHO_N][VKH_N] = {{0}}, tns[PWHO_N][VKH_N] = {{0}};
+    uint32_t nsite = 0;
+    if (!size) return 0;
+    for (uint32_t i = 0; i < PERF_WAIT_SLOTS; i++) {
+        const uint64_t key = __atomic_load_n(&w->key[i], __ATOMIC_ACQUIRE), n = take64(&w->n[i]), t = take64(&w->ns[i]);
+        const uint32_t a = key >> 48 & 15, k = key >> 52 & 15;
+        if (!key || !n || a >= PWHO_N || k >= VKH_N) continue;
+        tn[a][k] += n, tns[a][k] += t;
+        if (a != PTH_GPU) continue;
+        const uint64_t ra = key & 0xFFFFFFFFFFFFull;
+        uint32_t s = 0;
+        while (s < nsite && site[s].key != ra) s++;
+        if (s == nsite) site[nsite] = (WaitSite){ra, 0, 0}, memset(by[nsite], 0, sizeof by[nsite]), nsite++;
+        site[s].n += n, site[s].ns += t, by[s][k] += t;
+    }
+    const double f = frames ? frames : 1;
+    size_t at = putf(out, size, 0,
+                     "perf-vklock: frames=%u (PERF-36G, a frame, vk_lock's contended takes by thread.holder, calls/ms: "
+                     "the holder as the wait began, the release thread in its compute landings, graphics landings or "
+                     "releases, or other; then the GPU thread's 8 callers of vk_lock with most ms, at their offset "
+                     "from pm_wait_note, calls/ms and ms by holder compute/graphics/releases/other; then rt_add render "
+                     "targets made pending over pages, own_begin ownership armed, holds the release thread's and "
+                     "those with an owned range, unlocked the result calls made without vk_lock (pending/unsubmitted/"
+                     "copy_writable/commit/barrier/mem_need/out_new), composed captures and those meeting a "
+                     "submitted frame's result)",
+                     frames);
+    for (int a = 0; a < PWHO_N; a++)
+        for (int k = 0; k < VKH_N; k++)
+            if (tn[a][k])
+                at = putf(out, size, at, " %s.%s=%.1f/%.3f", who[a], phase[k], tn[a][k] / f, tns[a][k] / f / 1e6);
+    at = putf(out, size, at, " lost=%llu callers", (unsigned long long)take64(&w->lost));
+    for (uint32_t c = 0; c < 8 && c < nsite; c++) { /* the next with most ms, ties by address */
+        uint32_t m = c;
+        for (uint32_t s = c + 1; s < nsite; s++)
+            if (site_cmp(&site[s], &site[m]) < 0) m = s;
+        if (m != c) {
+            const WaitSite t = site[c];
+            uint64_t tb[VKH_N];
+            memcpy(tb, by[c], sizeof tb), memcpy(by[c], by[m], sizeof tb), memcpy(by[m], tb, sizeof tb);
+            site[c] = site[m], site[m] = t;
+        }
+        const uint64_t ra = site[c].key;
+        at = putf(out, size, at, " gpu@%c0x%llx=%.1f/%.3f(%.3f/%.3f/%.3f/%.3f)", ra >= w->base ? '+' : '-',
+                  (unsigned long long)(ra >= w->base ? ra - w->base : w->base - ra), site[c].n / f,
+                  site[c].ns / f / 1e6,
+                  by[c][VKH_COMPUTE] / f / 1e6, by[c][VKH_GRAPHICS] / f / 1e6, by[c][VKH_RELEASES] / f / 1e6,
+                  by[c][VKH_OTHER] / f / 1e6);
+    }
+    at = putf(out, size, at, " rt_add=%.1f own_begin=%.1f holds=%.1f/%.1f unlocked=", take64(&x->rt_add) / f,
+              take64(&x->own_begin) / f, take64(&x->holds) / f, take64(&x->holds_owned) / f);
+    for (int k = 0; k < VKU_N; k++) at = putf(out, size, at, "%s%.1f", k ? "/" : "", take64(&x->unlocked[k]) / f);
+    at = putf(out, size, at, " composed=%.1f/%.1f", take64(&x->composed) / f, take64(&x->composed_submitted) / f);
     return at < size ? at : size - 1;
 }
 void perf_mem_alloc(PerfMem* m, int site, uint64_t bytes) {

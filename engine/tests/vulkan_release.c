@@ -150,7 +150,11 @@ void gmem_before_write(u64 address, u64 size) {
     hook_calls++;
     vk_release_need(address, size); /* the real memory layer reenters here */
 }
+int g_own_any; /* memory/own.c's: a range owned (PERF-36G counts the holds that find one) */
+/* PERF-36G: the hold phases release_through's parts ran in, a bit each (only set with the probes) */
+static unsigned phase_compute, phase_graphics, phase_write;
 void gmem_write_raw(u64 address, const void* data, u64 size) {
+    phase_write |= 1u << g_vk_hold_phase; /* every guest write, a payload's included */
     u64 physical = gmmu_translate(address);
     assert(physical && physical + size <= sizeof memory);
     memcpy(memory + physical, data, size);
@@ -210,6 +214,7 @@ void vk_rt_before_write(u64 address, u64 size) {
     (void)size;
 }
 void vk_compute_land_through(u64 gate) {
+    phase_compute |= 1u << g_vk_hold_phase;
     assert(lock_depth && vk_result_landing());
     assert(waited_compute >= gate);
     landing_calls++;
@@ -220,7 +225,10 @@ void vk_compute_land_through(u64 gate) {
         assert(completed[3] == 0); /* release follows all output reconciliation */
     }
 }
-void vk_land_through(u64 gate) { assert(waited_graphics >= gate); }
+void vk_land_through(u64 gate) {
+    phase_graphics |= 1u << g_vk_hold_phase;
+    assert(waited_graphics >= gate);
+}
 void vk_wait_submit(u64 gate) {
     if (gate > waited_graphics) waited_graphics = gate;
 }
@@ -640,5 +648,21 @@ int main(void) {
         perf_handoff_line(&g_perf_handoff, 1, line, sizeof line); /* PERF-33: every gated release was registered */
         assert(strstr(line, " unregistered=0 "));
     }
+    /* PERF-36G: with the probes the hold's parts ran in their phases, and the phase is given back after each hold.
+       Without them the phase is never written */
+    const unsigned c = 1u << (g_perf_probes ? VKH_COMPUTE : VKH_OTHER), g = 1u << (g_perf_probes ? VKH_GRAPHICS : 0);
+    assert(phase_compute == c && (phase_graphics & g) && (phase_write & (1u << (g_perf_probes ? VKH_RELEASES : 0))));
+    assert(g_perf_probes || (phase_graphics == 1 && phase_write == 1));
+    assert(g_vk_hold_phase == VKH_OTHER);
+    /* and the holds counted with the probes only, those that find a range owned apart */
+    const u64 holds = g_perf_vkx.holds;
+    assert(g_perf_probes ? holds && !g_perf_vkx.holds_owned : !holds);
+    g_own_any = 1;
+    value = 23;
+    vk_release_write(0x10000, &value, 1);
+    vk_release_drain();
+    g_own_any = 0;
+    assert(g_perf_probes ? g_perf_vkx.holds > holds && g_perf_vkx.holds_owned == g_perf_vkx.holds - holds
+                         : !g_perf_vkx.holds && !g_perf_vkx.holds_owned);
     return 0;
 }

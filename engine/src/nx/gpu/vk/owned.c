@@ -222,6 +222,7 @@ void vk_own_publish(u64 cpu, u64 size, VkOwnRes* r, u64 off) {
     if (!size) return;
     vk_rt_before_write_cpu(cpu, size);
     gpu_mem_written_cpu(cpu, size); /* what is built from the bytes (textures, buffers) takes the new ones */
+    if (g_perf_probes && g_owned.traps) __atomic_fetch_add(&g_perf_vkx.own_begin, 1, __ATOMIC_RELAXED); /* PERF-36G */
     if (g_owned.traps && !own_begin(cpu, size, r, off)) return;
     /* not trapped here: older owners of the bytes let go of them, and the result lands now */
     own_drop(cpu, size);

@@ -626,6 +626,7 @@ void vk_surf_wrote(Surf* s) {
    is parked or freed */
 static PendPages g_rt_pages;
 static void rt_pages(const Surf* s, int delta) {
+    if (g_perf_probes && delta > 0) __atomic_fetch_add(&g_perf_vkx.rt_add, 1, __ATOMIC_RELAXED); /* PERF-36G */
     if (!(s->gva >> 63)) pend_add_va(&g_rt_pages, s->gva, s->rt_size, delta);
 }
 int vk_surf_can_writeback(const Surf* s) { return s && s->f.raw && !s->f.depth && moves_scaled(s); }

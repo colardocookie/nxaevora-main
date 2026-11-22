@@ -923,11 +923,11 @@ int snx_main(int argc, char** argv) {
         g_perf_probes = g_perf_times && probes && !strcmp(probes, "1");
         if (g_perf_probes) {
             static const PmWaitHook hook = {perf_hook_now, perf_wait_note}; /* PERF-32 */
-            g_perf_waits.base = (uint64_t)(uintptr_t)&pm_wait_note;
+            g_perf_waits.base = g_perf_vklock.base = (uint64_t)(uintptr_t)&pm_wait_note;
             pm_wait_hook_set(&hook);
             g_landing_count = 1; /* PERF-35: the masked pass's steps by mask */
             LOG("perf-probes: on, a perf-p29 line with the hash callers, the replay's draws, the releases by kind and "
-                "the page index's lookups, a perf-mem line and a perf-waits line\n");
+                "the page index's lookups, a perf-mem line, a perf-waits line and a perf-vklock line\n");
         }
         const char* compute_submit = getenv("SNX_ARCEUS_PERF_COMPUTE_SUBMIT"); /* an experiment (gpu/perf_times.h) */
         if (compute_submit && !strcmp(compute_submit, "0")) {

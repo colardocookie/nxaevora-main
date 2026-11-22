@@ -28,6 +28,7 @@
 #include "nx/runtime/platform/tracy.h" /* tests/vulkan_release.c stubs vk.h */
 #include "nx/gpu/perf_times.h"
 #include "nx/gpu/perf_sample.h"
+#include "nx/memory/own.h"
 
 typedef struct {
     u64 gate;  /* the graphics submit whose completion it waits for */
@@ -224,9 +225,21 @@ void vk_release_events(void) { syncpt_events(); }
 /* lands the results of every submit up to gate and compute batch up to cgate (they have finished) and performs the
    releases they gate, in order */
 static _Thread_local int t_release_thread; /* SNX_ARCEUS_PERF_TIMES times this thread's holds only */
+/* PERF-36G: the hold's phase for a GPU-thread wait that begins in it, with the probes only. Returns the one before */
+static int hold_phase(int phase) {
+    const int was = __atomic_load_n(&g_vk_hold_phase, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_vk_hold_phase, phase, __ATOMIC_RELAXED);
+    return was;
+}
 static void release_through(u64 gate, u64 cgate) {
     const u64 lock0 = g_perf_times && t_release_thread ? plat_ns() : 0; /* and its wait for vk_lock (PERF-14) */
     vk_lock();
+    const int phase0 = g_perf_probes ? hold_phase(VKH_COMPUTE) : 0;
+    if (g_perf_probes) { /* PERF-36G: would PERF-36's pick find ownership active (its fallback) */
+        __atomic_fetch_add(&g_perf_vkx.holds, 1, __ATOMIC_RELAXED);
+        if (__atomic_load_n(&g_own_any, __ATOMIC_ACQUIRE))
+            __atomic_fetch_add(&g_perf_vkx.holds_owned, 1, __ATOMIC_RELAXED);
+    }
     const int notice = notice_on(); /* PERF-34 bit 4: this call's payload writes wait for the outermost's notice */
     if (notice) g_notice_depth++;
     const u64 held = lock0 ? plat_ns() : 0;
@@ -234,9 +247,11 @@ static void release_through(u64 gate, u64 cgate) {
     vk_result_begin();
     vk_compute_land_through(cgate);
     const u64 compute = held ? plat_ns() : 0; /* PERF-27: the hold by part */
+    if (g_perf_probes) hold_phase(VKH_GRAPHICS);
     vk_land_through(gate);
     const u64 graphics = held ? plat_ns() : 0;
     vk_result_end();
+    if (g_perf_probes) hold_phase(VKH_RELEASES);
     for (;;) {
         Release r;
         u64 r0 = held && g_perf_probes ? plat_ns() : 0, own = 0; /* PERF-29: a release's queue work and its own */
@@ -277,6 +292,7 @@ static void release_through(u64 gate, u64 cgate) {
         perf_rel_interval(&g_perf, REL_LOCK, lock0, held, 0);
         perf_rel_interval(&g_perf, REL_HOLD, held, end, outputs); /* the outputs landed under this hold */
     }
+    if (g_perf_probes) hold_phase(phase0); /* a nested hold gives back its caller's */
     vk_unlock();
     if (g_perf_times) perf_tail_freed(&g_perf, plat_ns());
 }

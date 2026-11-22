@@ -301,7 +301,12 @@ static VkAccessFlags2 out_access(void) {
 static u64 out_block(u32 npages, u32 len) { return sizeof(GfxOut) + 2 * (u64)npages * sizeof(u64) + len; }
 /* SNX_ARCEUS_PERF_SMALL bit 2 (PERF-34): the block is not zeroed past the result itself. Both callers write its page
    lists whole (out_map, or the 4 KB path's one page) and its original bytes (owned ranges zero them) before any read */
+/* PERF-36G: a result call made without vk_lock, counted by entry (log only, with the probes) */
+static void unlocked_note(int k) {
+    if (g_perf_probes && !vk_lock_depth()) __atomic_fetch_add(&g_perf_vkx.unlocked[k], 1, __ATOMIC_RELAXED);
+}
 static GfxOut* gfx_out_new(u32 npages, u32 len) {
+    unlocked_note(VKU_OUT_NEW);
     const u64 a0 = g_perf_probes ? plat_ns() : 0;
     GfxOut* o = g_perf_small & PSM_NOZERO ? malloc((size_t)out_block(npages, len))
                                           : calloc(1, (size_t)out_block(npages, len));
@@ -396,6 +401,7 @@ static void out_wrote(void) {
     if (g_perf_inplace >= 3 && work > g_out_write_work) g_out_write_work = work;
 }
 void vk_buf_writable_commit(void) {
+    unlocked_note(VKU_COMMIT);
     if (!g_prep) return;
     out_wrote(); /* every output a draw or dispatch prepared: copies of writable ranges, the atlas's pages */
     for (GfxOut* o = g_prep; o; o = o->next) {
@@ -852,6 +858,7 @@ void vk_buf_frame_done(u64 frame) {
 /* At the frame's submit: its storage results are copied into host-cached memory (vk_stage_back), where landing them
    compares bytes quickly. A result whose copy can't be allocated is read where the shader wrote it. */
 void vk_buf_host_barrier(VkCommandBuffer cb, u64 frame) {
+    unlocked_note(VKU_BARRIER);
     GfxOut* first = g_out;
     while (first && first->frame != frame) first = first->next;
     if (!first) return;
@@ -982,6 +989,7 @@ static int out_meets(const GfxOut* o, u64 gva, u64 len, const RangePages* q, u64
     return hit;
 }
 static void mem_need_reason(u64 gva, u64 len, int reason) {
+    unlocked_note(VKU_MEM_NEED);
     RangePages q;
     u64 local[16], *rmap = NULL;
     if (!g_gfx_any || g_out_landing || !len) return;
@@ -1014,11 +1022,13 @@ void vk_buf_mem_need(u64 gva, u64 len) { mem_need_reason(gva, len, WB_READ); }
 int vk_buf_pending_any(void) { return g_gfx_any; }
 u64 vk_buf_adds(void) { return g_out_pages.adds; }
 int vk_buf_pending_unsubmitted(void) {
+    unlocked_note(VKU_UNSUBMITTED);
     for (GfxOut* o = g_out; o; o = o->next)
         if (o->frame == vk_submit_number()) return 1;
     return 0;
 }
 int vk_buf_pending(u64 gva, u64 len) {
+    unlocked_note(VKU_PENDING);
     RangePages q;
     if (!g_gfx_any || !len || !pend_hit(&g_out_pages, gva, len)) return 0;
     range_pages(gva, len, &q);
@@ -1993,6 +2003,20 @@ static int out_any_meets(u64 gva, u64 len) {
     if (rmap && rmap != local) free(rmap);
     return any;
 }
+/* PERF-36G: a composed capture, and whether it meets a result of a frame already submitted (PERF-36 could have that
+   one in flight, and the capture's read of guest bytes would wait for it) */
+static void composed_note(u64 gva, u64 len) {
+    RangePages q;
+    u64 local[16], *rmap = NULL;
+    const u64 submitted = vk_last_submit();
+    int any = 0;
+    range_pages(gva, len, &q);
+    for (GfxOut* o = g_out; o && !any; o = o->next)
+        any = o->frame <= submitted && out_meets(o, gva, len, &q, &rmap, local);
+    if (rmap && rmap != local) free(rmap);
+    __atomic_fetch_add(&g_perf_vkx.composed, 1, __ATOMIC_RELAXED);
+    if (any) __atomic_fetch_add(&g_perf_vkx.composed_submitted, 1, __ATOMIC_RELAXED);
+}
 /* SNX_ARCEUS_PERF_TIMES (PERF-20): the time since *t added to step k of st, the clock read again (t 0: off) */
 static void wr_step(u64* t, u64* st, int k) {
     if (!*t) return;
@@ -2015,6 +2039,7 @@ static void cap_note(u64 gva, u32 len) {
 }
 int vk_buf_copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off) {
     GfxOut* o;
+    unlocked_note(VKU_COPY_WRITABLE);
     out_wrote(); /* every way out that hands a buffer is a write (SNX_ARCEUS_PERF_INPLACE=3), the zero one too */
     if (!gva) return vk_buf_copy(0, len, buf, off);
     /* Repeated bindings of one writable range in the same draw must name the same storage. */
@@ -2027,6 +2052,7 @@ int vk_buf_copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off) {
         }
     int pending = gfx_gpu_src(gva, len, buf, off, 1, vk_stage_align(), PB_WRITE), copied = 0;
     if (pending == 1) return 1;
+    if (pending == 2 && g_perf_probes) composed_note(gva, len);
     const u64 compose_t0 = g_perf_times && pending == 2 ? plat_ns() : 0; /* PERF-18 */
     u64 wr_t = g_perf_times ? plat_ns() : 0, st[PWS_N] = {0}; /* PERF-20: the steps' times */
     if (!pending) gmem_need(gva, len);
