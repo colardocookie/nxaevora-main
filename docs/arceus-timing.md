@@ -6,7 +6,7 @@
 Pokémon Legends: Arceus 1.1.1 runs its world at 30 updates per second. Most of its clocks add a fixed 1/30 second
 on each rendered frame, so above 30 FPS the game runs fast. `src/nx/runtime/arceus_clock.c` in the vendored
 ScarletNX changes those clocks to the real elapsed time. The timing fixes are on by default and can be disabled with the master or individual switches below. Setting
-the master to `0` also suppresses the opt-in traces, research probes and fixed-resolution hook. The layer does
+the master to `0` also suppresses the opt-in traces and research probes (the fixed resolution stays on). The layer does
 nothing for another game or another build. Each change first checks the build id of `main` and the instruction
 words it replaces, and it logs a refusal and changes nothing when they differ.
 
