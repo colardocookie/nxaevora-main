@@ -6,6 +6,7 @@
 #include "nx/runtime/arceus_step.h"
 #include "nx/runtime/arceus_camera.h"
 #include "nx/runtime/guest_jit.h"
+#include "nx/runtime/discord_presence.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
@@ -193,6 +194,9 @@ static int readable(u64 address, u64 size) {
     return 1;
 }
 
+/* Discord presence's tick, once a second from the engine clock's reads (DRP P3, below) */
+static int drp_ticking;
+static void drp_tick(void);
 static int event_probe, demo_probe, demo_tick, text_probe;
 static u64 event_probe_frames;
 static void event_probe_line(void);
@@ -208,6 +212,7 @@ static void probe_frame(void) {
 static void trace_call(CPU* c, u64 entry, unsigned kind) {
     u64 object = c->x[0], channel = c->x[1], input = c->x[2], caller = c->x[30];
     u64 count = __atomic_add_fetch(&counts[kind], 1, __ATOMIC_RELAXED);
+    if (kind == 0 && __atomic_load_n(&drp_ticking, __ATOMIC_RELAXED)) drp_tick();
     /* The channel 0 duration write comes once per main-loop frame. */
     if (probe_frames_wanted() && kind == 2 && channel == 0 && caller == main_base + 0x278150c) probe_frame();
     if (kind == 2) adjust_duration(c);
@@ -4315,6 +4320,337 @@ static void waza_shot_init(void) {
         waza_shot_fix == 2 ? "between ticks" : "at the tick rate");
 }
 
+/* Discord presence (SNX_ARCEUS_DISCORD, D1 to D5). Each wrapper runs the game's function and only reads what it was
+   given or returned. The region and the battle kind files come from fs.c (D2, D3). */
+enum { DRPS_AREA, DRPS_BATTLE, DRPS_TEXT_SET, DRPS_SITES };
+static GuestFn drp_original[DRPS_SITES];
+/* drp_presence: on. The state for the host half is written under drp_lock by whichever game thread runs a wrapper or
+   the tick. */
+static int drp_presence;
+static PMutex drp_lock = PMUTEX_INIT;
+static SnxDrpValues drp_values = {.region = -1, .activity = DRP_TITLE};
+static u64 drp_unread;
+static int drp_party_due = 1; /* read the party at the next tick: at the start, and when a battle starts or ends */
+/* the activity, under drp_lock. Leaving a battle forgets its opponent, active Pokémon and trainer. */
+static void drp_set_locked(uint32_t activity) {
+    if (drp_values.activity != activity) drp_party_due = 1;
+    drp_values.activity = activity;
+    if (activity != DRP_BATTLE) {
+        drp_values.foe = drp_values.active = (SnxDrpMon){0};
+        drp_values.kind = DRP_KIND_RECORD;
+        memset(drp_values.trainer, 0, sizeof drp_values.trainer);
+    }
+    snx_drp_write(&g_drp_state, &drp_values);
+}
+static void drp_set(uint32_t activity) {
+    pm_lock(&drp_lock);
+    drp_set_locked(activity);
+    pm_unlock(&drp_lock);
+}
+/* a guest string of printable bytes, at most size - 1, empty when unreadable */
+static void drp_string(u64 at, char* out, size_t size) {
+    size_t n = 0;
+    for (; at && n + 1 < size; n++, at++) {
+        if ((n == 0 || !(at & 0xfff)) && !readable(at, 1)) break;
+        const u8 c = *(const u8*)GP(at);
+        if (c < 0x20 || c > 0x7e) break;
+        out[n] = (char)c;
+    }
+    out[n] = 0;
+}
+/* GetAreaName (1EB2A7C). An area's name comes on the return to the field after a battle (DRP-D1, research 08:20), so
+   it ends the battle. It is never the region: travel does not call it. */
+static void drp_area_name(CPU* c, u64 entry) {
+    drp_original[DRPS_AREA](c, entry);
+    char name[64];
+    drp_string(c->x[0], name, sizeof name);
+    if (name[0]) drp_set(DRP_FIELD);
+    else if (__atomic_add_fetch(&drp_unread, 1, __ATOMIC_RELAXED) % 600 == 1)
+        LOG("arceus-discord: an area name could not be read (%llu so far)\n", (unsigned long long)drp_unread);
+}
+/* The party, as the script's GetMonsNo and GetLevel bindings reach it (D92288 with -1): a singleton through the slot
+   main+4279680, +D0, +58. That object holds the six Pokémon objects at +58 to +80 and their count at +88. */
+static u64 drp_party_object(void) {
+    const u64 slot = main_base + 0x4279680, holder = readable(slot, 8) ? gr64(slot) : 0;
+    const u64 single = readable(holder, 8) ? gr64(holder) : 0, p = readable(single + 0xd0, 8) ? gr64(single + 0xd0) : 0;
+    return readable(p + 0x58, 8) ? gr64(p + 0x58) : 0;
+}
+
+/* D2 (research 08:35 and 18:10): a Pokémon object (vtable main+418AE40) has its data object at +98, the one the
+   game's getters take (2B6849C, 2B5FB2C, 2B6D5B0): +8 the party extension, +10 the record, +18 enciphered, +30 the
+   lock's owner. A copy of the record and the extension is deciphered by our own code. Never a call, never a write,
+   and nothing of a record is logged. The waiters' object at +24 is the system's and is not read. */
+#define DRP_MON_VTABLE 0x418ae40
+enum { DRP_MON_OK, DRP_MON_NONE, DRP_MON_BUSY, DRP_MON_DROPPED };
+static int drp_d2 = -1; /* -1 not checked yet, 0 off (the game's block order is not ours), 1 on */
+static u64 drp_drops;
+static int drp_d2_on(void) {
+    int on = __atomic_load_n(&drp_d2, __ATOMIC_RELAXED);
+    if (on >= 0) return on;
+    const u64 table = main_base + 0x3984e57; /* the getters' table of block positions, 32 rows of 4 */
+    on = readable(table, 128) && snx_pk_table_same((const uint8_t*)GP(table));
+    if (!on) WARN("arceus-discord: the game's block order differs from ours: no species, levels or party\n");
+    __atomic_store_n(&drp_d2, on, __ATOMIC_RELAXED);
+    return on;
+}
+static int drp_mon_read(u64 object, SnxDrpMon* out) {
+    if (!drp_d2_on() || !readable(object, 0xa0) || gr64(object) != main_base + DRP_MON_VTABLE) return DRP_MON_NONE;
+    const u64 data = gr64(object + 0x98);
+    if (!readable(data, 0x38)) return DRP_MON_NONE;
+    const u64 lock = __atomic_load_n((const u64*)GP(data + 0x30), __ATOMIC_ACQUIRE);
+    const unsigned flag = __atomic_load_n((const u8*)GP(data + 0x18), __ATOMIC_ACQUIRE);
+    const u64 record = gr64(data + 0x10), extension = gr64(data + 0x8);
+    if (!readable(record, SNX_PK_RECORD) || (extension && !readable(extension, SNX_PK_EXTENSION))) return DRP_MON_NONE;
+    uint8_t copy[SNX_PK_RECORD], more[SNX_PK_EXTENSION];
+    memcpy(copy, GP(record), sizeof copy);
+    if (extension) memcpy(more, GP(extension), sizeof more);
+    __atomic_thread_fence(__ATOMIC_ACQUIRE);
+    int state = snx_pk_copy_state(lock, flag, __atomic_load_n((const u64*)GP(data + 0x30), __ATOMIC_RELAXED),
+                                  __atomic_load_n((const u8*)GP(data + 0x18), __ATOMIC_RELAXED));
+    if (state == SNX_PK_STEADY && (gr64(data + 0x10) != record || gr64(data + 0x8) != extension)) state = SNX_PK_TORN;
+    int result = state == SNX_PK_BUSY ? DRP_MON_BUSY : DRP_MON_DROPPED;
+    if (state == SNX_PK_STEADY && snx_pk_decode(copy, extension ? more : NULL, flag != 0, out) == SNX_PK_OK)
+        result = DRP_MON_OK;
+    memset(copy, 0, sizeof copy);
+    memset(more, 0, sizeof more);
+    if (result == DRP_MON_DROPPED && __atomic_add_fetch(&drp_drops, 1, __ATOMIC_RELAXED) % 600 == 1)
+        LOG("arceus-discord: a Pok\xc3\xa9mon's copy failed its checks and was dropped (%llu so far)\n",
+            (unsigned long long)drp_drops);
+    return result;
+}
+/* The party in the hover text: read on the tick when its members or count changed, or when drp_party_due says so.
+   A member the game holds is kept as it was and read again next second, one that fails its checks is left out. */
+static u64 drp_party_seen[7];
+static void drp_party_read(void) {
+    const u64 q = drp_party_object();
+    if (!readable(q + 0x58, 0x38)) return;
+    u64 now[7];
+    for (unsigned i = 0; i < 7; i++) now[i] = gr64(q + 0x58 + i * 8ull);
+    pm_lock(&drp_lock);
+    const int due = drp_party_due;
+    SnxDrpMon party[6];
+    memcpy(party, drp_values.party, sizeof party);
+    pm_unlock(&drp_lock);
+    if (!due && !memcmp(now, drp_party_seen, sizeof now)) return;
+    int again = 0;
+    for (unsigned i = 0; i < 6; i++) {
+        SnxDrpMon m = {0};
+        const int r = i < now[6] ? drp_mon_read(now[i], &m) : DRP_MON_NONE;
+        if (r == DRP_MON_BUSY) again = 1;
+        else party[i] = r == DRP_MON_OK ? m : (SnxDrpMon){0};
+    }
+    memcpy(drp_party_seen, now, sizeof now);
+    pm_lock(&drp_lock);
+    drp_party_due = again;
+    if (memcmp(party, drp_values.party, sizeof party)) {
+        memcpy(drp_values.party, party, sizeof party);
+        snx_drp_write(&g_drp_state, &drp_values);
+    }
+    pm_unlock(&drp_lock);
+}
+
+/* D3 (research 19:35): a battle's kind from the files its start reads (fs.c notes them in g_drp_files, cleared at
+   the start). Decided by snx_drp_decide on the start's calls and on the tick: a kind file and the opponent's record
+   settled, or 3 s. drp_kind_start, the start, is atomic, as the line wrapper reads it on other threads. */
+static u64 drp_foe_object, drp_kind_start;
+static void drp_battle_decide(u64 now) {
+    const int settled = !__atomic_load_n(&drp_foe_object, __ATOMIC_RELAXED);
+    const uint32_t files = __atomic_load_n(&g_drp_files.kinds, __ATOMIC_RELAXED);
+    const u64 start = __atomic_load_n(&drp_kind_start, __ATOMIC_RELAXED);
+    pm_lock(&drp_lock);
+    const int pending = drp_values.activity == DRP_BATTLE && drp_values.kind == DRP_KIND_PENDING;
+    const uint32_t kind = pending ? snx_drp_decide(files, settled, now, start) : DRP_KIND_PENDING;
+    if (kind != DRP_KIND_PENDING) {
+        drp_values.kind = kind;
+        snx_drp_write(&g_drp_state, &drp_values);
+    }
+    pm_unlock(&drp_lock);
+}
+
+/* The player's battle Pokémon (P8, research 20:35 and 21:05) as the move menu finds it (7B8114 -> 834074 with index
+   0), read on the tick: the battle context X = [[[[main+4279580]]+B0]+E0] (882D58), its container [X+D0] (823C00),
+   the table T = [[[[c+68]+98]+370]+8], index 0's side from 2847B84's table for the mode at [T]+110 and slot 0. Its
+   Pokémon P = [T + side*38 + 8], present when the byte at T + side*38 + 38 is above 0. */
+static u64 drp_rd(u64 at) { return at && readable(at, 8) ? gr64(at) : 0; }
+/* the table T from the global slot: the slot holds the singleton's address, S = [[slot]], X = [[S+B0]+E0] as 882D58
+   reads it, then [X+D0] (823C00) and 834074's [[[[c+68]+98]+370]+8]. 0 when a link is missing or the table is not
+   readable for its five sides. */
+static u64 drp_battle_table(void) {
+    const u64 x = drp_rd(drp_rd(drp_rd(drp_rd(main_base + 0x4279580)) + 0xb0) + 0xe0);
+    const u64 t = drp_rd(drp_rd(drp_rd(drp_rd(drp_rd(x + 0xd0) + 0x68) + 0x98) + 0x370) + 8);
+    return readable(t, 5 * 0x38 + 1) ? t : 0;
+}
+/* a side's first Pokémon, 0 when the side's count byte is 0 */
+static u64 drp_battle_first(u64 t, unsigned side) {
+    const unsigned n = *(const u8*)GP(t + side * 0x38ull + 0x38);
+    return n ? drp_rd(t + side * 0x38ull + 8) : 0;
+}
+static int drp_index0_side(u64 m) {
+    if (!readable(m + 0x110, 4)) return -1;
+    const u32 mode = *(const u32*)GP(m + 0x110);
+    u64 table = mode == 0 ? main_base + 0x397eb50 : mode == 2 ? main_base + 0x397ebc8 : 0;
+    if (mode == 1) {
+        const u64 b = drp_rd(m + 0x58);
+        const unsigned kind = readable(b + 0x55, 1) ? *(const u8*)GP(b + 0x55) : 0;
+        table = kind - 1 < 5 ? drp_rd(main_base + 0x41767f8 + (kind - 1) * 8ull) : main_base + 0x397eb68;
+    }
+    return table && readable(table, 4) ? (int)*(const u32*)GP(table) : -1;
+}
+
+/* D3d (research 22:05 and 22:15): the second line in a battle, "Active: <species> Lv. <n>". The Pokémon P for index
+   0 holds at +60 a Pokémon object (vtable 418AE40, the battle's own copy, in all six battles of the D3c look), read
+   once a second by D2's copy rules. A failed check empties the line, a busy record keeps it for the next second. */
+static void drp_active_read(void) {
+    const u64 t = drp_battle_table();
+    const int side = t ? drp_index0_side(drp_rd(t)) : -1;
+    const u64 p = side >= 0 && side < 5 ? drp_battle_first(t, (unsigned)side) : 0;
+    SnxDrpMon m = {0};
+    const int r = p ? drp_mon_read(drp_rd(p + 0x60), &m) : DRP_MON_NONE;
+    if (r == DRP_MON_BUSY) return;
+    pm_lock(&drp_lock);
+    if (drp_values.activity == DRP_BATTLE && memcmp(&m, &drp_values.active, sizeof m)) {
+        drp_values.active = m;
+        snx_drp_write(&g_drp_state, &drp_values);
+    }
+    pm_unlock(&drp_lock);
+}
+
+/* A battle ends when the battle effect sequences (9DBEAC, the battle sequence fix's wrapper and its counter) have
+   not run for 3 s, or at an area call, whichever first (DRP-P3, research 09:00). Inside the battles seen they ran in
+   every second, menus included, and outside them never. drp_battle_since: the start, or the counter's last move. */
+static u64 drp_next_tick, drp_battle_seen, drp_battle_since;
+static void drp_tick(void) {
+    const u64 now = plat_ns(), next = __atomic_load_n(&drp_next_tick, __ATOMIC_RELAXED);
+    if (now < next || !__atomic_compare_exchange_n(&drp_next_tick, &(u64){next}, now + 1000000000ull, 0,
+                                                     __ATOMIC_RELAXED, __ATOMIC_RELAXED))
+        return;
+    const u64 calls = battle_sequence_original ? __atomic_load_n(&battle_sequence_calls, __ATOMIC_RELAXED) : 0;
+    pm_lock(&drp_lock);
+    if (calls != drp_battle_seen) drp_battle_seen = calls, drp_battle_since = now;
+    const int quiet = battle_sequence_original && snx_drp_battle_over(1, now, drp_battle_since);
+    /* the title screen until the player's camera first takes input in the field (the camera input fix's wrapper,
+       20 to 46 s into DRP-P3 to P4), or an area call. The party's data is there from the boot, so it cannot tell
+       (DRP-P4). Both ends are decided and made in one hold of the lock, so a battle starting meanwhile stays. */
+    const int title_over = drp_values.activity == DRP_TITLE && __atomic_load_n(&camera_input_calls, __ATOMIC_RELAXED);
+    if ((quiet && snx_drp_in_battle(drp_values.activity)) || title_over) drp_set_locked(DRP_FIELD);
+    const uint32_t activity = drp_values.activity;
+    pm_unlock(&drp_lock);
+    drp_battle_decide(now);
+    if (activity == DRP_BATTLE) drp_active_read();
+    drp_party_read();
+}
+
+/* D5 (research 01:10): the text object's vtable slot +58, FC20C8, takes each message line as UTF-16 in x1 (0x10
+   starts a tag whose next unit is its length, 0 ends it). From a trainer battle's start until its name is found or
+   20 s pass, each line's first 96 units are matched by snx_drp_sent_out, tags left out. The first match is the
+   battle's trainer, "Battling <name>". Nothing of a line is logged. */
+static u32 drp_name_battle; /* the battle whose trainer's name was found */
+static void drp_text_set(CPU* c, u64 entry) {
+    const u64 line = c->x[1], now = plat_ns(), start = __atomic_load_n(&drp_kind_start, __ATOMIC_RELAXED);
+    const u32 battle = __atomic_load_n(&g_drp_battle, __ATOMIC_RELAXED);
+    if ((__atomic_load_n(&g_drp_files.kinds, __ATOMIC_RELAXED) & DRP_FILE_TRAINER) && now >= start &&
+        now - start < 20000000000ull && __atomic_load_n(&drp_name_battle, __ATOMIC_RELAXED) != battle) {
+        u16 units[96];
+        size_t count = 0;
+        for (; count < 96 && readable(line + count * 2, 2); count++)
+            if (!(units[count] = (u16)gr16(line + count * 2))) break;
+        char out[320], found[SNX_DRP_NAME] = {0};
+        if (snx_drp_utf16_line(units, count, out, sizeof out) && snx_drp_sent_out(out, found, sizeof found)) {
+            pm_lock(&drp_lock);
+            if (drp_values.activity == DRP_BATTLE && __atomic_load_n(&g_drp_battle, __ATOMIC_RELAXED) == battle) {
+                memcpy(drp_values.trainer, found, sizeof found);
+                snx_drp_write(&g_drp_state, &drp_values);
+                __atomic_store_n(&drp_name_battle, battle, __ATOMIC_RELAXED);
+            }
+            pm_unlock(&drp_lock);
+        }
+    }
+    drp_original[DRPS_TEXT_SET](c, entry);
+}
+
+/* UpdateBattleStartCoroutine (1DD7C68), called each frame of a battle's start with one object per battle. D2: the
+   first call decides the opponent, record 0's Pokémon object ([+78]+90). In P1b's trainer battle that record was
+   empty, so a battle without one says "In battle". Its copy is tried on the calls after, while the game holds it. */
+static u64 drp_last_battle;
+static unsigned drp_foe_tries;
+static void drp_battle_start(CPU* c, u64 entry) {
+    const u64 object = c->x[0];
+    const int fresh = object != __atomic_exchange_n(&drp_last_battle, object, __ATOMIC_RELAXED);
+    const u64 records = readable(object + 0x78, 8) ? gr64(object + 0x78) : 0;
+    if (fresh) {
+        /* a new battle forgets the last one's opponent and kind files, even when it starts before that one was seen
+           to end */
+        __atomic_add_fetch(&g_drp_battle, 1, __ATOMIC_RELAXED);
+        __atomic_store_n(&g_drp_files.kinds, 0, __ATOMIC_RELAXED);
+        pm_lock(&drp_lock);
+        drp_battle_since = plat_ns(); /* the effects begin about 0.7 s after the start (DRP-P3) */
+        __atomic_store_n(&drp_kind_start, drp_battle_since, __ATOMIC_RELAXED);
+        drp_party_due = 1;
+        drp_values.activity = DRP_BATTLE;
+        drp_values.kind = DRP_KIND_PENDING;
+        drp_values.foe = drp_values.active = (SnxDrpMon){0};
+        memset(drp_values.trainer, 0, sizeof drp_values.trainer);
+        snx_drp_write(&g_drp_state, &drp_values);
+        pm_unlock(&drp_lock);
+        __atomic_store_n(&drp_foe_object, readable(records + 0x90, 8) ? gr64(records + 0x90) : 0, __ATOMIC_RELAXED);
+        __atomic_store_n(&drp_foe_tries, 0, __ATOMIC_RELAXED);
+    }
+    const u64 foe_object = __atomic_load_n(&drp_foe_object, __ATOMIC_RELAXED);
+    if (foe_object && __atomic_fetch_add(&drp_foe_tries, 1, __ATOMIC_RELAXED) < 32) {
+        SnxDrpMon foe;
+        const int r = drp_mon_read(foe_object, &foe);
+        if (r == DRP_MON_OK) {
+            pm_lock(&drp_lock);
+            if (drp_values.activity == DRP_BATTLE) {
+                drp_values.foe = foe;
+                snx_drp_write(&g_drp_state, &drp_values);
+            }
+            pm_unlock(&drp_lock);
+        }
+        if (r != DRP_MON_BUSY) __atomic_store_n(&drp_foe_object, 0, __ATOMIC_RELAXED);
+    }
+    drp_battle_decide(plat_ns());
+    drp_original[DRPS_BATTLE](c, entry);
+}
+/* On by default (SNX_ARCEUS_DISCORD=0 turns it off). It needs the player's own application id: with neither the switch
+   nor an id set it stays off without a word, and only a 1 without an id says why */
+static void discord_presence_init(void) {
+    const char* presence = getenv("SNX_ARCEUS_DISCORD");
+    const char* app = getenv("SNX_ARCEUS_DISCORD_APP");
+    drp_presence = arceus_switch_enabled("SNX_ARCEUS_DISCORD", 1) && (presence || (app && *app));
+    if (!drp_presence || !main_base || !g_disp) return;
+    if (!snx_discord_start(app)) {
+        WARN("arceus-discord: presence off: SNX_ARCEUS_DISCORD_APP is missing or not an application id\n");
+        drp_presence = 0;
+        return;
+    }
+    static const struct { u32 offset, word; GuestFn wrapper; const char* name; } sites[DRPS_SITES] = {
+        {0x1eb2a7c, 0xf9403408, drp_area_name, "GetAreaName"},
+        {0x1dd7c68, 0xd103c3ff, drp_battle_start, "UpdateBattleStartCoroutine"},
+        {0xfc20c8, 0xf81d0ff5, drp_text_set, "the message text's line (FC20C8)"},
+    };
+    for (unsigned k = 0; k < DRPS_SITES; k++) {
+        const u64 pc = main_base + sites[k].offset;
+        if (pc < g_code_lo || pc >= g_code_hi || !readable(pc, 4) || gr32(pc) != sites[k].word ||
+            !g_disp[(pc - g_code_lo) / 4]) {
+            WARN("arceus-discord: %s left alone: missing or changed entry\n", sites[k].name);
+            continue;
+        }
+        drp_original[k] = g_disp[(pc - g_code_lo) / 4];
+        __atomic_store_n(&g_disp[(pc - g_code_lo) / 4], sites[k].wrapper, __ATOMIC_RELEASE);
+        LOG("arceus-discord: read-only reader on %s (main+%x)\n", sites[k].name, sites[k].offset);
+    }
+    /* the tick needs the clock layer's read wrapper, which runs it on the game's threads. The clock layer is on here
+       (arceus_clock_post_jit), its two fixes may not be (research 01:25 item 4). */
+    __atomic_store_n(&drp_ticking, 1, __ATOMIC_RELEASE);
+    if (!battle_sequence_original)
+        WARN("arceus-discord: without SNX_ARCEUS_BATTLE_SEQUENCE_FIX a battle ends only at an area name, which most "
+             "battles never reach\n");
+    if (!camera_input_original)
+        WARN("arceus-discord: without SNX_ARCEUS_CAMERA_INPUT_FIX the title screen status stays until the first "
+             "battle\n");
+}
+
 /* SNX_ARCEUS_THROW_OWNER_GUARD: 16E33EC makes a throwable in heap 4 of the owner its weak reference Q+0x88 names,
    and never checks that the owner still lives. Its controller can release the owner before the throw is made, and the
    call then faults at 16E34FC. A dead owner gets the empty handle the call starts from, which its caller accepts. */
@@ -5442,4 +5778,5 @@ void arceus_clock_post_jit(void) {
     camera_input_init();
     camera_rate_init();
     field_message_probe_init();
+    discord_presence_init();
 }

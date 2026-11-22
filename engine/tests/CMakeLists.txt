@@ -596,6 +596,10 @@ snx_test_target(snx-test-arceus-clock 11)
 target_link_libraries(snx-test-arceus-clock PRIVATE m)
 add_test(NAME arceus_clock COMMAND snx-test-arceus-clock)
 
+add_executable(snx-test-discord-presence discord_presence.c)
+snx_test_target(snx-test-discord-presence 11)
+add_test(NAME discord_presence COMMAND snx-test-discord-presence)
+
 add_executable(snx-test-nvn-cmdlist nvn/nvn_cmdlist.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_cmdlist.c")
 snx_test_target(snx-test-nvn-cmdlist 11)
 add_test(NAME nvn_cmdlist COMMAND snx-test-nvn-cmdlist)
