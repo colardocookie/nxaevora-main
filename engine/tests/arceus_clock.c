@@ -264,11 +264,17 @@ static void test_fixed_resolution(void) {
     static const u32 len[1] = {0x2c8};
     static u8 stale[1];
     static GuestFn entry[1];
-    const SnxModule module = {.nfns = 1, .fn_lo = lo, .fn_len = len, .stale = stale, .entry_fn = entry};
+    const u64 pc = 256;
+    SnxModInfo info = {.name = "main", .base = pc - 0xcc35a4};
+    memcpy(info.build_id, arceus_main_id, sizeof info.build_id < sizeof arceus_main_id ? sizeof info.build_id
+                                                                                        : sizeof arceus_main_id);
+    const SnxModule module = {.nmods = 1, .mods = &info, .nfns = 1, .fn_lo = lo, .fn_len = len, .stale = stale,
+                              .entry_fn = entry};
     const SnxModule* const saved_mod = g_mod;
-    const u64 saved_base = main_base, saved_lo = g_code_lo, saved_hi = g_code_hi, pc = 256;
+    const u64 saved_base = main_base, saved_lo = g_code_lo, saved_hi = g_code_hi;
+    const int saved_timing = timing_enabled, saved_clocks = clocks_installed;
     const char* const values[] = {NULL, "1", "0", "2"};
-    g_mod = &module, main_base = pc - 0xcc35a4, lo[0] = pc, g_code_lo = 0, g_code_hi = sizeof memory;
+    g_mod = &module, main_base = 0, lo[0] = pc, g_code_lo = 0, g_code_hi = sizeof memory; /* main_base unused */
     for (unsigned i = 0; i < sizeof values / sizeof values[0]; i++) {
         memset(memory + pc, 0, 0x2c8);
         gw32(pc, 0xd10103ff), gw32(pc + 0x20, 0x51000509), gw32(pc + 0x24, 0x7100093f);
@@ -282,13 +288,34 @@ static void test_fixed_resolution(void) {
         assert(gr32(pc + 0x20) == (on ? 0x52800069u : 0x51000509u) && jit_changes == (unsigned)on);
         assert(gr32(pc) == 0xd10103ff && gr32(pc + 0x24) == 0x7100093f && gr32(pc + 0x94) == 0xd65f03c0);
     }
-    /* A changed function is refused with the switch on */
+    /* At the game's own 30 FPS the timing layer is off and main_base stays 0: post_jit still patches it, before
+       its gate, and =0 still keeps the governor there */
+    for (int keep = 0; keep < 2; keep++) {
+        memset(memory + pc, 0, 0x2c8);
+        gw32(pc, 0xd10103ff), gw32(pc + 0x20, 0x51000509), gw32(pc + 0x24, 0x7100093f);
+        gw32(pc + 0x28, 0x54000308), gw32(pc + 0x94, 0xd65f03c0);
+        if (keep) flag("SNX_ARCEUS_FIXED_RESOLUTION", "0");
+        else unset_flag("SNX_ARCEUS_FIXED_RESOLUTION");
+        timing_enabled = clocks_installed = 0, main_base = 0;
+        jit_allowed = 1, jit_changes = 0;
+        arceus_clock_post_jit();
+        jit_allowed = 0;
+        assert(gr32(pc + 0x20) == (keep ? 0x51000509u : 0x52800069u) && jit_changes == (unsigned)!keep);
+    }
+    /* Another main build is left alone */
+    gw32(pc + 0x20, 0x51000509);
     unset_flag("SNX_ARCEUS_FIXED_RESOLUTION");
+    info.build_id[0] ^= 1;
+    fixed_resolution_init();
+    assert(gr32(pc + 0x20) == 0x51000509u);
+    info.build_id[0] ^= 1;
+    /* A changed function is refused with the switch on */
     gw32(pc + 0x20, 0x51000509), gw32(pc + 0x24, 0);
     fixed_resolution_init();
     assert(gr32(pc + 0x20) == 0x51000509u);
     memset(memory + pc, 0, 0x2c8);
     g_mod = saved_mod, main_base = saved_base, g_code_lo = saved_lo, g_code_hi = saved_hi;
+    timing_enabled = saved_timing, clocks_installed = saved_clocks;
 }
 static void test_defaults_on(void) {
     static const char* const all[] = {

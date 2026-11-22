@@ -239,11 +239,14 @@ static void message_view_probe(CPU* c, u64 entry) {
             (unsigned long long)object, before, after, (unsigned long long)(caller - main_base));
 }
 
+/* The Arceus 1.1.1 main module's build id. */
+static const u8 arceus_main_id[32] = {0xae,0xe8,0xf1,0x50,0xdd,0xa1,0xb5,0xa8,0x38,0x80,0x6e,0x1a,0x5e,0xa6,0x82,0x7a,
+                                      0xd9,0xf3,0xc5,0x1e,0,0,0,0,0,0,0,0,0,0,0,0};
+
 /* The default probe only observes virtual calls. The optional experiment changes the four verified
    main-loop duration writes. Build and instruction guards precede both hooks and the 60 FPS pacing override. */
 void arceus_clock_init(void) {
-    static const u8 id[32] = {0xae,0xe8,0xf1,0x50,0xdd,0xa1,0xb5,0xa8,0x38,0x80,0x6e,0x1a,0x5e,0xa6,0x82,0x7a,
-                              0xd9,0xf3,0xc5,0x1e,0,0,0,0,0,0,0,0,0,0,0,0};
+    const u8* id = arceus_main_id;
     static const u64 offsets[3] = {0x278303c, 0x2783048, 0x277bef4};
     static const u32 words[3] = {0x8b21d008, 0xf0008fc8, 0x8b21d008};
     static const GuestFn wrappers[3] = {read_clock, set_mode, set_duration};
@@ -268,7 +271,7 @@ void arceus_clock_init(void) {
     experimental = 1;
     for (u32 i = 0; g_mod && i < g_mod->nmods; i++)
         if (!strcmp(g_mod->mods[i].name, "main")) mod = &g_mod->mods[i];
-    if (!mod || memcmp(mod->build_id, id, sizeof id)) {
+    if (!mod || memcmp(mod->build_id, id, sizeof arceus_main_id)) {
         WARN("arceus-clock: refused unsupported main build\n");
         return;
     }
@@ -1548,10 +1551,15 @@ static void timing_research_init(void) {
    0.85/0.80 and 0.80/0.70 scene scales. Its mode setter is separate (CC3888):
    normal mode begins at 1.0/1.0, with explicit half-size/custom/special modes.
    Keep those setters intact and skip only this automatic governor's update, by default on the PC port (=0 keeps
-   the governor). The native Vulkan render scale still controls the allocated image size. */
+   the governor). The native Vulkan render scale still controls the allocated image size. It needs nothing of the
+   clocks, so it finds the main module itself and runs at every rate, the game's own 30 FPS included */
 static void fixed_resolution_init(void) {
-    if (!main_base || !arceus_switch_enabled("SNX_ARCEUS_FIXED_RESOLUTION", 1)) return;
-    const u64 pc = main_base + 0xcc35a4;
+    if (!arceus_switch_enabled("SNX_ARCEUS_FIXED_RESOLUTION", 1)) return;
+    const SnxModInfo* mod = NULL;
+    for (u32 i = 0; g_mod && i < g_mod->nmods; i++)
+        if (!strcmp(g_mod->mods[i].name, "main")) mod = &g_mod->mods[i];
+    if (!mod || memcmp(mod->build_id, arceus_main_id, sizeof arceus_main_id)) return;
+    const u64 pc = mod->base + 0xcc35a4;
     int covered = 0;
     if (!g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
     for (u32 i = 0; i < g_mod->nfns; i++)
@@ -4292,12 +4300,12 @@ static void waza_shot_init(void) {
 }
 
 void arceus_clock_post_jit(void) {
+    fixed_resolution_init(); /* at every rate, outside the timing layer */
     if (!timing_enabled || !clocks_installed) return;
     const char* probe = getenv("SNX_ARCEUS_CAMERA_TRACE");
     camera_trace_only = main_base && !target_fps_explicit && probe && !strcmp(probe, "1");
     timer_carry_fix = arceus_switch_enabled("SNX_ARCEUS_TIMER_CARRY_FIX", 1);
     if (timer_carry_fix) LOG("arceus-timer-carry: integer timer catch-up enabled, backlog capped at 1 second\n");
-    fixed_resolution_init();
     /* Before the research probe, which compiles and keeps this wrapper's body. */
     physics_timestep_init();
     navigation_timestep_init();
