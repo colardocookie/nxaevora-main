@@ -244,11 +244,14 @@ static void message_view_probe(CPU* c, u64 entry) {
             (unsigned long long)object, before, after, (unsigned long long)(caller - main_base));
 }
 
+/* The Arceus 1.1.1 main module's build id. */
+static const u8 arceus_main_id[32] = {0xae,0xe8,0xf1,0x50,0xdd,0xa1,0xb5,0xa8,0x38,0x80,0x6e,0x1a,0x5e,0xa6,0x82,0x7a,
+                                      0xd9,0xf3,0xc5,0x1e,0,0,0,0,0,0,0,0,0,0,0,0};
+
 /* The default probe only observes virtual calls. The optional experiment changes the four verified
    main-loop duration writes. Build and instruction guards precede both hooks and the 60 FPS pacing override. */
 void arceus_clock_init(void) {
-    static const u8 id[32] = {0xae,0xe8,0xf1,0x50,0xdd,0xa1,0xb5,0xa8,0x38,0x80,0x6e,0x1a,0x5e,0xa6,0x82,0x7a,
-                              0xd9,0xf3,0xc5,0x1e,0,0,0,0,0,0,0,0,0,0,0,0};
+    const u8* id = arceus_main_id;
     static const u64 offsets[3] = {0x278303c, 0x2783048, 0x277bef4};
     static const u32 words[3] = {0x8b21d008, 0xf0008fc8, 0x8b21d008};
     static const GuestFn wrappers[3] = {read_clock, set_mode, set_duration};
@@ -273,7 +276,7 @@ void arceus_clock_init(void) {
     experimental = 1;
     for (u32 i = 0; g_mod && i < g_mod->nmods; i++)
         if (!strcmp(g_mod->mods[i].name, "main")) mod = &g_mod->mods[i];
-    if (!mod || memcmp(mod->build_id, id, sizeof id)) {
+    if (!mod || memcmp(mod->build_id, id, sizeof arceus_main_id)) {
         WARN("arceus-clock: refused unsupported main build\n");
         return;
     }
@@ -4591,10 +4594,13 @@ static void drp_battle_start(CPU* c, u64 entry) {
 }
 /* On by default (SNX_ARCEUS_DISCORD=0 turns it off). It needs the player's own application id: with neither the switch
    nor an id set it stays off without a word, and only a 1 without an id says why */
-static void discord_presence_init(void) {
-    const char* presence = getenv("SNX_ARCEUS_DISCORD");
+static int drp_wanted(void) {
     const char* app = getenv("SNX_ARCEUS_DISCORD_APP");
-    drp_presence = arceus_switch_enabled("SNX_ARCEUS_DISCORD", 1) && (presence || (app && *app));
+    return arceus_switch_enabled("SNX_ARCEUS_DISCORD", 1) && (getenv("SNX_ARCEUS_DISCORD") || (app && *app));
+}
+static void discord_presence_init(void) {
+    const char* app = getenv("SNX_ARCEUS_DISCORD_APP");
+    drp_presence = drp_wanted();
     if (!drp_presence || !main_base || !g_disp) return;
     if (!snx_discord_start(app)) {
         WARN("arceus-discord: presence off: SNX_ARCEUS_DISCORD_APP is missing or not an application id\n");
@@ -4628,8 +4634,22 @@ static void discord_presence_init(void) {
              "battle\n");
 }
 
+/* Presence ticks in the clock layer's read wrapper and reads two of its fixes' counts, so without the layer (the
+   game's own 30 FPS, SNX_ARCEUS_TIMING_FIXES=0) it is off. When it was wanted in Arceus 1.1.1, one line says why. */
+static void discord_layer_note(void) {
+    const SnxModInfo* mod = NULL;
+    for (u32 i = 0; g_mod && i < g_mod->nmods; i++)
+        if (!strcmp(g_mod->mods[i].name, "main")) mod = &g_mod->mods[i];
+    if (drp_wanted() && mod && !memcmp(mod->build_id, arceus_main_id, sizeof arceus_main_id))
+        LOG("arceus-discord: presence off: it needs the timing layer (target 60, 120 or unlocked, with "
+            "SNX_ARCEUS_TIMING_FIXES on)\n");
+}
+
 void arceus_clock_post_jit(void) {
-    if (!timing_enabled || !clocks_installed) return;
+    if (!timing_enabled || !clocks_installed) {
+        discord_layer_note();
+        return;
+    }
     const char* probe = getenv("SNX_ARCEUS_CAMERA_TRACE");
     camera_trace_only = main_base && !target_fps_explicit && probe && !strcmp(probe, "1");
     timer_carry_fix = arceus_switch_enabled("SNX_ARCEUS_TIMER_CARRY_FIX", 1);

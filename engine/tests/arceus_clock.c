@@ -32,9 +32,10 @@ void pm_unlock(PMutex* m) {
     if (hook) hook();
 }
 static unsigned waza_dependency_warnings;
-static unsigned low_fps_skip_logs, log_lines;
+static unsigned low_fps_skip_logs, log_lines, drp_layer_notes;
 void logf_(int level, const char* fmt, ...) {
     log_lines++;
+    if (strstr(fmt, "arceus-discord: presence off: it needs the timing layer")) drp_layer_notes++;
     if (level == 0 && strstr(fmt, "arceus-waza-shot: enabled without WAZA_OBJECT_FIX"))
         waza_dependency_warnings++;
     if (level == 1 && strstr(fmt, "arceus-clock: timing layer skipped at fps_limit="))
@@ -300,6 +301,43 @@ static void test_discord_default(void) {
     discord_presence_init();
     assert(!drp_presence && log_lines == lines + 1);
     main_base = saved_base, g_disp = saved_disp;
+}
+/* Without the timing layer presence is off, and says so only when it was wanted in Arceus 1.1.1 (research 20:46,
+   option c; the reviewer 20:46: the flip's own condition, not the bare switch). With the layer on, no such line */
+static void test_discord_layer_off(void) {
+    SnxModInfo main_mod = {.name = "main", .base = 4096};
+    memcpy(main_mod.build_id, arceus_main_id, sizeof main_mod.build_id);
+    SnxModule module = {.nmods = 1, .mods = &main_mod};
+    const SnxModule* const saved_mod = g_mod;
+    const u64 saved_base = main_base;
+    g_mod = &module, main_base = 0;
+    const struct {
+        const char *presence, *app;
+        unsigned notes;
+    } cases[] = {{"1", NULL, 1}, {NULL, "1234567890", 1}, {"1", "1234567890", 1}, {"0", "1234567890", 0},
+                 {NULL, NULL, 0}, {NULL, "", 0}};
+    for (int on = 0; on < 2; on++)
+        for (unsigned i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+            if (cases[i].presence) flag("SNX_ARCEUS_DISCORD", cases[i].presence);
+            else unset_flag("SNX_ARCEUS_DISCORD");
+            if (cases[i].app) flag("SNX_ARCEUS_DISCORD_APP", cases[i].app);
+            else unset_flag("SNX_ARCEUS_DISCORD_APP");
+            timing_enabled = clocks_installed = on;
+            drp_layer_notes = 0;
+            drp_ticking = 0;
+            arceus_clock_post_jit();
+            assert(drp_layer_notes == (on ? 0 : cases[i].notes));
+            assert(!__atomic_load_n(&drp_ticking, __ATOMIC_RELAXED)); /* nothing installed either way */
+        }
+    timing_enabled = clocks_installed = 0;
+    flag("SNX_ARCEUS_DISCORD", "1"); /* another main build: no Arceus line */
+    main_mod.build_id[0] ^= 1;
+    drp_layer_notes = 0;
+    arceus_clock_post_jit();
+    assert(drp_layer_notes == 0);
+    unset_flag("SNX_ARCEUS_DISCORD");
+    unset_flag("SNX_ARCEUS_DISCORD_APP");
+    g_mod = saved_mod, main_base = saved_base;
 }
 static void test_defaults_on(void) {
     static const char* const all[] = {
@@ -2711,6 +2749,7 @@ int main(void) {
     test_ride_swap();
     test_defaults_on();
     test_discord_default();
+    test_discord_layer_off();
     test_capped_fall_body();
     test_fade_slots_free();
     test_list_scroll();
