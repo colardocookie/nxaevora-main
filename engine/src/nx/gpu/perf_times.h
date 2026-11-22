@@ -680,7 +680,7 @@ extern PerfVkx g_perf_vkx;
    there, results and bytes written in B, the ms of A, B and C, the waits that blocked by kind (gpu.h's GPU_FLY_*)
    with their ms, submit()'s landings skipped and the joins that ran C */
 enum { FLYR_CALLER, FLYR_HOLD, FLYR_OWN, FLYR_IMAGE, FLYR_EMPTY, FLYR_INITIAL, FLYR_DST, FLYR_TARGET, FLYR_ARENA,
-       FLYR_N };
+       FLYR_NESTED, FLYR_N };
 typedef struct {
     uint64_t beside, today[FLYR_N], results, bytes, a_ns, b_ns, c_ns; /* atomic */
     uint64_t wait_n[5], wait_ns[5], skipped, joins;                    /* atomic: wait by GPU_FLY_* */

@@ -1294,7 +1294,7 @@ PerfBeside g_perf_bs;
 int g_perf_beside;
 size_t perf_beside_line(PerfBeside* b, uint32_t frames, char* out, size_t size) {
     static const char* const why[FLYR_N] = {"caller", "hold", "owned", "image", "empty", "initial", "dst", "target",
-                                            "arena"};
+                                            "arena", "nested"};
     static const char* const kind[5] = {"range", "target", "own", "load", "must"};
     if (!size) return 0;
     const double f = frames ? frames : 1;

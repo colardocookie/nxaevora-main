@@ -770,8 +770,10 @@ static void land_copy(void) {
     g_land_n = 0;
 }
 static void land_list(GfxOut* done);
+static u64 g_frames_done; /* vk_buf_frame_done's calls: PERF-36's A takes today's path if one ran inside gmem_ptr */
 void vk_buf_frame_done(u64 frame) {
     GfxOut *done = NULL, *done_tail = NULL;
+    g_frames_done++;
     for (GfxOut** pp = &g_out; *pp;) {
         GfxOut* o = *pp;
         if (o->frame != frame) {
@@ -859,8 +861,8 @@ static void land_list(GfxOut* done) {
         __atomic_fetch_add(&g_perf_handoff.land_loop_ns, plat_ns() - loop0, __ATOMIC_RELAXED);
         land_copy();
         for (int k = 0; k < LMS_N; k++) { /* the masked pass's counts, nested landings' too, under vk_lock */
-            __atomic_fetch_add(&g_perf_handoff.land_steps[k], g_landing_mask[k], __ATOMIC_RELAXED);
-            g_landing_mask[k] = 0;
+            const u64 steps = __atomic_exchange_n(&g_landing_mask[k], 0, __ATOMIC_RELAXED);
+            __atomic_fetch_add(&g_perf_handoff.land_steps[k], steps, __ATOMIC_RELAXED);
         }
     }
     g_out_landing--;
@@ -963,8 +965,15 @@ int vk_buf_fly_pick(u64 first, u64 last) {
             break;
         }
         g_out_landing++; /* as in today's write: its own pending result is not landed by the pointer's lookup */
+        const u64 frames_done = g_frames_done;
         u8* dst = gmem_ptr(o->addr, o->size);
         g_out_landing--;
+        /* the pointer's hooks landed a compute result, whose flush can land graphics frames (a target's flush, a
+           vk_finish): results here may be freed. Today's path, and nothing of the batch touched again */
+        if (g_frames_done != frames_done) {
+            why = FLYR_NESTED;
+            break;
+        }
         if (!dst) {
             why = FLYR_DST;
             break;

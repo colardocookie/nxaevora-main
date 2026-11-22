@@ -70,6 +70,16 @@ typedef struct {
 } Vb;
 static u32 g_vb_map_gen = 1;
 static u8* gmem_host(u64 g, u64 n) { return g + n <= GUEST ? guest + g : NULL; }
+/* a landing inside A's gmem_ptr, as a compute result's hook can make (its flush, a vk_finish): reviewer F1 */
+static void (*ptr_hook)(void);
+static u8* gmem_ptr_hooked(u64 a, u64 n) {
+    u8* p = gmem_ptr(a, n);
+    void (*h)(void) = ptr_hook;
+    ptr_hook = NULL;
+    if (h) h();
+    return p;
+}
+#define gmem_ptr gmem_ptr_hooked
 /* cmd.c's state */
 static u64 g_landed, g_gval;
 static unsigned image_frames;
@@ -317,11 +327,12 @@ static void check_threads(void) {
     printf("vulkan_beside: threads, %u accesses waited for B and saw its bytes\n", waited);
     assert(waited > 200);
 }
+static void land_first(void) { vk_buf_frame_done(1); }
 /* each reason: pick says 0, nothing in flight, nothing changed, the reason counted */
 static void check_fallbacks(void) {
     g_perf_probes = 1;
     for (int why = FLYR_HOLD; why < FLYR_N; why++) {
-        if (why == FLYR_ARENA) continue; /* no memory for the batch's list: not made to fail here */
+        if (why == FLYR_ARENA || why == FLYR_NESTED) continue; /* not made to fail here, and nested below */
         build(7, why == FLYR_EMPTY ? 0 : 30);
         if (why != FLYR_INITIAL) strip_initial();
         else
@@ -338,6 +349,20 @@ static void check_fallbacks(void) {
         g_gpu_fly_hold = g_own_any = image_due = rt_hit = 0, direct = 1;
         if (why == FLYR_INITIAL) g_out->initial = NULL;
         for (u64 f = 1; f <= FRAMES; f++) vk_buf_frame_done(f);
+        free_owned();
+    }
+    /* a frame landed inside A's gmem_ptr frees results A holds: today's path, none of them touched (ASan) */
+    for (u32 seed = 1; seed <= 40; seed++) {
+        build(seed, 30);
+        strip_initial();
+        ptr_hook = land_first;
+        const u64 before = g_perf_bs.today[FLYR_NESTED];
+        vk_lock();
+        assert(!vk_buf_fly_pick(1, FRAMES - 1) && !g_gfx_fly);
+        vk_unlock();
+        assert(g_perf_bs.today[FLYR_NESTED] == before + 1 && !ptr_hook);
+        for (GfxOut* o = g_out; o; o = o->next) assert(!o->fly);
+        for (u64 f = 2; f <= FRAMES; f++) vk_buf_frame_done(f);
         free_owned();
     }
     g_perf_probes = 0;
@@ -392,7 +417,7 @@ def main():
     for sig in ("static void out_rebase_later(", "static void cap_step("):
         body += f(buffer, sig)
     body += "static void land_count(GfxOut* d) { (void)d; }\nstatic void land_copy(void) {}\n"
-    body += "static void land_list(GfxOut* done);\n" + f(buffer, "void vk_buf_frame_done(")
+    body += "static void land_list(GfxOut* done);\nstatic u64 g_frames_done;\n" + f(buffer, "void vk_buf_frame_done(")
     body += f(buffer, "static void land_list(GfxOut* done) {")
     body += "enum {" + b(gpu_h, " GPU_FLY_RANGE,", "static inline void gpu_fly_wait(").split("};")[0] + "};\n"
     body += f(gpu_h, "static inline void gpu_fly_wait(") + f(gpu_h, "static inline void gpu_fly_wait_all(")

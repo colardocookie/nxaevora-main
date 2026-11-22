@@ -644,7 +644,8 @@ def main():
     for sig in ("static void out_rebase_later(", "static void cap_step("):
         body += function(buffer, sig)
     body += "static void land_count(GfxOut* d) { (void)d; }\nstatic void land_copy(void) {}\n"  # PERF-35's, apart
-    body += "static void land_list(GfxOut* done);\n" + function(buffer, "void vk_buf_frame_done(")
+    body += "static void land_list(GfxOut* done);\nstatic u64 g_frames_done;\n"
+    body += function(buffer, "void vk_buf_frame_done(")
     body += function(buffer, "static void land_list(GfxOut* done) {")
     body += "#undef malloc\n#undef realloc\n" + TESTS
     cc = sys.argv[1:] or ["cc", "-std=gnu11", "-O2"]
