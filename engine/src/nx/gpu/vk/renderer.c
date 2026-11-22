@@ -39,8 +39,22 @@ static u32 g_last_x, g_last_y, g_last_w, g_last_h;
 static u32 g_last_transform;
 /* vk_lock once around the hooks: each takes it again only as a depth count. Each took and dropped it on its own, and
    every drop let the lock go (vk_let_go) on the GPU thread's writes, the constant buffer uploads before most draws */
+/* PERF-37 (research 2026-11-22 14:39, PERF_PROBES): what the hook finds pending over the bytes by kind, before it
+   acts, so a run can tell whether it could answer "nothing pending" without vk_lock */
+static void before_write_note(u64 gva, u64 size) {
+    unsigned k = 0;
+    if (size) {
+        if (vk_release_pages_hit(gva, size)) k |= 1u << PBW_RELEASE;
+        if (vk_buf_pages_hit(gva, size)) k |= 1u << PBW_RESULT;
+        if (vk_compute_pages_hit(gva, size)) k |= 1u << PBW_COMPUTE;
+        if (vk_gfx_image_pending(gva, size)) k |= 1u << PBW_IMAGE;
+        if (vk_rt_pages_hit(gva, size)) k |= 1u << PBW_TARGET;
+    }
+    perf_bw_note(&g_perf_bw, !size, k, g_gfx_img_any != 0);
+}
 static void vkr_before_write(u64 gva, u64 size) {
     vk_lock();
+    if (g_perf_probes) before_write_note(gva, size);
     if (size) vk_release_need(gva, size);
     vk_buf_before_write(gva, size);
     if (size)

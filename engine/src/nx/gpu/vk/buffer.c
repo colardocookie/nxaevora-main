@@ -1344,6 +1344,7 @@ static void mem_need_reason(u64 gva, u64 len, int reason) {
 void vk_buf_mem_need(u64 gva, u64 len) { mem_need_reason(gva, len, WB_READ); }
 int vk_buf_pending_any(void) { return g_gfx_any; }
 u64 vk_buf_adds(void) { return g_out_pages.adds; }
+int vk_buf_pages_hit(u64 gva, u64 len) { return len && pend_hit(&g_out_pages, gva, len); } /* PERF-37 */
 int vk_buf_pending_unsubmitted(void) {
     unlocked_note(VKU_UNSUBMITTED);
     for (GfxOut* o = g_out; o; o = o->next)

@@ -611,6 +611,7 @@ static void cs_mem_need(u64 a, u64 n) {
                 }
     }
 }
+int vk_compute_pages_hit(u64 a, u64 n) { return n && pend_hit(&g_pages, a, n); } /* PERF-37, under vk_lock */
 void vk_compute_mem_need(u64 a, u64 n) {
     vk_lock();
     if (pend_hit(&g_pages, a, n)) cs_mem_need(a, n);

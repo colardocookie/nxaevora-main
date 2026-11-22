@@ -302,6 +302,7 @@ static void release_through(u64 gate, u64 cgate) {
 }
 /* SNX_ARCEUS_PERF_SMALL bit 1 (PERF-34, research 12:53): release() wakes the release thread only when it moved
    g_rheld. The thread's one wait ends on g_rtail != g_rheld alone, and a wake that moved neither cannot end it */
+int vk_release_pages_hit(u64 gva, u64 len) { return len && pend_hit(&g_rpages, gva, len); } /* PERF-37 */
 static void release_wake(int moved) {
     if (!(g_perf_small & PSM_WAKE) || moved) pc_broadcast(&g_rcv);
 }

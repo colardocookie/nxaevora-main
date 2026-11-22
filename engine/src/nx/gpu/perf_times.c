@@ -1280,6 +1280,16 @@ void perf_wait_note(int kind, const void* at, uint64_t ns) { perf_waits_note(&g_
 int g_vk_hold_phase;
 PerfWaits g_perf_vklock;
 PerfVkx g_perf_vkx;
+PerfBw g_perf_bw;
+void perf_bw_note(PerfBw* b, int whole, unsigned kinds, int img_any) {
+    if (t_perf_who != PTH_GPU) return;
+    __atomic_fetch_add(&b->calls, 1, __ATOMIC_RELAXED);
+    if (whole) __atomic_fetch_add(&b->whole, 1, __ATOMIC_RELAXED);
+    if (!whole && !kinds) __atomic_fetch_add(&b->none, 1, __ATOMIC_RELAXED);
+    if (img_any) __atomic_fetch_add(&b->img_any, 1, __ATOMIC_RELAXED);
+    for (int k = 0; k < PBW_N; k++)
+        if (kinds >> k & 1) __atomic_fetch_add(&b->kind[k], 1, __ATOMIC_RELAXED);
+}
 PerfBeside g_perf_bs;
 int g_perf_beside;
 size_t perf_beside_line(PerfBeside* b, uint32_t frames, char* out, size_t size) {
@@ -1464,7 +1474,10 @@ size_t perf_vklock_line(PerfWaits* w, PerfVkx* x, uint32_t frames, char* out, si
                      "targets made pending over pages, own_begin ownership armed, holds the release thread's and "
                      "those with an owned range, unlocked the result calls made without vk_lock (pending/unsubmitted/"
                      "copy_writable/commit/barrier/out_new), composed captures and those whose bytes meet a "
-                     "submitted frame's result)",
+                     "submitted frame's result; then PERF-37, the GPU thread's guest-write hook (vkr_before_write) a "
+                     "frame: calls, those for every byte, those finding nothing pending, those finding a release, a "
+                     "result, a compute result, a storage image or a render target over their bytes, and those with "
+                     "an image pending)",
                      frames);
     for (int a = 0; a < PWHO_N; a++)
         for (int k = 0; k < VKH_N; k++)
@@ -1492,6 +1505,12 @@ size_t perf_vklock_line(PerfWaits* w, PerfVkx* x, uint32_t frames, char* out, si
               take64(&x->own_begin) / f, take64(&x->holds) / f, take64(&x->holds_owned) / f);
     for (int k = 0; k < VKU_N; k++) at = putf(out, size, at, "%s%.1f", k ? "/" : "", take64(&x->unlocked[k]) / f);
     at = putf(out, size, at, " composed=%.1f/%.1f", take64(&x->composed) / f, take64(&x->composed_submitted) / f);
+    at = putf(out, size, at, " before_write=%.1f whole=%.1f none=%.1f release=%.1f result=%.1f compute=%.1f "
+              "image=%.1f target=%.1f img_any=%.1f", take64(&g_perf_bw.calls) / f, take64(&g_perf_bw.whole) / f,
+              take64(&g_perf_bw.none) / f, take64(&g_perf_bw.kind[PBW_RELEASE]) / f,
+              take64(&g_perf_bw.kind[PBW_RESULT]) / f, take64(&g_perf_bw.kind[PBW_COMPUTE]) / f,
+              take64(&g_perf_bw.kind[PBW_IMAGE]) / f, take64(&g_perf_bw.kind[PBW_TARGET]) / f,
+              take64(&g_perf_bw.img_any) / f);
     return at < size ? at : size - 1;
 }
 void perf_mem_alloc(PerfMem* m, int site, uint64_t bytes) {

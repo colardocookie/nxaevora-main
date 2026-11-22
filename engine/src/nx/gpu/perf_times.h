@@ -688,6 +688,15 @@ typedef struct {
 extern PerfBeside g_perf_bs;
 extern int g_perf_beside; /* SNX_ARCEUS_PERF_BESIDE=1 and what it needs (main.c) */
 size_t perf_beside_line(PerfBeside* b, uint32_t frames, char* out, size_t size);
+/* PERF-37 (research 2026-11-22 14:39), with the probes: the GPU thread's calls of the renderer's guest-write hook
+   (vkr_before_write), those for every byte (size 0), and what the others find pending over their bytes by kind
+   (a bit each, PBW_*), with those that find nothing and those made while a storage image result is pending */
+enum { PBW_RELEASE, PBW_RESULT, PBW_COMPUTE, PBW_IMAGE, PBW_TARGET, PBW_N };
+typedef struct {
+    uint64_t calls, whole, none, img_any, kind[PBW_N]; /* atomic */
+} PerfBw;
+extern PerfBw g_perf_bw;
+void perf_bw_note(PerfBw* b, int whole, unsigned kinds, int img_any); /* the GPU thread's only */
 size_t perf_vklock_line(PerfWaits* w, PerfVkx* x, uint32_t frames, char* out, size_t size);
 void perf_copy_wpage(PerfCopies* c, uint64_t page, uint64_t frame);
 /* PERF-23's, the same, with the stamps' counts since the last and the cost of one clock read. real NULL: the record as

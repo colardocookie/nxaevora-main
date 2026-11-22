@@ -883,6 +883,18 @@ static void test_vklock(void) {
     for (const char* c = strstr(line, " callers "); (c = strstr(c + 1, " gpu@"));) callers++;
     CHECK(callers == 8); /* 12 GPU-thread callers, the 8 with most ms */
     perf_vklock_line(&w, &x, 600, line, sizeof line); /* taken: nothing again */
+    CHECK(strstr(line, " before_write=0.0 whole=0.0 none=0.0 "));
+    /* PERF-37: the GPU thread's calls only, each kind a bit, none only for a call with a size that found nothing */
+    perf_who_set(PTH_GPU);
+    for (int i = 0; i < 600 * 3; i++) perf_bw_note(&g_perf_bw, 0, 0, i % 3 == 0);
+    for (int i = 0; i < 600; i++) perf_bw_note(&g_perf_bw, 0, 1u << PBW_RESULT | 1u << PBW_TARGET, 0);
+    for (int i = 0; i < 300; i++) perf_bw_note(&g_perf_bw, 1, 0, 0);
+    perf_who_set(PTH_RELEASE);
+    perf_bw_note(&g_perf_bw, 0, 1u << PBW_RELEASE, 1);
+    perf_who_set(PWHO_OTHER);
+    perf_vklock_line(&w, &x, 600, line, sizeof line);
+    CHECK(strstr(line, " before_write=4.5 whole=0.5 none=3.0 release=0.0 result=1.0 compute=0.0 image=0.0 target=1.0 "
+                       "img_any=1.0"));
     CHECK(strstr(line, ") lost=0 callers rt_add=0.0 ") && !strstr(line, "@") && strstr(line, " composed=0.0/0.0"));
 }
 static void test_p29(void) {
