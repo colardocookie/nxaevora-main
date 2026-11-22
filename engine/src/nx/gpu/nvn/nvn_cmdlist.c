@@ -45,7 +45,7 @@ int nvn_oplist_append(NvnOpList* list, NvnOpCode code, const void* payload, uint
     }
     NvnOpHeader header = {(uint32_t)code, body};
     memcpy(list->data + list->used, &header, sizeof header);
-    memcpy(list->data + list->used + sizeof header, payload, bytes);
+    if (bytes) memcpy(list->data + list->used + sizeof header, payload, bytes); /* NULL with 0 bytes */
     memset(list->data + list->used + sizeof header + bytes, 0, body - bytes);
     if (g_nvn_oplist_marks && (code == NVN_OP_FENCE_SYNC || code == NVN_OP_WAIT_SYNC || code == NVN_OP_CALL))
         mark(list, list->used);
