@@ -509,6 +509,16 @@ static void blink_fix_init(void) {
 }
 
 
+/* The camera input (193C04C) and the battle sequence update (9DBEAC) run from a JIT body of their own, selected by
+   one equivalent word at at: CBZ XZR for the camera's B, ADD X19,X0,#0 for the sequence's MOV. Their fixes and
+   Discord presence's counters without the timing layer read the function, its guard words and that word here. */
+typedef struct { u32 offset, size, guards, guard_at[4], guard[4], at, word; } ArceusBodySite;
+enum { BODY_CAMERA_INPUT, BODY_BATTLE_SEQUENCE, BODY_SITES };
+static const ArceusBodySite body_sites[BODY_SITES] = {
+    {0x193c04c, 0x278, 3, {0, 0x130, 0x274}, {0xfc1b0fec, 0x1e222862, 0x17ffffee}, 0x274, 0xb4fffddf},
+    {0x9dbeac, 0x598, 4, {0, 0x2c, 0x534, 0x538}, {0x6db923e9, 0xaa0003f3, 0xbd40f262, 0x1e222821}, 0x2c, 0x91000013},
+};
+
 static GuestFn camera_input_original;
 static u64 camera_input_calls;
 static int camera_trace_only;
@@ -567,18 +577,19 @@ static void camera_input_update(CPU* c, u64 entry) {
 }
 static void camera_input_init(void) {
     if (!arceus_switch_enabled("SNX_ARCEUS_CAMERA_INPUT_FIX", 1) && !camera_trace_only) return;
-    u64 pc = main_base + 0x193c04c;
+    const ArceusBodySite* s = &body_sites[BODY_CAMERA_INPUT];
+    u64 pc = main_base + s->offset;
     int covered = 0;
     if (!g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
     for (u32 i = 0; i < g_mod->nfns; i++)
-        if (g_mod->fn_lo[i] == pc && g_mod->fn_len[i] == 0x278) covered = 1;
-    if (!covered || pc < g_code_lo || pc + 0x278 > g_code_hi || !readable(pc, 0x278) ||
-        gr32(pc) != 0xfc1b0fec || gr32(pc + 0x130) != 0x1e222862 ||
-        gr32(pc + 0x274) != 0x17ffffee) {
+        if (g_mod->fn_lo[i] == pc && g_mod->fn_len[i] == s->size) covered = 1;
+    if (!covered || pc < g_code_lo || pc + s->size > g_code_hi || !readable(pc, s->size) ||
+        gr32(pc + s->guard_at[0]) != s->guard[0] || gr32(pc + s->guard_at[1]) != s->guard[1] ||
+        gr32(pc + s->guard_at[2]) != s->guard[2]) {
         WARN("arceus-camera-input: refused instruction/function guard\n"); return;
     }
-    gw32(pc + 0x274, 0xb4fffddf); /* Equivalent CBZ XZR, pc+22c. */
-    jit_code_changed(pc, 0x278);
+    gw32(pc + s->at, s->word); /* Equivalent CBZ XZR, pc+22c. */
+    jit_code_changed(pc, s->size);
     camera_input_original = jit_wait(pc);
     if (!camera_input_original) { WARN("arceus-camera-input: original body did not compile\n"); return; }
     __atomic_store_n(&g_disp[(pc - g_code_lo) / 4], camera_input_update, __ATOMIC_RELEASE);
@@ -1415,19 +1426,20 @@ static void battle_sequence_fix_init(void) {
         return;
     }
     if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
-    const u64 pc = main_base + 0x9dbeac;
+    const ArceusBodySite* s = &body_sites[BODY_BATTLE_SEQUENCE];
+    const u64 pc = main_base + s->offset;
     int covered = 0;
     for (u32 i = 0; i < g_mod->nfns; i++)
-        if (g_mod->fn_lo[i] == pc && g_mod->fn_len[i] == 0x598) covered = 1;
-    if (!covered || pc < g_code_lo || pc + 0x598 > g_code_hi || !readable(pc, 0x598) ||
-        gr32(pc) != 0x6db923e9 || gr32(pc + 0x2c) != 0xaa0003f3 ||
-        gr32(pc + 0x534) != 0xbd40f262 || gr32(pc + 0x538) != 0x1e222821) {
+        if (g_mod->fn_lo[i] == pc && g_mod->fn_len[i] == s->size) covered = 1;
+    if (!covered || pc < g_code_lo || pc + s->size > g_code_hi || !readable(pc, s->size) ||
+        gr32(pc + s->guard_at[0]) != s->guard[0] || gr32(pc + s->guard_at[1]) != s->guard[1] ||
+        gr32(pc + s->guard_at[2]) != s->guard[2] || gr32(pc + s->guard_at[3]) != s->guard[3]) {
         WARN("arceus-battle-sequence: refused instruction/function guard\n");
         return;
     }
     /* Equivalent MOV X19,X0 -> ADD X19,X0,#0 selects an independent JIT body. */
-    gw32(pc + 0x2c, 0x91000013);
-    jit_code_changed(pc, 0x598);
+    gw32(pc + s->at, s->word);
+    jit_code_changed(pc, s->size);
     battle_sequence_original = jit_wait(pc);
     if (!battle_sequence_original) {
         WARN("arceus-battle-sequence: compile failed\n");
@@ -4304,9 +4316,11 @@ static void waza_shot_init(void) {
    given or returned. The region and the battle kind files come from fs.c (D2, D3). */
 enum { DRPS_AREA, DRPS_BATTLE, DRPS_TEXT_SET, DRPS_SITES };
 static GuestFn drp_original[DRPS_SITES];
-/* drp_presence: on. The state for the host half is written under drp_lock by whichever game thread runs a wrapper or
-   the tick. */
+/* drp_presence: on. drp_base: the main module's base, main_base with the timing layer, the module's own without it
+   (main_base stays 0 there). The state for the host half is written under drp_lock by whichever game thread runs a
+   wrapper or the tick. */
 static int drp_presence;
+static u64 drp_base;
 static PMutex drp_lock = PMUTEX_INIT;
 static SnxDrpValues drp_values = {.region = -1, .activity = DRP_TITLE};
 static u64 drp_unread;
@@ -4351,7 +4365,7 @@ static void drp_area_name(CPU* c, u64 entry) {
 /* The party, as the script's GetMonsNo and GetLevel bindings reach it (D92288 with -1): a singleton through the slot
    main+4279680, +D0, +58. That object holds the six Pokémon objects at +58 to +80 and their count at +88. */
 static u64 drp_party_object(void) {
-    const u64 slot = main_base + 0x4279680, holder = readable(slot, 8) ? gr64(slot) : 0;
+    const u64 slot = drp_base + 0x4279680, holder = readable(slot, 8) ? gr64(slot) : 0;
     const u64 single = readable(holder, 8) ? gr64(holder) : 0, p = readable(single + 0xd0, 8) ? gr64(single + 0xd0) : 0;
     return readable(p + 0x58, 8) ? gr64(p + 0x58) : 0;
 }
@@ -4367,14 +4381,14 @@ static u64 drp_drops;
 static int drp_d2_on(void) {
     int on = __atomic_load_n(&drp_d2, __ATOMIC_RELAXED);
     if (on >= 0) return on;
-    const u64 table = main_base + 0x3984e57; /* the getters' table of block positions, 32 rows of 4 */
+    const u64 table = drp_base + 0x3984e57; /* the getters' table of block positions, 32 rows of 4 */
     on = readable(table, 128) && snx_pk_table_same((const uint8_t*)GP(table));
     if (!on) WARN("arceus-discord: the game's block order differs from ours: no species, levels or party\n");
     __atomic_store_n(&drp_d2, on, __ATOMIC_RELAXED);
     return on;
 }
 static int drp_mon_read(u64 object, SnxDrpMon* out) {
-    if (!drp_d2_on() || !readable(object, 0xa0) || gr64(object) != main_base + DRP_MON_VTABLE) return DRP_MON_NONE;
+    if (!drp_d2_on() || !readable(object, 0xa0) || gr64(object) != drp_base + DRP_MON_VTABLE) return DRP_MON_NONE;
     const u64 data = gr64(object + 0x98);
     if (!readable(data, 0x38)) return DRP_MON_NONE;
     const u64 lock = __atomic_load_n((const u64*)GP(data + 0x30), __ATOMIC_ACQUIRE);
@@ -4456,7 +4470,7 @@ static u64 drp_rd(u64 at) { return at && readable(at, 8) ? gr64(at) : 0; }
    reads it, then [X+D0] (823C00) and 834074's [[[[c+68]+98]+370]+8]. 0 when a link is missing or the table is not
    readable for its five sides. */
 static u64 drp_battle_table(void) {
-    const u64 x = drp_rd(drp_rd(drp_rd(drp_rd(main_base + 0x4279580)) + 0xb0) + 0xe0);
+    const u64 x = drp_rd(drp_rd(drp_rd(drp_rd(drp_base + 0x4279580)) + 0xb0) + 0xe0);
     const u64 t = drp_rd(drp_rd(drp_rd(drp_rd(drp_rd(x + 0xd0) + 0x68) + 0x98) + 0x370) + 8);
     return readable(t, 5 * 0x38 + 1) ? t : 0;
 }
@@ -4468,11 +4482,11 @@ static u64 drp_battle_first(u64 t, unsigned side) {
 static int drp_index0_side(u64 m) {
     if (!readable(m + 0x110, 4)) return -1;
     const u32 mode = *(const u32*)GP(m + 0x110);
-    u64 table = mode == 0 ? main_base + 0x397eb50 : mode == 2 ? main_base + 0x397ebc8 : 0;
+    u64 table = mode == 0 ? drp_base + 0x397eb50 : mode == 2 ? drp_base + 0x397ebc8 : 0;
     if (mode == 1) {
         const u64 b = drp_rd(m + 0x58);
         const unsigned kind = readable(b + 0x55, 1) ? *(const u8*)GP(b + 0x55) : 0;
-        table = kind - 1 < 5 ? drp_rd(main_base + 0x41767f8 + (kind - 1) * 8ull) : main_base + 0x397eb68;
+        table = kind - 1 < 5 ? drp_rd(drp_base + 0x41767f8 + (kind - 1) * 8ull) : drp_base + 0x397eb68;
     }
     return table && readable(table, 4) ? (int)*(const u32*)GP(table) : -1;
 }
@@ -4495,6 +4509,24 @@ static void drp_active_read(void) {
     pm_unlock(&drp_lock);
 }
 
+/* Without the timing layer (SNX_ARCEUS_DISCORD_BARE=1, DISCORD-30, research 23:29) the fixes' two counters are
+   counted by wrappers of their own, on the fixes' own JIT bodies (body_sites), and do nothing else */
+static GuestFn drp_bare_body[BODY_SITES];
+/* as the camera input fix counts: the object readable, and only a call that returned */
+static void drp_bare_camera(CPU* c, u64 entry) {
+    const u64 return_pc = c->x[30];
+    const int counted = readable(c->x[0], 0x444);
+    drp_bare_body[BODY_CAMERA_INPUT](c, entry);
+    if (counted && c->pc == return_pc) __atomic_add_fetch(&camera_input_calls, 1, __ATOMIC_RELAXED);
+}
+/* as the battle sequence fix counts: every call, at its entry */
+static void drp_bare_sequence(CPU* c, u64 entry) {
+    __atomic_add_fetch(&battle_sequence_calls, 1, __ATOMIC_RELAXED);
+    drp_bare_body[BODY_BATTLE_SEQUENCE](c, entry);
+}
+/* the fix's counter or this one */
+static int drp_sequence_counted(void) { return battle_sequence_original || drp_bare_body[BODY_BATTLE_SEQUENCE]; }
+
 /* A battle ends when the battle effect sequences (9DBEAC, the battle sequence fix's wrapper and its counter) have
    not run for 3 s, or at an area call, whichever first (DRP-P3, research 09:00). Inside the battles seen they ran in
    every second, menus included, and outside them never. drp_battle_since: the start, or the counter's last move. */
@@ -4504,10 +4536,10 @@ static void drp_tick(void) {
     if (now < next || !__atomic_compare_exchange_n(&drp_next_tick, &(u64){next}, now + 1000000000ull, 0,
                                                      __ATOMIC_RELAXED, __ATOMIC_RELAXED))
         return;
-    const u64 calls = battle_sequence_original ? __atomic_load_n(&battle_sequence_calls, __ATOMIC_RELAXED) : 0;
+    const u64 calls = drp_sequence_counted() ? __atomic_load_n(&battle_sequence_calls, __ATOMIC_RELAXED) : 0;
     pm_lock(&drp_lock);
     if (calls != drp_battle_seen) drp_battle_seen = calls, drp_battle_since = now;
-    const int quiet = battle_sequence_original && snx_drp_battle_over(1, now, drp_battle_since);
+    const int quiet = drp_sequence_counted() && snx_drp_battle_over(1, now, drp_battle_since);
     /* the title screen until the player's camera first takes input in the field (the camera input fix's wrapper,
        20 to 46 s into DRP-P3 to P4), or an area call. The party's data is there from the boot, so it cannot tell
        (DRP-P4). Both ends are decided and made in one hold of the lock, so a battle starting meanwhile stays. */
@@ -4598,14 +4630,12 @@ static int drp_wanted(void) {
     const char* app = getenv("SNX_ARCEUS_DISCORD_APP");
     return arceus_switch_enabled("SNX_ARCEUS_DISCORD", 1) && (getenv("SNX_ARCEUS_DISCORD") || (app && *app));
 }
-static void discord_presence_init(void) {
-    const char* app = getenv("SNX_ARCEUS_DISCORD_APP");
-    drp_presence = drp_wanted();
-    if (!drp_presence || !main_base || !g_disp) return;
-    if (!snx_discord_start(app)) {
+/* The host half and the three readers, at drp_base, for both paths. 0 when the id is missing or not one: off. */
+static int drp_start(void) {
+    if (!snx_discord_start(getenv("SNX_ARCEUS_DISCORD_APP"))) {
         WARN("arceus-discord: presence off: SNX_ARCEUS_DISCORD_APP is missing or not an application id\n");
         drp_presence = 0;
-        return;
+        return 0;
     }
     static const struct { u32 offset, word; GuestFn wrapper; const char* name; } sites[DRPS_SITES] = {
         {0x1eb2a7c, 0xf9403408, drp_area_name, "GetAreaName"},
@@ -4613,7 +4643,7 @@ static void discord_presence_init(void) {
         {0xfc20c8, 0xf81d0ff5, drp_text_set, "the message text's line (FC20C8)"},
     };
     for (unsigned k = 0; k < DRPS_SITES; k++) {
-        const u64 pc = main_base + sites[k].offset;
+        const u64 pc = drp_base + sites[k].offset;
         if (pc < g_code_lo || pc >= g_code_hi || !readable(pc, 4) || gr32(pc) != sites[k].word ||
             !g_disp[(pc - g_code_lo) / 4]) {
             WARN("arceus-discord: %s left alone: missing or changed entry\n", sites[k].name);
@@ -4623,6 +4653,14 @@ static void discord_presence_init(void) {
         __atomic_store_n(&g_disp[(pc - g_code_lo) / 4], sites[k].wrapper, __ATOMIC_RELEASE);
         LOG("arceus-discord: read-only reader on %s (main+%x)\n", sites[k].name, sites[k].offset);
     }
+    return 1;
+}
+/* With the timing layer, base its main_base */
+static void discord_presence_init(u64 base) {
+    drp_presence = drp_wanted();
+    if (!drp_presence || !base || !g_disp) return;
+    drp_base = base;
+    if (!drp_start()) return;
     /* the tick needs the clock layer's read wrapper, which runs it on the game's threads. The clock layer is on here
        (arceus_clock_post_jit), its two fixes may not be (research 01:25 item 4). */
     __atomic_store_n(&drp_ticking, 1, __ATOMIC_RELEASE);
@@ -4634,20 +4672,74 @@ static void discord_presence_init(void) {
              "battle\n");
 }
 
-/* Presence ticks in the clock layer's read wrapper and reads two of its fixes' counts, so without the layer (the
-   game's own 30 FPS, SNX_ARCEUS_TIMING_FIXES=0) it is off. When it was wanted in Arceus 1.1.1, one line says why. */
-static void discord_layer_note(void) {
+/* Without the timing layer the tick runs on the clock read's own dispatch entry (no word changed), as the layer's
+   wrapper there runs it */
+static GuestFn drp_bare_clock;
+static void drp_bare_read(CPU* c, u64 entry) {
+    if (__atomic_load_n(&drp_ticking, __ATOMIC_RELAXED)) drp_tick();
+    drp_bare_clock(c, entry);
+}
+/* A counter at base on its fix's own JIT body, with the fix's guards (body_sites). 0 when refused. */
+static int drp_bare_counter(unsigned k, u64 base) {
+    static const GuestFn counters[BODY_SITES] = {drp_bare_camera, drp_bare_sequence};
+    const ArceusBodySite* s = &body_sites[k];
+    const u64 pc = base + s->offset;
+    int covered = 0;
+    if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return 0;
+    for (u32 i = 0; i < g_mod->nfns; i++)
+        if (g_mod->fn_lo[i] == pc && g_mod->fn_len[i] == s->size) covered = 1;
+    if (!covered || pc < g_code_lo || pc + s->size > g_code_hi || !readable(pc, s->size)) return 0;
+    for (unsigned g = 0; g < s->guards; g++)
+        if (gr32(pc + s->guard_at[g]) != s->guard[g]) return 0;
+    gw32(pc + s->at, s->word);
+    jit_code_changed(pc, s->size);
+    if (!(drp_bare_body[k] = jit_wait(pc))) return 0;
+    __atomic_store_n(&g_disp[(pc - g_code_lo) / 4], counters[k], __ATOMIC_RELEASE);
+    return 1;
+}
+/* DISCORD-30 (research 23:29): presence without the timing layer, base the main module's. The clock read entry is
+   checked before anything starts, then the host half and readers, the two counters, and the tick last. */
+static void discord_presence_init_bare(u64 base) {
+    const u64 clock = base + 0x278303c;
+    if (!g_disp || clock < g_code_lo || clock >= g_code_hi || !readable(clock, 4) || gr32(clock) != 0x8b21d008 ||
+        !g_disp[(clock - g_code_lo) / 4]) {
+        WARN("arceus-discord: presence off: the clock read entry (main+278303c) is missing or changed\n");
+        return;
+    }
+    drp_base = base, drp_presence = 1;
+    if (!drp_start()) return;
+    const int camera = drp_bare_counter(BODY_CAMERA_INPUT, base);
+    const int sequence = drp_bare_counter(BODY_BATTLE_SEQUENCE, base);
+    drp_bare_clock = g_disp[(clock - g_code_lo) / 4];
+    __atomic_store_n(&g_disp[(clock - g_code_lo) / 4], drp_bare_read, __ATOMIC_RELEASE);
+    __atomic_store_n(&drp_ticking, 1, __ATOMIC_RELEASE);
+    LOG("arceus-discord: EXPERIMENT: without the timing layer: the tick on the clock read (main+278303c), counts on "
+        "the camera input (main+193c04c%s) and the battle sequence update (main+9dbeac%s)\n",
+        camera ? "" : ", refused", sequence ? "" : ", refused");
+    if (!sequence) WARN("arceus-discord: without the battle sequence count a battle ends only at an area name, which "
+                        "most battles never reach\n");
+    if (!camera) WARN("arceus-discord: without the camera input count the title screen status stays until the first "
+                      "battle\n");
+}
+
+/* Presence ticks in the clock layer's read wrapper and reads two of its fixes' counts. Without the layer (the game's
+   own 30 FPS, SNX_ARCEUS_TIMING_FIXES=0) it runs only with SNX_ARCEUS_DISCORD_BARE=1, and is off otherwise. When
+   it was wanted in Arceus 1.1.1 and is off, one line says why. */
+static void discord_layer_off(void) {
     const SnxModInfo* mod = NULL;
     for (u32 i = 0; g_mod && i < g_mod->nmods; i++)
         if (!strcmp(g_mod->mods[i].name, "main")) mod = &g_mod->mods[i];
-    if (drp_wanted() && mod && !memcmp(mod->build_id, arceus_main_id, sizeof arceus_main_id))
+    if (!drp_wanted() || !mod || memcmp(mod->build_id, arceus_main_id, sizeof arceus_main_id)) return;
+    const char* bare = getenv("SNX_ARCEUS_DISCORD_BARE");
+    if (bare && !strcmp(bare, "1")) discord_presence_init_bare(mod->base);
+    else
         LOG("arceus-discord: presence off: it needs the timing layer (target 60, 120 or unlocked, with "
             "SNX_ARCEUS_TIMING_FIXES on)\n");
 }
 
 void arceus_clock_post_jit(void) {
     if (!timing_enabled || !clocks_installed) {
-        discord_layer_note();
+        discord_layer_off();
         return;
     }
     const char* probe = getenv("SNX_ARCEUS_CAMERA_TRACE");
@@ -4693,5 +4785,5 @@ void arceus_clock_post_jit(void) {
     camera_input_init();
     camera_rate_init();
     field_message_probe_init();
-    discord_presence_init();
+    discord_presence_init(main_base);
 }
