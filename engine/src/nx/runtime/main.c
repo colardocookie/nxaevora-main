@@ -11,6 +11,7 @@
 #include "common/utilities/common.h"
 #include "common/utilities/exit_codes.h"
 #include "common/utilities/ini_lines.h"
+#include "common/utilities/progress.h"
 #include "nx/gpu/nvn/diag/draw_record.h"
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/nvn/nvn_native.h"
@@ -559,6 +560,7 @@ static void frontend_loop(void) {
     snx_save_before_exit();
     LOG("Exit.\n");
     snx_tracy_shutdown();
+    snx_progress_done(SNX_PROGRESS_STAGE_RUN);
     plat_exit_now(SNX_EXIT_OK);
 }
 
@@ -622,9 +624,11 @@ static void prepare_wait(const char* title) {
     int shown = 0, themed = 0, n = 0, stalls = 0;
     char ended[96] = "", how[96];
     if (g_settings.prepare_shaders != 2 || !g_renderer->prepare) return;
+    snx_progress_stage(SNX_PROGRESS_STAGE_PREPARE);
     g_renderer->prepare(&p);
     if (p.done) { /* nothing to make (shaders are recorded, or the renderer makes none) */
         unattended_start();
+        snx_progress_done(SNX_PROGRESS_STAGE_PREPARE);
         return;
     }
     for (;;) {
@@ -701,6 +705,7 @@ static void prepare_wait(const char* title) {
         (unsigned long long)((plat_ns() - t0) / 1000000u), g_quit ? "would have started" : "started", p.shipped,
         p.pipes_made, p.pipes, how, ended);
     unattended_start(); /* scripted presses and the timed exit count from the game's start */
+    snx_progress_done(SNX_PROGRESS_STAGE_PREPARE);
 }
 
 /* ---- startup ---- */
@@ -753,6 +758,8 @@ int snx_main(int argc, char** argv) {
     snx_error_sink(log_error_line);
     /* the guest's address space before the game's code, which would take a share of a small one */
     mem_reserve();
+    /* the start stage opens before the code loads: a fatal before the window still writes its error line */
+    snx_progress_stage(SNX_PROGRESS_STAGE_START);
     /* the code before anything is written: a mistyped --game leaves no .ini and no log behind */
     mod = load_module(module);
     if (mod->abi != SNX_ABI) {
@@ -771,7 +778,7 @@ int snx_main(int argc, char** argv) {
         char key[64];
         if (!strcmp(arg, "-v")) ini_override("log", "2");
         if (strncmp(arg, "--", 2) || !eq || (size_t)(eq - arg - 2) >= sizeof key || !strncmp(arg, "--game=", 7) ||
-            !strncmp(arg, "--fullscreen=", 13))
+            !strncmp(arg, "--fullscreen=", 13) || !strncmp(arg, "--progress=", 11))
             continue;
         memcpy(key, arg + 2, (size_t)(eq - arg - 2));
         key[eq - arg - 2] = 0;
@@ -876,6 +883,7 @@ int snx_main(int argc, char** argv) {
         addons_line(addons, sizeof addons);
         if (addons[0]) LOG("game: played with %s\n", addons);
         video_init(title, addons);
+        snx_progress_done(SNX_PROGRESS_STAGE_START);
     }
     if (g_settings.profiler) {
 #if defined(_WIN32)
@@ -886,9 +894,11 @@ int snx_main(int argc, char** argv) {
 #endif
     }
     prepare_wait(title);
-    if (!g_quit)
+    if (!g_quit) {
+        snx_progress_stage(SNX_PROGRESS_STAGE_RUN);
         kernel_run_main(mod->mods[0].base + mod->mods[0].text_off, mod->main_stack, (int)mod->main_prio,
                         (int)mod->main_core);
+    }
     frontend_loop();
     status = SNX_EXIT_OK;
 done:

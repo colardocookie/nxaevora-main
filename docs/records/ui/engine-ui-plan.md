@@ -351,7 +351,7 @@ One header holds the named constants. The proposal is `engine/src/common/utiliti
 | 5 | Start failed before the renderer runs: the settings file is not readable, or Vulkan or the renderer did not start |
 | 6 | Crash of the game: `fatal`, a crash report or an unhandled exception |
 | 7 | Setting value refused: `settings set` and `settings check` |
-| 8 | The game ended with a nonzero code. The code goes to the log and to `game_code` of the exit line |
+| 8 | The game ended with a nonzero code. The code goes to the log and to `game_code` of the `run` stage's error line |
 | 126 | POSIX only: a driver stage program could not be prepared (process group, terminal or working directory) |
 | 127 | POSIX only: a driver stage program could not be started (exec failed) |
 | 130 | Stopped by the user (Ctrl+C). This value does not change |
@@ -364,8 +364,15 @@ Windows a start failure is 1.
 
 `--progress=jsonl` works for `recompile` and `run`. Then stdout carries only JSON Lines and the human text goes
 to stderr. Each line is one object with `"v":1`, `"stage"` and `"event"`, and the optional fields of the event.
-The stages are `input`, `extract`, `recompile`, `link`, `build`, `prepare` (shader preparation), `start` (window)
-and `run`.
+The stages are `input`, `recompile`, `build`, `prepare` (shader preparation), `start` (window) and `run`. `extract`
+is not written: the command path loads the folder with `snx_load_program` and has no extraction step. `link` is not
+written: the link is inside the module build. With `--quiet` the stream has no `progress` lines.
+
+The outermost command process writes the exit line. A raw folder recompile runs in the driver and writes `input`
+(the target check and `snx_load_program`), `recompile` (the module build) and `build` (the runtime build, the
+deploy and `Built`). For a prepared game and for `run`, the driver writes `input` for its own checks, gives
+`--progress=jsonl-stage` to the recompile child and the game child, passes their codes on, and writes the exit
+line. A child in `jsonl-stage` mode writes stage and error lines and never the exit line.
 
 | Event | Fields |
 |---|---|
@@ -375,14 +382,17 @@ and `run`.
 | `error` | `"message"` with the cause, `"code"` with the exit code |
 
 The last line is the exit line, `{"v":1,"event":"exit","code":N}`. It has no stage. When the game ends with a
-nonzero code, the exit line has `code` 8 and one more field, `"game_code":N`, the game's own code. `v` changes when
-a field changes its meaning. A test reads the stream of a recompile (PR 3d).
+nonzero code, `process_exit` writes the `run` stage's error line with `"code":8` and one more field,
+`"game_code":N`, the game's own code, and the exit line has `code` 8. An error after a stage has closed gets that
+stage's name, when the process noted an error after the close. `v` changes when a field changes its meaning. A test
+reads the stream of a recompile (PR 3d).
 
 ### Failure before the renderer runs
 
 Only a `fatal` before the renderer starts goes to stderr, the log and the early error file `scarletnx-error.log`. A
 usage error (exit 2) before the log file exists goes to stderr only. The internal name stays, per the "Internal names"
-decision.
+decision. `fatal_code` also writes the error line of the open stage of the progress stream, with the fatal text and
+the code the process ends with.
 
 No dialog shows before the renderer runs. After the renderer runs, the crash box stays until the new UI of unit 4
 replaces it. It does not show with `--headless` or in an unattended run.

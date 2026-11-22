@@ -13,6 +13,7 @@
 #include "common/utilities/endian.h"
 #include "common/utilities/exit_codes.h"
 #include "common/utilities/ini_lines.h"
+#include "common/utilities/progress.h"
 #include <errno.h>
 #include <limits.h>
 #include <stdarg.h>
@@ -130,15 +131,16 @@ int snx_error(const char* fmt, ...) {
     char line[2048];
     va_list ap;
     va_start(ap, fmt);
-    if (g_common.error_sink) {
-        vsnprintf(line, sizeof line, fmt, ap);
+    vsnprintf(line, sizeof line, fmt, ap);
+    va_end(ap);
+    if (g_common.error_sink)
         g_common.error_sink(line);
-    } else {
+    else {
         fputs("scarletnx: ", stderr);
-        vfprintf(stderr, fmt, ap);
+        fputs(line, stderr);
         fputc('\n', stderr);
     }
-    va_end(ap);
+    snx_progress_note_error(line);
     return 1;
 }
 char* snx_os_error(char* out, size_t size) {

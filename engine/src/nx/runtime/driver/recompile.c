@@ -13,6 +13,7 @@
 #include "common/utilities/exit_codes.h"
 #include "common/utilities/mods.h"
 #include "common/utilities/patches.h"
+#include "common/utilities/progress.h"
 #include <ctype.h>
 #include <errno.h>
 #include <limits.h>
@@ -286,6 +287,11 @@ static int patch_modules(SnxProgram* program, const char* mods, const char* off,
     snx_free_strings(patches, count);
     return rc;
 }
+/* 1 for --progress=value, the option of the JSON Lines stream (progress.h) */
+static int is_progress_option(const char* arg) {
+    return !strncmp(arg, "--progress=", 11) || !strcmp(arg, "--progress");
+}
+
 int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
     const char *input = NULL, *name = NULL, *outdir = NULL, *runtime = NULL, *target = "auto", *jit_cache = NULL, *arg,
                *value;
@@ -344,6 +350,15 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
         } else if (!strcmp(arg, "--quiet") || !strcmp(arg, "-q"))
             compile.quiet = gen.quiet = 1;
         else if (arg[0] == '-') {
+            if (is_progress_option(arg)) {
+                int mode = snx_progress_parse(arg);
+                if (mode < 0) {
+                    snx_error("%s: not jsonl", arg);
+                    return SNX_EXIT_USAGE;
+                }
+                if (snx_progress_open(mode)) return SNX_EXIT_INTERNAL;
+                continue;
+            }
             value = NULL;
             if (arg[1] == 'O' && arg[2]) {
                 value = arg + 2;
@@ -429,6 +444,7 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
         usage();
         return SNX_EXIT_USAGE;
     }
+    snx_progress_stage(SNX_PROGRESS_STAGE_INPUT);
     /* opt's value was checked as it was read: -O's own check, or --opt's snx_recompile_value_taken */
     compile.opt = g_settings.optimization_level;
     gen.chunk_instrs = (size_t)g_settings.unit_size;
@@ -454,6 +470,8 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
         snx_error("%s", error);
         return SNX_EXIT_GAME_FILES;
     }
+    snx_progress_done(SNX_PROGRESS_STAGE_INPUT);
+    snx_progress_stage(SNX_PROGRESS_STAGE_RECOMPILE);
     title = snx_game_shown(name, &program);
     game = snx_game_name(name, &program.npdm, program.entry_path);
     out = outdir ? snx_absolute(outdir) : snx_recompiled_dir(paths->repo);
@@ -550,6 +568,7 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
         if (failed) goto done;
     }
     if (no_build) {
+        snx_progress_done(SNX_PROGRESS_STAGE_RECOMPILE);
         rc = SNX_EXIT_OK;
         goto done;
     }
@@ -595,6 +614,8 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
         free(units);
         if (i) goto done;
     }
+    snx_progress_done(SNX_PROGRESS_STAGE_RECOMPILE);
+    snx_progress_stage(SNX_PROGRESS_STAGE_BUILD);
     if (runtime) run = snx_absolute(runtime);
 #ifdef SNX_WITH_RUNTIME
     else if (host_win == compile.target_win)
@@ -630,6 +651,7 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
         }
     }
     if (!compile.quiet) printf("Built %s\n", exe);
+    snx_progress_done(SNX_PROGRESS_STAGE_BUILD);
     rc = SNX_EXIT_OK;
 done:
     snx_free_program(&program);

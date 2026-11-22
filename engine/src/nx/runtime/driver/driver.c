@@ -5,6 +5,7 @@
 #include "common/utilities/demangle.h"
 #include "common/utilities/exit_codes.h"
 #include "common/utilities/logscan.h"
+#include "common/utilities/progress.h"
 #include "nx/runtime/driver/game_name.h"
 #include "nx/runtime/driver/recompile.h"
 #include "nx/runtime/driver/setup.h"
@@ -255,8 +256,9 @@ static int play_dump(const char* input, const SnxPaths* paths, unsigned flags, c
     const char** command =
         (const char**)snx_alloc((size_t)(game_argc + settings + recompiling + 24) * sizeof(*command));
     int rc = SNX_EXIT_INTERNAL, nro = is_nro_path(input), prepared = prepared_game(input, &folder, &name), named = 0;
-    int n, j;
+    int n, j, child_started = 0;
     SnxNpdm npdm;
+    snx_progress_stage(SNX_PROGRESS_STAGE_INPUT);
     command[0] = paths->executable;
     command[1] = "--data";
     command[2] = paths->repo;
@@ -319,6 +321,7 @@ made:
         rc = snx_error("cannot resolve the game's folder for %s", input);
         goto done;
     }
+    snx_progress_done(SNX_PROGRESS_STAGE_INPUT);
 #ifdef _WIN32
     code = snx_format("%s_code.dll", base);
     game = snx_format("%s.exe", base);
@@ -338,11 +341,14 @@ made:
                 command[n++] = opt;
             }
             for (j = 0; j < recompiling; ++j) command[n++] = recompile[j];
+            if (snx_progress_mode() == SNX_PROGRESS_JSONL) command[n++] = "--progress=jsonl-stage";
             command[n++] = "--";
             command[n++] = source;
             if (named) command[n++] = name;
             command[n] = NULL;
-            rc = snx_run_stage(command, NULL, "Recompilation");
+            snx_progress_child_redirect();
+            rc = snx_run_stage(command, NULL, "Recompilation", &child_started);
+            snx_progress_child_restore(child_started);
             if (rc) goto done;
             if (!snx_is_file(game)) {
                 snx_error("recompilation finished without creating %s", game);
@@ -373,11 +379,15 @@ made:
         command[n++] = "-S";
     if (flags & SNX_TRACY_CLIENT) command[n++] = "--tracy";
     if (flags & SNX_TRACY_CAPTURE) command[n++] = "--tracy-capture";
+    if (snx_progress_mode() == SNX_PROGRESS_JSONL) command[n++] = "--progress=jsonl-stage";
     /* Keep the boundary so the deployed launcher cannot interpret game arguments as another request. */
     if (game_argc) command[n++] = "--";
     for (j = 0; j < game_argc; ++j) command[n++] = game_argv[j];
     command[n] = NULL;
-    rc = (flags & SNX_GDB) ? snx_run_debug_stage(command, folder, "Game") : snx_run_stage(command, folder, "Game");
+    snx_progress_child_redirect();
+    rc = (flags & SNX_GDB) ? snx_run_debug_stage(command, folder, "Game", &child_started)
+                           : snx_run_stage(command, folder, "Game", &child_started);
+    snx_progress_child_restore(child_started);
 done:
     free(name);
     free(games);
@@ -635,7 +645,8 @@ int snx_driver(int argc, char** argv) {
             /* the runtime's own, which it reads after: the settings' list and the game to play; as a game's copy is
                started, a setting it knows and -v too */
             if (!strcmp(rest[i], "--settings") || !strncmp(rest[i], "--settings=", 11) ||
-                !strncmp(rest[i], "--game=", 7))
+                !strncmp(rest[i], "--game=", 7) || !strncmp(rest[i], "--progress=", 11) ||
+                !strcmp(rest[i], "--progress"))
                 continue;
             if (!input && (!strcmp(rest[i], "-v") ||
                            (!strncmp(rest[i], "--", 2) && strchr(rest[i], '=') && setting_known(rest[i] + 2))))

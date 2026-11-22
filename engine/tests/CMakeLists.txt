@@ -821,7 +821,8 @@ endif()
 add_test(NAME startup_options COMMAND snx-test-startup)
 
 add_library(snx_test_common STATIC "${PROJECT_SOURCE_DIR}/src/common/utilities/common.c"
-    "${PROJECT_SOURCE_DIR}/src/common/utilities/ini_lines.c" "${PROJECT_SOURCE_DIR}/src/common/utilities/game_ini.c")
+    "${PROJECT_SOURCE_DIR}/src/common/utilities/ini_lines.c" "${PROJECT_SOURCE_DIR}/src/common/utilities/game_ini.c"
+    "${PROJECT_SOURCE_DIR}/src/common/utilities/progress.c")
 snx_test_target(snx_test_common 99)
 if(WIN32)
     target_link_libraries(snx_test_common PUBLIC advapi32)
@@ -854,6 +855,12 @@ add_executable(snx-test-game-title game_title.c)
 snx_test_target(snx-test-game-title 99)
 target_link_libraries(snx-test-game-title PRIVATE scarletnx-common)
 add_test(NAME game_title COMMAND snx-test-game-title)
+# the JSON Lines progress stream (common/utilities/progress.c): every event's bytes, the escapes, the cut of a long
+# message, the exit line's modes and the game_code field
+add_executable(snx-test-progress-stream progress_stream.c)
+snx_test_target(snx-test-progress-stream 99)
+target_link_libraries(snx-test-progress-stream PRIVATE scarletnx-common)
+add_test(NAME progress_stream COMMAND snx-test-progress-stream)
 if(UNIX)
     foreach(name user_dirs left_behind)
         string(REPLACE "_" "-" target "snx-test-${name}")
@@ -1551,7 +1558,8 @@ snx_test_target(snx-test-pending-pages 23)
 add_test(NAME pending_pages COMMAND snx-test-pending-pages)
 add_executable(snx-test-unattended-script unattended_script.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
 snx_test_target(snx-test-unattended-script 11)
-target_link_libraries(snx-test-unattended-script PRIVATE m)
+# unattended.c now writes the run stage's done line: progress.c and its snx_error/snx_os_error, not a stub
+target_link_libraries(snx-test-unattended-script PRIVATE m scarletnx-common)
 add_test(NAME unattended_script COMMAND snx-test-unattended-script)
 # the log's file, early lines, stamps, redirect, limits, fatal and crash mode (platform/plat.c)
 add_executable(snx-test-platform-log platform_log.c "${PROJECT_SOURCE_DIR}/src/common/filesystem/host.c")

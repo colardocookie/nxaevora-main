@@ -4,6 +4,7 @@
    take turns on */
 #include "nx/hle/kernel/kernel_int.h"
 #include "common/utilities/exit_codes.h"
+#include "common/utilities/progress.h"
 #include <errno.h>
 #include <string.h>
 #include "nx/runtime/arm.h"
@@ -603,7 +604,15 @@ void kernel_run_main(u64 entry, u64 stack_size, int prio, int core) {
    process ends without joining anything. Through snx_save_before_exit, so an unattended limit reached meanwhile doesn't
    write the same files at once */
 void process_exit(int code) {
+    char message[64];
     LOG("The game exited (code %d)\n", code);
+    /* The driver sees only SNX_EXIT_GAME_CODE: the game's own code is the game_code field of the error line */
+    if (code) {
+        snprintf(message, sizeof message, "the game ended with code %d", code);
+        snx_progress_game_error(message, SNX_EXIT_GAME_CODE, code);
+    } else {
+        snx_progress_done(SNX_PROGRESS_STAGE_RUN);
+    }
     snx_save_before_exit();
     snx_tracy_shutdown();
     plat_exit_now(code ? SNX_EXIT_GAME_CODE : SNX_EXIT_OK);
