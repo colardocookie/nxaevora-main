@@ -8,8 +8,15 @@
 /* the .ini's log key: 1 normal, 2 also the LOGV lines (and every line on stderr) */
 #include "snx_settings.h" /* g_settings.log_level, the .ini's log */
 
+/* GCC and Clang check a format string and its arguments; another compiler has no such attribute */
+#if defined(__GNUC__) || defined(__clang__)
+#define SNX_LOG_FORMAT(fmt, args) __attribute__((format(printf, fmt, args)))
+#else
+#define SNX_LOG_FORMAT(fmt, args)
+#endif
+
 /* lvl 0 is a warning, 1 a normal line, 2 a verbose one. Checked like printf */
-void logf_(int lvl, const char* fmt, ...) __attribute__((format(printf, 2, 3)));
+void logf_(int lvl, const char* fmt, ...) SNX_LOG_FORMAT(2, 3);
 #define WARN(...) logf_(0, __VA_ARGS__)
 #define LOG(...) logf_(1, __VA_ARGS__)
 #define LOGV(...)                                                                                                      \

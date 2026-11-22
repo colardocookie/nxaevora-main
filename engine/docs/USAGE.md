@@ -46,13 +46,16 @@ Internals come from the LLVM the build uses, so their number follows that instal
 
 `settings get` and `settings set` read and write `<config>/<id>.ini` ([Folders](#folders)), the file that a run opens,
 and need no run. `PATH` is the game's program, as `run` takes it. The `.ini` must exist: without it the command is
-exit 3. A value the settings refuse is exit 7, and the file keeps its bytes. `set` writes beside the file and replaces
-it, so an unknown key stays. A `set` while the game runs can be lost when the game saves at the same time. `settings
-check` reads and writes no file and needs no `--game`.
+exit 3. A value the settings refuse is exit 7, and the file keeps its bytes. A value with a line break or a blank or
+tab at an end is refused too, because the `.ini` reader does not give it back as written. `set` writes beside the file
+and replaces it, so an unknown key stays; a file with more keys or a longer key or value than the store keeps is
+exit 1. A `set` while the game runs can be lost when the game saves at the same time. `settings check` reads
+and writes no file and needs no `--game`; it refuses such a value with exit 7 as well.
 
 `settings check` takes every key that `settings schema` prints. `settings get` and `settings set` take the game's
 `.ini` keys only. `get` prints a number as the runtime keeps it: a float has 6 significant digits. `--game=` given
-twice: the last one wins. An update's program (`<game>_<update id>`) is refused with exit 2: name the game's program.
+twice: the last one wins. An add-on's program (an update's `<game>_<update id>`, or a DLC's `<game>_<dlc id>`) is
+refused with exit 2: name the game's program.
 
 The old flags are aliases:
 
@@ -329,7 +332,7 @@ reads the text on stderr.
 | Code | Meaning |
 | --- | --- |
 | 0 | Success, also a normal game end and a window close by the user |
-| 1 | Internal error: a bug or out of memory |
+| 1 | Internal error: a bug, out of memory, or a settings file the store cannot keep |
 | 2 | Wrong usage: an unknown option or command, a bad argument count |
 | 3 | Game files missing or wrong: the input folder, `exefs/main`, the NPDM or the RomFS, or the game's `.ini` that `settings get` and `settings set` read |
 | 4 | The recompile failed: compile, link, staging or build |

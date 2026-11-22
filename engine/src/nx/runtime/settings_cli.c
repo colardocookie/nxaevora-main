@@ -60,12 +60,15 @@ static void parse_args(int argc, char** argv, int first, Args* a) {
 }
 
 /* The game's settings file, <config>/<name>.ini, for the program path of --game: main.c's naming of the game's path and
-   folders, then the .ini that snx_main opens. 0, -1 for a path that names no game (the folders are not made), or 1 for
-   an update's program, whose run opens the base game's .ini (addon_init), the base game's name then in base */
+   folders, then the .ini that snx_main opens. 0, -1 for a path that names no game (the folders are not made), or the
+   add-on kind (SNX_ADDON_UPDATE or SNX_ADDON_DLC) for an update's or a DLC's program, whose run opens the base game's
+   .ini (addon_init), the base game's name then in base */
 static int settings_file(const char* program, char* out, size_t n, char* base, size_t base_size) {
+    int kind;
     snx_game_locate(program);
     if (!g_exename[0]) return -1;
-    if (snx_game_addon(g_exedir, g_exename, base, base_size, NULL) == SNX_ADDON_UPDATE) return 1;
+    kind = snx_game_addon(g_exedir, g_exename, base, base_size, NULL);
+    if (kind != SNX_ADDON_NONE) return kind;
     snx_game_folders();
     snprintf(out, n, "%s%s.ini", g_confdir, g_exename);
     return 0;
@@ -314,7 +317,8 @@ int snx_settings_get(int argc, char** argv) {
     if (!o) return unknown_key("settings get", a.word[0]);
     status = settings_file(a.game, path, sizeof path, base, sizeof base);
     if (status > 0) {
-        snx_command_error("settings get: %s is an update of %s: name the game's program", a.game, base);
+        snx_command_error("settings get: %s is %s %s: name the game's program", a.game,
+                          status == SNX_ADDON_UPDATE ? "an update of" : "a DLC of", base);
         return SNX_EXIT_USAGE;
     }
     if (status < 0) {
@@ -365,7 +369,8 @@ int snx_settings_set(int argc, char** argv) {
     }
     status = settings_file(a.game, path, sizeof path, base, sizeof base);
     if (status > 0) {
-        snx_command_error("settings set: %s is an update of %s: name the game's program", a.game, base);
+        snx_command_error("settings set: %s is %s %s: name the game's program", a.game,
+                          status == SNX_ADDON_UPDATE ? "an update of" : "a DLC of", base);
         return SNX_EXIT_USAGE;
     }
     if (status < 0) {
@@ -405,6 +410,10 @@ int snx_settings_check(int argc, char** argv) {
     if (!o) {
         snx_command_error("settings check: %s: not a setting of the settings definition", a.word[0]);
         return SNX_EXIT_USAGE;
+    }
+    if (snx_setting_row(o->key) && snx_settings_value_unreadable(o->key, a.word[1], why, sizeof why)) {
+        snx_command_error("settings check: %s", why);
+        return SNX_EXIT_SETTING;
     }
     if (ini_check(o, a.word[1], why, sizeof why)) {
         snx_command_error("settings check: %s", why);

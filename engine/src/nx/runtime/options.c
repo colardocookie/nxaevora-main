@@ -545,24 +545,25 @@ int snx_settings_load(const char* path, char* why, size_t n) {
 }
 
 /* 1 for a value that the .ini's reader does not give back as written: it splits the file at a '\n' or a '\r' and trims
-   the blanks and tabs of both ends (ini_lines.c), so a line break would become a key and the blanks would be lost */
-static int value_unreadable(const char* value) {
-    size_t n = strlen(value);
-    return strpbrk(value, "\r\n") != NULL ||
-           (n && (value[0] == ' ' || value[0] == '\t' || value[n - 1] == ' ' || value[n - 1] == '\t'));
+   the blanks and tabs of both ends (ini_lines.c), so a line break would become a key and the blanks would be lost.
+   Settings set, through snx_settings_save, and settings check both call it */
+int snx_settings_value_unreadable(const char* key, const char* value, char* out, size_t n) {
+    size_t size = strlen(value);
+    if (strpbrk(value, "\r\n") == NULL &&
+        !(size && (value[0] == ' ' || value[0] == '\t' || value[size - 1] == ' ' || value[size - 1] == '\t')))
+        return 0;
+    snprintf(out, n, "%s: a line break or a blank at an end is not kept by the .ini file", key);
+    return 1;
 }
 
 int snx_settings_save(const char* key, const char* value, char* out, size_t n) {
-    if (value_unreadable(value)) {
-        snprintf(out, n, "%s: a line break or a blank at an end is not kept by the .ini file", key);
-        return 1;
-    }
+    if (snx_settings_value_unreadable(key, value, out, n)) return 1;
     if (strlen(key) >= KEY_MAX || strlen(value) >= VALUE_MAX) {
         snprintf(out, n, "%s's value is longer than the %d bytes the file keeps", key, VALUE_MAX - 1);
         return 1;
     }
     if (store_put(key, value)) {
-        snprintf(out, n, "%s: the file keeps %d keys at most, so it is not written", key, STORE_MAX);
+        snprintf(out, n, "%s: the file keeps at most %d keys, so it is not written", key, STORE_MAX);
         return -1;
     }
     g_write_stage = NULL;

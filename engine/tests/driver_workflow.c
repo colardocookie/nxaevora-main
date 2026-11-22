@@ -95,6 +95,17 @@ const IniOpt* snx_recompile_setting(const char* key) {
     if (!o) o = ini_find(g_llvm_ini, key);
     return o ? o : ini_find(g_recompile_game_ini, key);
 }
+/* recompile.c's: the row and opt's words checked, which this test's link has no recompile.c to take (the real one is
+   in runtime_cli_commands) */
+int snx_recompile_value_taken(const IniOpt* o, const char* value, char* out, size_t n) {
+    if (ini_check(o, value, out, n)) return 0;
+    if (!strcmp(o->key, "opt")) {
+        if (strlen(value) == 1 && strchr("0123sz", value[0])) return 1;
+        snprintf(out, n, "opt = %s: not 0, 1, 2, 3, s or z", value);
+        return 0;
+    }
+    return 1;
+}
 /* the game's program and its stamp, as a recompile makes them: the program a copy of this one, a code file beside it */
 static void make_game(const char* folder, const char* name, const SnxPaths* paths) {
     char* game = snx_format("%s/%s%s", folder, name, TEST_PROGRAM_SUFFIX);
@@ -502,6 +513,9 @@ int main(int argc, char** argv) {
        value the recompile refuses stops the run and the game does not start */
     set_env("SNX_WORKFLOW_FLAGS", "--aot_threads=abc");
     run(exe, repo, game, log, 2, "", "aot_threads=abc is not a whole number from 0 to 1024");
+    /* opt is a text setting, so ini_check alone takes a short number: the words check of the same function refuses it */
+    set_env("SNX_WORKFLOW_FLAGS", "--opt=5");
+    run(exe, repo, game, log, 2, "", "opt = 5: not 0, 1, 2, 3, s or z");
     set_env("SNX_WORKFLOW_FLAGS", "");
     /* a game whose runtime another build of this ABI deployed: played as it is, the runtime replaced by this build's
        first; one already this build's is left as it is (a link to it stays the same file) */

@@ -65,6 +65,15 @@ if(NOT value_new_code EQUAL 2 OR NOT value_old_code EQUAL 2
    OR NOT "${value_new_err}" STREQUAL "${value_old_err}")
     message(FATAL_ERROR "recompile --aot_threads=abc ended with ${value_new_code} (${value_new_err}) and -r with ${value_old_code} (${value_old_err})")
 endif()
+# opt is a text setting, so ini_check alone takes a short number: the recompile setting's words check refuses it, in
+# both the command and its alias, with the one shared function
+engine(opt_new recompile missing.nro --opt=5)
+engine(opt_old -r missing.nro --opt=5)
+string(FIND "${opt_new_err}" "opt = 5: not 0, 1, 2, 3, s or z" at_opt)
+if(NOT opt_new_code EQUAL 2 OR NOT opt_old_code EQUAL 2 OR at_opt LESS 0
+   OR NOT "${opt_new_err}" STREQUAL "${opt_old_err}")
+    message(FATAL_ERROR "recompile --opt=5 ended with ${opt_new_code} (${opt_new_err}) and -r with ${opt_old_code} (${opt_old_err})")
+endif()
 # the help of a command is exit 0 with its usage on stdout; --help names the three commands
 engine(run_help run --help)
 string(FIND "${run_help_out}" "run" at_run)

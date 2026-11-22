@@ -52,6 +52,9 @@ const IniOpt* snx_setting_row(const char* key);
 int snx_settings_load(const char* path, char* why, size_t n);
 /* key's value as the store last read it, else the row's default; NULL for a row with no default the file lacks */
 const char* snx_settings_value(const IniOpt* o);
+/* 1 when the .ini's reader does not give value back as written (a line break, or a blank or tab at an end), with the
+   line why in out; 0 when it does. Settings set, through snx_settings_save, and settings check share it */
+int snx_settings_value_unreadable(const char* key, const char* value, char* out, size_t n);
 /* key=value put in the store and the file ini_open read written back as ini_open writes it ("write": beside it,
    "replace": over it): 0, 1 for a value the store cannot keep (why in out), or -1 with the stage, the path and the
    system's reason in out, or for a key that a full store cannot keep (why in out) */

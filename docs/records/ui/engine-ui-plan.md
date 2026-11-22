@@ -344,7 +344,7 @@ One header holds the named constants. The proposal is `engine/src/common/utiliti
 | Code | Meaning |
 |---|---|
 | 0 | Success. Also a normal game end and a window close by the user |
-| 1 | Internal error: a bug or out of memory |
+| 1 | Internal error: a bug, out of memory, or a settings file the store cannot keep |
 | 2 | Wrong usage: unknown command or option, bad argument count |
 | 3 | Game files missing or wrong: the input folder, `exefs/main`, the RomFS or `romfs=` |
 | 4 | Recompile failed: compile, link or build |

@@ -16,13 +16,28 @@
 #include <ctype.h>
 #include <errno.h>
 #include <limits.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* the optimization levels that opt takes, its words in settings.txt */
+#define SNX_OPT_LEVELS "0123sz"
 
 const IniOpt* snx_recompile_setting(const char* key) {
     const IniOpt* o = ini_find(g_recompile_ini, key);
     if (!o) o = ini_find(g_llvm_ini, key);
     return o ? o : ini_find(g_recompile_game_ini, key);
+}
+/* opt is a text row, so ini_check alone takes any short text; its words are checked here, and the play path calls this
+   function too */
+int snx_recompile_value_taken(const IniOpt* o, const char* value, char* out, size_t n) {
+    if (ini_check(o, value, out, n)) return 0;
+    if (!strcmp(o->key, "opt")) {
+        if (strlen(value) == 1 && strchr(SNX_OPT_LEVELS, value[0])) return 1;
+        snprintf(out, n, "opt = %s: not 0, 1, 2, 3, s or z", value);
+        return 0;
+    }
+    return 1;
 }
 static void usage(void) {
     puts("Usage: nxaevora-engine -r INPUT [NAME] [OPTIONS]\n"
@@ -345,7 +360,7 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
                 arg = option;
                 if (arg[1] == '-' && snx_recompile_setting(arg + 2)) {
                     const IniOpt* o = snx_recompile_setting(arg + 2);
-                    if (ini_check(o, value, error, sizeof error)) {
+                    if (!snx_recompile_value_taken(o, value, error, sizeof error)) {
                         snx_error("%s", error);
                         return SNX_EXIT_USAGE;
                     }
@@ -414,11 +429,7 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
         usage();
         return SNX_EXIT_USAGE;
     }
-    /* the settings, whichever way they came: -O and --jobs, or --opt= and --aot_threads= as the launcher passes them */
-    if (strlen(g_settings.optimization_level) != 1 || !strchr("0123sz", g_settings.optimization_level[0])) {
-        snx_error("opt = %s: not 0, 1, 2, 3, s or z", g_settings.optimization_level);
-        return SNX_EXIT_USAGE;
-    }
+    /* opt's value was checked as it was read: -O's own check, or --opt's snx_recompile_value_taken */
     compile.opt = g_settings.optimization_level;
     gen.chunk_instrs = (size_t)g_settings.unit_size;
     compile.jobs = g_settings.aot_threads > 0 ? (unsigned)g_settings.aot_threads : snx_cpu_count();
