@@ -667,8 +667,9 @@ extern PerfWaits g_perf_vklock;
 void perf_vklock_note(int phase, const void* at, uint64_t ns); /* this thread's label, kind = the phase */
 /* and for PERF-36's design (research 13:59): render targets made pending over pages (rt_pages +1), ownership armed
    (own_begin), the release thread's holds and those with an owned range (g_own_any), the result calls made without
-   vk_lock by entry, and composed captures and those meeting a result of a submitted frame */
-enum { VKU_PENDING, VKU_UNSUBMITTED, VKU_COPY_WRITABLE, VKU_COMMIT, VKU_BARRIER, VKU_MEM_NEED, VKU_OUT_NEW, VKU_N };
+   vk_lock by entry (mem_need_reason is left out: it takes the lock itself), and composed captures and those whose
+   bytes meet a result of a submitted frame (out_meets: the same range, or another address over the same backing) */
+enum { VKU_PENDING, VKU_UNSUBMITTED, VKU_COPY_WRITABLE, VKU_COMMIT, VKU_BARRIER, VKU_OUT_NEW, VKU_N };
 typedef struct {
     uint64_t rt_add, own_begin, holds, holds_owned, composed, composed_submitted; /* atomic */
     uint64_t unlocked[VKU_N];                                                    /* atomic */

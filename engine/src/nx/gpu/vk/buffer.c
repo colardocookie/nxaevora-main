@@ -989,7 +989,6 @@ static int out_meets(const GfxOut* o, u64 gva, u64 len, const RangePages* q, u64
     return hit;
 }
 static void mem_need_reason(u64 gva, u64 len, int reason) {
-    unlocked_note(VKU_MEM_NEED);
     RangePages q;
     u64 local[16], *rmap = NULL;
     if (!g_gfx_any || g_out_landing || !len) return;

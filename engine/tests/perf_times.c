@@ -872,7 +872,7 @@ static void test_vklock(void) {
     x.composed_submitted = 300000, x.unlocked[VKU_PENDING] = 600, x.unlocked[VKU_OUT_NEW] = 6;
     perf_vklock_line(&w, &x, 600, line, sizeof line);
     CHECK(strstr(line, "perf-vklock: frames=600 (PERF-36G, ") && strstr(line, " gpu.other=0.0/0.001 "));
-    CHECK(strstr(line, " rt_add=2.0 own_begin=0.1 holds=12.0/1.0 unlocked=1.0/0.0/0.0/0.0/0.0/0.0/0.0 "
+    CHECK(strstr(line, " rt_add=2.0 own_begin=0.1 holds=12.0/1.0 unlocked=1.0/0.0/0.0/0.0/0.0/0.0 "
                        "composed=800.0/500.0"));
     CHECK(strstr(line, " gpu.compute=1.0/0.400 gpu.graphics=6.0/0.600 gpu.releases=2.0/0.100 "));
     CHECK(strstr(line, " recorder.releases=0.0/3.000 lost=0 callers "));

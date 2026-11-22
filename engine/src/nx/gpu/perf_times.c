@@ -1438,7 +1438,7 @@ size_t perf_vklock_line(PerfWaits* w, PerfVkx* x, uint32_t frames, char* out, si
                      "from pm_wait_note, calls/ms and ms by holder compute/graphics/releases/other; then rt_add render "
                      "targets made pending over pages, own_begin ownership armed, holds the release thread's and "
                      "those with an owned range, unlocked the result calls made without vk_lock (pending/unsubmitted/"
-                     "copy_writable/commit/barrier/mem_need/out_new), composed captures and those meeting a "
+                     "copy_writable/commit/barrier/out_new), composed captures and those whose bytes meet a "
                      "submitted frame's result)",
                      frames);
     for (int a = 0; a < PWHO_N; a++)
