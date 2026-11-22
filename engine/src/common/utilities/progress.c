@@ -439,9 +439,10 @@ void snx_progress_child_redirect(void) {
     progress_unlock();
 }
 
-void snx_progress_child_restore(void) {
+void snx_progress_child_restore(int child_started) {
     progress_lock();
-    g_progress.last_error[0] = 0;
+    /* a child that started wrote its own error line: a second one would be wrong */
+    if (child_started) g_progress.last_error[0] = 0;
     if (progress_on() && g_progress.private_fd >= 0) {
         fflush(stdout);
         progress_dup2(progress_fileno(stderr), progress_fileno(stdout));

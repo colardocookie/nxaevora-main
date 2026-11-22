@@ -47,9 +47,10 @@ void snx_progress_note_error(const char* text);
 /* The end of a command process: the open stage's error line, or the last closed stage's when this process noted an
    error after it closed, when code is nonzero; then the exit line. A child stage writes no exit line */
 void snx_progress_finish(int code);
-/* Puts the private stream on fd 1 for the spawn of a child, and stderr back after it returns (driver.c) */
+/* Puts the private stream on fd 1 for the spawn of a child, and stderr back after it returns (driver.c). When the
+   child did not start, the restore keeps the noted error: no child wrote an error line */
 void snx_progress_child_redirect(void);
-void snx_progress_child_restore(void);
+void snx_progress_child_restore(int child_started);
 /* tests: sends the stream to out instead of a duplicated stdout; NULL detaches */
 void snx_progress_test_attach(FILE* out, int mode);
 

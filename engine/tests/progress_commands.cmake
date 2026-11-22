@@ -2,6 +2,7 @@
 # Copyright 2026 the NXAevora contributors
 # The JSON Lines progress stream of recompile and run (common/utilities/progress.c): the exact event lines, the codes,
 # and no human text on stdout. Run by ctest as runtime_progress_commands
+cmake_minimum_required(VERSION 3.25)
 set(dir "${CMAKE_CURRENT_BINARY_DIR}/progress-commands")
 file(REMOVE_RECURSE "${dir}")
 file(MAKE_DIRECTORY "${dir}")
@@ -69,6 +70,13 @@ foreach(command recompile run)
     string(FIND "${${command}_bad_err}" "progress" at_bad)
     if(at_bad LESS 0)
         message(FATAL_ERROR "${command} --progress=bad: stderr has no usage message:\n${${command}_bad_err}")
+    endif()
+endforeach()
+# the internal stage mode is not a public value: exit 2
+foreach(command recompile run)
+    engine(${command}_stage ${command} missing.nro --progress=jsonl-stage)
+    if(NOT ${command}_stage_code EQUAL 2)
+        message(FATAL_ERROR "${command} missing.nro --progress=jsonl-stage ended with ${${command}_stage_code}, not 2")
     endif()
 endforeach()
 file(REMOVE_RECURSE "${dir}")

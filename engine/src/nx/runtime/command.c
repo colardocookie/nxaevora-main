@@ -89,7 +89,7 @@ static int translate_recompile(int argc, char** argv, int* out_argc, char*** out
                 separator = 1;
             else if (is_progress(argv[i])) {
                 parsed = snx_progress_parse(argv[i]);
-                if (parsed < 0) {
+                if (parsed != SNX_PROGRESS_JSONL) {
                     free(out);
                     snx_command_error("recompile: %s: not jsonl", argv[i]);
                     return SNX_EXIT_USAGE;
@@ -135,7 +135,7 @@ static int translate_run(int argc, char** argv, int* out_argc, char*** out_argv)
         }
         if (is_progress(argv[i])) {
             parsed = snx_progress_parse(argv[i]);
-            if (parsed < 0) {
+            if (parsed != SNX_PROGRESS_JSONL) {
                 free(out);
                 snx_command_error("run: %s: not jsonl", argv[i]);
                 return SNX_EXIT_USAGE;

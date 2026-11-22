@@ -758,6 +758,8 @@ int snx_main(int argc, char** argv) {
     snx_error_sink(log_error_line);
     /* the guest's address space before the game's code, which would take a share of a small one */
     mem_reserve();
+    /* the start stage opens before the code loads: a fatal before the window still writes its error line */
+    snx_progress_stage(SNX_PROGRESS_STAGE_START);
     /* the code before anything is written: a mistyped --game leaves no .ini and no log behind */
     mod = load_module(module);
     if (mod->abi != SNX_ABI) {
@@ -880,7 +882,6 @@ int snx_main(int argc, char** argv) {
         char addons[256];
         addons_line(addons, sizeof addons);
         if (addons[0]) LOG("game: played with %s\n", addons);
-        snx_progress_stage(SNX_PROGRESS_STAGE_START);
         video_init(title, addons);
         snx_progress_done(SNX_PROGRESS_STAGE_START);
     }

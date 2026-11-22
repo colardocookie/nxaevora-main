@@ -256,7 +256,7 @@ static int play_dump(const char* input, const SnxPaths* paths, unsigned flags, c
     const char** command =
         (const char**)snx_alloc((size_t)(game_argc + settings + recompiling + 24) * sizeof(*command));
     int rc = SNX_EXIT_INTERNAL, nro = is_nro_path(input), prepared = prepared_game(input, &folder, &name), named = 0;
-    int n, j;
+    int n, j, child_started = 0;
     SnxNpdm npdm;
     snx_progress_stage(SNX_PROGRESS_STAGE_INPUT);
     command[0] = paths->executable;
@@ -347,8 +347,8 @@ made:
             if (named) command[n++] = name;
             command[n] = NULL;
             snx_progress_child_redirect();
-            rc = snx_run_stage(command, NULL, "Recompilation");
-            snx_progress_child_restore();
+            rc = snx_run_stage(command, NULL, "Recompilation", &child_started);
+            snx_progress_child_restore(child_started);
             if (rc) goto done;
             if (!snx_is_file(game)) {
                 snx_error("recompilation finished without creating %s", game);
@@ -385,8 +385,9 @@ made:
     for (j = 0; j < game_argc; ++j) command[n++] = game_argv[j];
     command[n] = NULL;
     snx_progress_child_redirect();
-    rc = (flags & SNX_GDB) ? snx_run_debug_stage(command, folder, "Game") : snx_run_stage(command, folder, "Game");
-    snx_progress_child_restore();
+    rc = (flags & SNX_GDB) ? snx_run_debug_stage(command, folder, "Game", &child_started)
+                           : snx_run_stage(command, folder, "Game", &child_started);
+    snx_progress_child_restore(child_started);
 done:
     free(name);
     free(games);

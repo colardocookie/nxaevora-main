@@ -404,7 +404,7 @@ int main(int argc, char** argv) {
         args[0] = argv[0];
         args[1] = NULL;
         if (!strcmp(argv[2], "exec")) args[0] = "/nonexistent/scarletnx-test";
-        return snx_run_stage(args, !strcmp(argv[2], "cwd") ? "/nonexistent/scarletnx-test" : NULL, "Probe");
+        return snx_run_stage(args, !strcmp(argv[2], "cwd") ? "/nonexistent/scarletnx-test" : NULL, "Probe", NULL);
     }
     if (argc > 1) { /* the setup's options taken out first, as the program's entry does (runtime/entry.c) */
         char why[160];

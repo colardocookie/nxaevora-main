@@ -351,7 +351,7 @@ One header holds the named constants. The proposal is `engine/src/common/utiliti
 | 5 | Start failed before the renderer runs: the settings file is not readable, or Vulkan or the renderer did not start |
 | 6 | Crash of the game: `fatal`, a crash report or an unhandled exception |
 | 7 | Setting value refused: `settings set` and `settings check` |
-| 8 | The game ended with a nonzero code. The code goes to the log and to `game_code` of the exit line |
+| 8 | The game ended with a nonzero code. The code goes to the log and to `game_code` of the `run` stage's error line |
 | 126 | POSIX only: a driver stage program could not be prepared (process group, terminal or working directory) |
 | 127 | POSIX only: a driver stage program could not be started (exec failed) |
 | 130 | Stopped by the user (Ctrl+C). This value does not change |

@@ -72,6 +72,63 @@ static char* read_text(const char* path) {
     return text;
 }
 
+#ifdef _WIN32
+/* One argument as the Windows CRT reads it from a command line: quoted, each quote escaped with a backslash, and the
+   backslashes before a quote doubled. NULL on failure */
+static char* quoted_argument(const char* arg) {
+    size_t i, slashes = 0, n = 0, size = strlen(arg);
+    char* out = (char*)malloc(2 * size + 3);
+    if (!out) return NULL;
+    out[n++] = '"';
+    for (i = 0; i < size; ++i) {
+        if (arg[i] == '\\') {
+            ++slashes;
+            continue;
+        }
+        if (arg[i] == '"') slashes = 2 * slashes + 1;
+        while (slashes) {
+            out[n++] = '\\';
+            --slashes;
+        }
+        out[n++] = arg[i];
+    }
+    slashes *= 2;
+    while (slashes) {
+        out[n++] = '\\';
+        --slashes;
+    }
+    out[n++] = '"';
+    out[n] = 0;
+    return out;
+}
+
+/* argv with every argument quoted: _spawnvp joins the strings with spaces and adds no quote, so an argument with a
+   space would become more than one. NULL on failure */
+static char** quoted_argv(const char* const* argv) {
+    size_t i, count = 0;
+    char** out;
+    while (argv[count]) ++count;
+    out = (char**)calloc(count + 1, sizeof *out);
+    if (!out) return NULL;
+    for (i = 0; i < count; ++i) {
+        out[i] = quoted_argument(argv[i]);
+        if (!out[i]) {
+            while (i) free(out[--i]);
+            free(out);
+            return NULL;
+        }
+    }
+    return out;
+}
+
+static void free_quoted(char** argv) {
+    size_t i;
+    if (!argv) return;
+    for (i = 0; argv[i]; ++i) free(argv[i]);
+    free(argv);
+}
+#endif
+
 /* Runs argv with stdout and stderr in two files, apart: snx_run sends both to one pipe. 0, or the child's code */
 static int run_split(const char* const* argv, const char* cwd, char** out_text, char** err_text) {
     char *out = snx_path_join(cwd, "progress-out.txt"), *err = snx_path_join(cwd, "progress-err.txt");
@@ -80,6 +137,7 @@ static int run_split(const char* const* argv, const char* cwd, char** out_text, 
 #ifdef _WIN32
     HANDLE old_out, old_err;
     intptr_t status;
+    char** quoted;
     /* the stdout file is text mode, as a cmd redirect gives the child: the stream must keep its LF */
     ofd = _open(out, _O_CREAT | _O_TRUNC | _O_WRONLY | _O_TEXT, _S_IREAD | _S_IWRITE);
     efd = _open(err, _O_CREAT | _O_TRUNC | _O_WRONLY | _O_BINARY, _S_IREAD | _S_IWRITE);
@@ -93,8 +151,12 @@ static int run_split(const char* const* argv, const char* cwd, char** out_text, 
     if (_dup2(ofd, 1) || _dup2(efd, 2)) goto restore;
     SetStdHandle(STD_OUTPUT_HANDLE, (HANDLE)_get_osfhandle(ofd));
     SetStdHandle(STD_ERROR_HANDLE, (HANDLE)_get_osfhandle(efd));
-    status = _spawnvp(_P_WAIT, argv[0], argv);
-    rc = status < 0 ? 1 : (int)status;
+    quoted = quoted_argv(argv);
+    if (quoted) {
+        status = _spawnvp(_P_WAIT, argv[0], (const char* const*)quoted);
+        free_quoted(quoted);
+        rc = status < 0 ? 1 : (int)status;
+    }
 restore:
     if (saved_out >= 0) {
         _dup2(saved_out, 1);

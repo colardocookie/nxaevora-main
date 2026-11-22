@@ -186,16 +186,30 @@ int main(void) {
                 "{\"v\":1,\"event\":\"exit\",\"code\":4}\n");
     snx_progress_test_attach(NULL, SNX_PROGRESS_OFF);
     fclose(out);
-    /* a note that the child restore clears gives no error line */
+    /* a note that the restore clears, because the child started, gives no error line */
     out = attach(SNX_PROGRESS_JSONL);
     snx_progress_stage(SNX_PROGRESS_STAGE_INPUT);
     snx_progress_done(SNX_PROGRESS_STAGE_INPUT);
     snx_progress_note_error("a spawn note");
-    snx_progress_child_restore();
+    snx_progress_child_restore(1);
     snx_progress_finish(5);
     expect(out, "{\"v\":1,\"stage\":\"input\",\"event\":\"start\"}\n"
                 "{\"v\":1,\"stage\":\"input\",\"event\":\"done\"}\n"
                 "{\"v\":1,\"event\":\"exit\",\"code\":5}\n");
+    snx_progress_test_attach(NULL, SNX_PROGRESS_OFF);
+    fclose(out);
+    /* a child that did not start: the note is the only text, so finish writes it under the closed stage */
+    out = attach(SNX_PROGRESS_JSONL);
+    snx_progress_stage(SNX_PROGRESS_STAGE_INPUT);
+    snx_progress_done(SNX_PROGRESS_STAGE_INPUT);
+    snx_progress_note_error("cannot start the stage");
+    snx_progress_child_restore(0);
+    snx_progress_finish(1);
+    expect(out, "{\"v\":1,\"stage\":\"input\",\"event\":\"start\"}\n"
+                "{\"v\":1,\"stage\":\"input\",\"event\":\"done\"}\n"
+                "{\"v\":1,\"stage\":\"input\",\"event\":\"error\",\"message\":\"cannot start the stage\","
+                "\"code\":1}\n"
+                "{\"v\":1,\"event\":\"exit\",\"code\":1}\n");
     snx_progress_test_attach(NULL, SNX_PROGRESS_OFF);
     fclose(out);
     /* the stream off writes nothing */
