@@ -666,6 +666,7 @@ int main(void) {
     assert(phase_compute == c && (phase_graphics & g) && (phase_write & (1u << (g_perf_probes ? VKH_RELEASES : 0))));
     assert(g_perf_probes || (phase_graphics == 1 && phase_write == 1));
     assert(g_vk_hold_phase == VKH_OTHER);
+    assert(!beside_calls && !beside_callers); /* PERF-36 unset: the release thread lands as before, nothing counted */
     /* and the holds counted with the probes only, those that find a range owned apart */
     const u64 holds = g_perf_vkx.holds;
     assert(g_perf_probes ? holds && !g_perf_vkx.holds_owned : !holds);
