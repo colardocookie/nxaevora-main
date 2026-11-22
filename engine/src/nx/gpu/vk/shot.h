@@ -23,18 +23,21 @@ static inline int shot_bytes(uint32_t w, uint32_t h, size_t* n) {
     *n = (size_t)((uint64_t)w * h * 4);
     return 1;
 }
-/* the PPM of the pixels into f, a row packed to RGB in row (w * 3 bytes, the caller's) and written at a time: 1 when
-   every write went through. Without a row nothing is written and the answer is 0 */
-static inline int shot_write_ppm(FILE* f, const uint8_t* px, uint32_t w, uint32_t h, uint8_t* row) {
-    int ok = row != NULL && fprintf(f, "P6\n%u %u\n255\n", w, h) > 0;
-    for (uint32_t y = 0; ok && y < h; y++) {
-        const uint8_t* p = px + (uint64_t)y * w * 4;
-        for (uint32_t x = 0; x < w; x++) {
-            row[x * 3] = p[x * 4];
-            row[x * 3 + 1] = p[x * 4 + 1];
-            row[x * 3 + 2] = p[x * 4 + 2];
+#define SHOT_CHUNK 1024 /* pixels packed to RGB on the stack and written at a time */
+/* the PPM of the pixels into f, 1024 pixels packed to RGB and written at a time, with nothing allocated (so it also
+   serves the copy's fallback under memory pressure, the reviewer's finding): 1 when every write went through */
+static inline int shot_write_ppm(FILE* f, const uint8_t* px, uint32_t w, uint32_t h) {
+    uint8_t chunk[SHOT_CHUNK * 3];
+    const uint64_t n = (uint64_t)w * h;
+    int ok = fprintf(f, "P6\n%u %u\n255\n", w, h) > 0;
+    for (uint64_t at = 0; ok && at < n; at += SHOT_CHUNK) {
+        const uint32_t k = n - at < SHOT_CHUNK ? (uint32_t)(n - at) : SHOT_CHUNK;
+        for (uint32_t i = 0; i < k; i++) {
+            chunk[i * 3] = px[(at + i) * 4];
+            chunk[i * 3 + 1] = px[(at + i) * 4 + 1];
+            chunk[i * 3 + 2] = px[(at + i) * 4 + 2];
         }
-        ok = fwrite(row, 1, (size_t)w * 3, f) == (size_t)w * 3;
+        ok = fwrite(chunk, 1, (size_t)k * 3, f) == (size_t)k * 3;
     }
     return ok;
 }

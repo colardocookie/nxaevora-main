@@ -778,11 +778,9 @@ static u64 shot_finish(const u8* px, u32 w, u32 h, const char* path) {
     if (path) {
         char fn[1100];
         snprintf(fn, sizeof fn, "%s.ppm", path);
-        u8* row = malloc((size_t)w * 3 + 1); /* w is a u32: no overflow in a 64-bit size_t */
-        FILE* f = row ? fopen(fn, "wb") : NULL;
-        int ok = f != NULL && shot_write_ppm(f, px, w, h, row);
+        FILE* f = fopen(fn, "wb");
+        int ok = f != NULL && shot_write_ppm(f, px, w, h);
         if (f) ok = fclose(f) == 0 && ok;
-        free(row);
         if (!ok) WARN_LIMIT(1, "vulkan: the screenshot %s couldn't be written\n", fn);
     }
     return hash;

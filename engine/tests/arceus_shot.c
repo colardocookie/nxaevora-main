@@ -25,7 +25,9 @@ static size_t file_bytes(FILE* f, uint8_t* out, size_t size) {
     return fread(out, 1, size, f);
 }
 int main(void) {
-    static const uint32_t sizes[][2] = {{1, 1}, {3, 2}, {17, 5}, {64, 48}, {1920, 3}};
+    /* around the chunk of 1024 pixels too: one less, exactly one, one more, and several */
+    static const uint32_t sizes[][2] = {{1, 1}, {3, 2}, {17, 5}, {64, 48}, {1920, 3}, {1023, 1}, {1024, 1}, {1025, 1},
+                                        {32, 96}};
     for (unsigned k = 0; k < sizeof sizes / sizeof sizes[0]; k++) {
         const uint32_t w = sizes[k][0], h = sizes[k][1];
         uint8_t* px = malloc((size_t)w * h * 4);
@@ -34,9 +36,7 @@ int main(void) {
         FILE* a = tmpfile();
         FILE* b = tmpfile();
         assert(a && b);
-        uint8_t* row = malloc((size_t)w * 3);
-        assert(shot_write_ppm(a, px, w, h, row) && earlier_write(b, px, w, h));
-        free(row);
+        assert(shot_write_ppm(a, px, w, h) && earlier_write(b, px, w, h));
         fflush(a);
         fflush(b);
         const size_t size = (size_t)w * h * 3 + 64;
@@ -51,20 +51,12 @@ int main(void) {
         free(px);
     }
     assert(shot_hash(NULL, 0, 0) == SHOT_HASH_BASIS);
-    /* astra's note on d8c06cfb: the copy's size is checked before it is allocated, and without a row buffer nothing
-       is written and the answer is 0 */
+    /* astra's note on d8c06cfb: the copy's size is checked before it is allocated */
     size_t n = 0;
     assert(shot_bytes(1920, 1080, &n) && n == (size_t)1920 * 1080 * 4);
     if (sizeof(size_t) == 4) assert(!shot_bytes(65536, 65536, &n));
     assert(shot_bytes(0, 0, &n) && n == 0);
-    {
-        uint8_t px[16] = {1, 2, 3, 4};
-        FILE* f = tmpfile();
-        assert(f && !shot_write_ppm(f, px, 2, 2, NULL));
-        fflush(f);
-        assert(ftell(f) == 0);
-        fclose(f);
-    }
+
     puts("arceus_shot: all checks passed");
     return 0;
 }
