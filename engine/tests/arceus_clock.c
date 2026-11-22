@@ -329,6 +329,13 @@ static void test_discord_layer_off(void) {
             assert(drp_layer_notes == (on ? 0 : cases[i].notes));
             assert(!__atomic_load_n(&drp_ticking, __ATOMIC_RELAXED)); /* nothing installed either way */
         }
+    flag("SNX_ARCEUS_DISCORD", "1"); /* the layer only half up (its clock entries refused): off too, the line */
+    for (int half = 0; half < 2; half++) {
+        timing_enabled = half, clocks_installed = !half;
+        drp_layer_notes = 0;
+        arceus_clock_post_jit();
+        assert(drp_layer_notes == 1);
+    }
     timing_enabled = clocks_installed = 0;
     flag("SNX_ARCEUS_DISCORD", "1"); /* another main build: no Arceus line */
     main_mod.build_id[0] ^= 1;
