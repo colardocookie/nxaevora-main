@@ -22,7 +22,7 @@ if [ -z "$print" ] && [ "$(gh api "repos/$repo/pulls/$pr" --jq .head.sha)" != "$
     echo "$sha is no longer the head of #$pr: its comment stays"
     exit 0
 fi
-# every artifact but the APK's halves (-stage), which only the job that packs the APK takes, and edenprobe's reports,
+# every artifact but a build's halves (-stage), which only the job that packs it takes, and edenprobe's reports,
 # which its line below links through the run
 artifacts=$(gh api "repos/$repo/actions/runs/$run/artifacts?per_page=100")
 links=$(jq -r --arg url "https://github.com/$repo/actions/runs/$run/artifacts" '

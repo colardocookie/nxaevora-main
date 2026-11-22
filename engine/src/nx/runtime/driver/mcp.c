@@ -30,8 +30,9 @@
 #include "nx/runtime/driver/mcp.h"
 #include "nx/runtime/driver/mcp_int.h"
 #include "common/utilities/common.h"
-#include "common/utilities/state_header.h"
 #include "common/utilities/demangle.h"
+#include "common/utilities/exit_codes.h"
+#include "common/utilities/state_header.h"
 #include "common/utilities/logscan.h"
 #include "nx/loader/loader.h"
 #include "nx/runtime/driver/disasm.h"
@@ -1111,7 +1112,7 @@ static void send(cJSON* reply) {
 int snx_mcp(int argc, char** argv) {
     Mcp m;
     Text line = {0}, pending = {0};
-    if (mcp_open(&m, argc, argv)) return 1;
+    if (mcp_open(&m, argc, argv)) return SNX_EXIT_INTERNAL;
     while (mcp_read_line(&pending, &line)) {
         if (line.n && strspn(line.p, " \t\r\n") != line.n) {
             cJSON* message = cJSON_Parse(line.p);
@@ -1135,5 +1136,5 @@ int snx_mcp(int argc, char** argv) {
     free(line.p);
     free(pending.p);
     mcp_close(&m);
-    return 0;
+    return SNX_EXIT_OK;
 }

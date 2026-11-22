@@ -2,7 +2,7 @@
 <!-- Copyright 2026 the ScarletNX contributors -->
 # Licenses and credits
 
-ScarletNX is [GPL-3.0-or-later](../LICENSE).
+NXAevora Engine is [GPL-3.0-or-later](../LICENSE).
 Generated modules include runtime ABI code. Game assets, keys and firmware are excluded.
 
 | Component | License |
@@ -44,7 +44,7 @@ a source keep that source's copyright lines and license, most with the revision 
 | `src/common/cpu/aarch64/helpers/vector.c` (the SM4 S-box, GB/T 32907-2016's table) | OpenSSL's `crypto/sm4/sm4.c` | Apache 2.0 |
 | `src/nx/gpu/gpu.c`, `gpu.h`, `pushbuffer.h` and `src/nx/gpu/maxwell/` (the DMA pusher and puller, the 3D, macro, DMA, 2D, inline-to-memory and compute engines, and their register layouts in the `*_regs.h` headers), with the DMA and 2D engines' CPU references in `tests/support/dma_ref.c` and `fermi2d_ref.c` | Eden and yuzu (`video_core/dma_pusher.cpp`, `engines/`: `puller.cpp`, `engine_upload.cpp`, `maxwell_3d.cpp`, `draw_manager.cpp`, `maxwell_dma.cpp`, `fermi_2d.cpp`, `kepler_compute.cpp`, `kepler_memory.cpp`, `sw_blitter/`) | GPL-3.0-or-later, GPL-2.0-or-later |
 | `src/nx/gpu/texture/blocklinear.c`, `blocklinear.h` and `src/nx/gpu/maxwell/gob.h` (the GOB and block geometry) | Eden and yuzu (`video_core/textures/decoders.cpp`) | GPL-3.0-or-later, GPL-2.0-or-later |
-| `src/nx/gpu/vk/compute.c` (`res_bind`, `res_publish`: compute storage buffers bound where the GPU holds them and marked as the GPU's when written) and `src/nx/gpu/vk/buffer.c` (`buf_get_owned`: draws read the GPU's bytes on the GPU) | Citron Neo's buffer cache (`video_core/buffer_cache/buffer_cache.h`: `BindHostComputeStorageBuffers`, `MarkWrittenBuffer`, `SynchronizeBuffer`), the model only, on ScarletNX's own GPU ownership | GPL-3.0-or-later |
+| `src/nx/gpu/vk/compute.c` (`res_bind`, `res_publish`: compute storage buffers bound where the GPU holds them and marked as the GPU's when written) and `src/nx/gpu/vk/buffer.c` (`buf_get_owned`: draws read the GPU's bytes on the GPU) | Citron Neo's buffer cache (`video_core/buffer_cache/buffer_cache.h`: `BindHostComputeStorageBuffers`, `MarkWrittenBuffer`, `SynchronizeBuffer`), the model only, on NXAevora Engine's own GPU ownership | GPL-3.0-or-later |
 | `src/nx/gpu/shader/` (`shader.c`, `decode.c`, and `maxwell_opcodes.def`, the encodings `tools/shaderdec` generates the decoder from) | Eden and yuzu (`shader_recompiler/frontend/maxwell/`) | GPL-3.0-or-later, GPL-2.0-or-later |
 | `src/nx/gpu/video/` (`host1x.c`, `nvdec.c`, `vic.c` and their register layouts in `host1x_regs.h`, `nvdec_regs.h` and `vic_regs.h`) and `tests/support/vic_ref.c` | Eden and yuzu (`video_core/host1x/`: `control.cpp`, `nvdec.cpp`, `vic.cpp`, `codecs/h264.cpp`, `codecs/decoder.cpp`, `ffmpeg.cpp`; `video_core/cdma_pusher.cpp`; the nvdrv host1x devices), with Skyline's host1x control (GPL-3.0-or-later) and Ryujinx's CDMA pusher as Eden carries them | GPL-3.0-or-later, GPL-2.0-or-later, MIT |
 | `src/nx/loader/loader.c` (the defaults for a program without an NPDM) | Eden and yuzu (`file_sys/program_metadata.cpp`) | GPL-3.0-or-later, GPL-2.0-or-later |

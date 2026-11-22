@@ -78,11 +78,16 @@ typedef struct {
     size_t nacp_size;
 } SnxProgram;
 
-/* The loaders return 0, or -1 with a message in error (cut to error_size, always terminated) and the output struct
-   left zeroed. Functions, relptrs, FDEs and MOD0 are module offsets. A broken unwind table keeps the FDEs read before
-   the damage and says why in eh_error; any other malformed structure refuses the module.
+/* The loaders return 0, or a failure with a message in error (cut to error_size, always terminated) and the output
+   struct left zeroed: SNX_LOAD_INPUT for the user's files (missing, unreadable, malformed or a hash mismatch), and
+   SNX_LOAD_INTERNAL for a failure of the host, such as a library call that fails. snx_load_nro, snx_load_npdm and
+   snx_parse_npdm return only SNX_LOAD_INPUT. Functions, relptrs, FDEs and MOD0 are module offsets. A broken unwind
+   table keeps the FDEs read before the damage and says why in eh_error; any other malformed structure refuses the
+   module.
 
    snx_load_program: entry is an extracted program (a folder holding exefs/main, ExeFS/main or main) or an .nro file */
+#define SNX_LOAD_INPUT    -1
+#define SNX_LOAD_INTERNAL -2
 int snx_load_program(const char* entry, SnxProgram* program, char* error, size_t error_size);
 /* An ExeFS read other than from a folder (a dump's, read in place): read gives the bytes of its file name in *data
    (malloc'd) and *size, and 0, else 1 when it has no such file, -1 when it cannot be read */
@@ -122,6 +127,15 @@ int snx_parse_npdm(const unsigned char* data, size_t size, SnxNpdm* npdm, char* 
 /* The NPDM snx_load_program would use for entry, without loading any module: an NRO's (the defaults), the ExeFS's
    main.npdm, or the defaults when it has none */
 int snx_load_npdm(const char* entry, SnxNpdm* npdm, char* error, size_t error_size);
+/* snx_dump_program's result: SNX_DUMP_INPUT for the program's files, SNX_DUMP_INTERNAL for a failure of the host while
+   it loads, SNX_DUMP_OUTPUT when the folder or the index cannot be written. The input failure stays -1 as callers took
+   it before the classes */
+typedef enum {
+    SNX_DUMP_INTERNAL = -3,
+    SNX_DUMP_OUTPUT = -2,
+    SNX_DUMP_INPUT = -1,
+    SNX_DUMP_OK = 0
+} SnxDumpResult;
 /* Loads entry as snx_load_program does and writes each module into outdir (created if missing), for tools that read
    game code at its run-time addresses (tools/symbols.py, tools/disasm.py): <name>.bin, the module's image, and
    modules.txt, a text index of lines with space-separated fields, numbers in hex without 0x:
@@ -131,7 +145,7 @@ int snx_load_npdm(const char* entry, SnxNpdm* npdm, char* error, size_t error_si
        symbol <value> <size> <type> <name>
 
    Each symbol line belongs to the module line before it; its value is module-relative and the name runs to the end
-   of the line. 0, or -1 with a message */
-int snx_dump_program(const char* entry, const char* outdir, char* error, size_t error_size);
+   of the line. SNX_DUMP_OK, or a failure class with a message in error */
+SnxDumpResult snx_dump_program(const char* entry, const char* outdir, char* error, size_t error_size);
 
 #endif

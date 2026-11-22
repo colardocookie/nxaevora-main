@@ -6,15 +6,9 @@
 #include <stdio.h>
 
 int main(void) {
-#if defined(__APPLE__) || defined(__ANDROID__)
-    assert(snx_launcher_name("scarletnx") && snx_launcher_name("nxaevora-engine-switch"));
-    assert(snx_launcher_name("ScarletNX-x86_64") && snx_launcher_name("SCARLETNX"));
-    assert(!snx_launcher_name("nxaevora-engine") && !snx_launcher_name("scarletnx-switch"));
-#else
     assert(snx_launcher_name("nxaevora-engine") && snx_launcher_name("nxaevora-engine-switch"));
     assert(snx_launcher_name("ScarletNX-x86_64") && snx_launcher_name("NXAEVORA-ENGINE"));
     assert(!snx_launcher_name("scarletnx") && !snx_launcher_name("scarletnx-switch"));
-#endif
     assert(snx_launcher_name("ScarletNX-linux-x86_64") && snx_launcher_name("ScarletNX-linux-aarch64"));
     assert(snx_launcher_name("scarletnx-linux-ppc64le"));
     assert(!snx_launcher_name("ScarletNX-linux-"));

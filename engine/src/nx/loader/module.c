@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* What the game module's backends share: the dispatch entries, unit labels and progress lines */
 #include "nx/loader/module.h"
+#include "common/utilities/progress.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -69,6 +70,7 @@ void snx_unit_line(char* out, size_t size, size_t done, size_t count, const char
 }
 void snx_report_unit(size_t done, size_t count, const char* name, const char* label, int cached, double seconds) {
     char line[512];
+    snx_progress_value(SNX_PROGRESS_STAGE_RECOMPILE, (unsigned long long)done, (unsigned long long)count);
     snx_unit_line(line, sizeof line, done, count, name, label, cached, seconds, cached ? 0 : snx_footprint());
     puts(line);
     fflush(stdout);

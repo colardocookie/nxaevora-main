@@ -106,7 +106,6 @@ endif()
 # builds with its own Configure and make, which cmake/openssl.cmake runs
 # The archives' SHA-256 are also part of their cache keys (cmake/deps_cache.cmake)
 include("${PROJECT_SOURCE_DIR}/cmake/deps_cache.cmake")
-include("${PROJECT_SOURCE_DIR}/cmake/apple.cmake")
 if(SNX_BUILD_NX)
     set(snx_openssl_sha256 325b5c806167c13b40b1ffeadfe0248197c00eccc4cf123ec1e28d2d2fd216d9)
     CPMAddPackage(NAME OpenSSL VERSION 4.0.3
@@ -196,9 +195,7 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
         set(snx_tracy_options "TRACY_ENABLE ON" "TRACY_ON_DEMAND ON" "TRACY_NO_CRASH_HANDLER ON" "TRACY_STATIC ON"
                               "TRACY_MANUAL_LIFETIME ON" "TRACY_NO_CODE_TRANSFER ON" "TRACY_NO_FRAME_IMAGE ON"
                               "TRACY_NO_WAIT_STACKS ON" "TRACY_NO_VERIFY ON")
-        if(NOT ANDROID)
-            list(APPEND snx_tracy_options "TRACY_ONLY_LOCALHOST ON" "TRACY_NO_BROADCAST ON")
-        endif()
+        list(APPEND snx_tracy_options "TRACY_ONLY_LOCALHOST ON" "TRACY_NO_BROADCAST ON")
         CPMAddPackage(NAME tracy VERSION 0.14.1
                       URL https://github.com/wolfpld/tracy/archive/refs/tags/v0.14.1.tar.gz
                       URL_HASH SHA256=bf4af567e9c7524d07f3caa745fad02fb33bd5694f11910750382d1efbb251c1

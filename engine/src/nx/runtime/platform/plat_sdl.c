@@ -9,8 +9,7 @@
 #include <string.h>
 
 /* ================================================================ time */
-/* CLOCK_MONOTONIC_RAW on Linux (CLOCK_MONOTONIC on Android), QueryPerformanceCounter on Windows, mach_absolute_time
-   on Apple systems, counted from SDL's first call */
+/* SDL's high-resolution clock, counted from its first call */
 u64 plat_ns(void) { return SDL_GetTicksNS(); }
 i64 plat_unix_time(void) {
     SDL_Time t;
@@ -31,39 +30,9 @@ void plat_sleep_ns(i64 ns) {
 }
 
 /* ================================================================ libraries */
-#if defined(__ANDROID__)
-/* Shared storage (/sdcard) is mounted noexec: a module there loads from a copy in the app's cache folder */
-static void* dl_open_from_cache(const char* path) {
-    const char* cache = SDL_GetAndroidCachePath();
-    const char* base = strrchr(path, '/');
-    char copy[1400], buf[65536];
-    FILE *in, *out;
-    size_t n;
-    int ok = 1;
-    if (!cache) return NULL;
-    base = base ? base + 1 : path;
-    if ((size_t)snprintf(copy, sizeof copy, "%s/%s", cache, base) >= sizeof copy) return NULL;
-    in = fopen(path, "rb");
-    if (!in) return NULL;
-    out = fopen(copy, "wb");
-    if (!out) {
-        fclose(in);
-        return NULL;
-    }
-    while (ok && (n = fread(buf, 1, sizeof buf, in)) > 0) ok = fwrite(buf, 1, n, out) == n;
-    ok = ok && !ferror(in);
-    fclose(in);
-    if (fclose(out) || !ok) return NULL;
-    return SDL_LoadObject(copy);
-}
-#endif
 /* dlopen with RTLD_NOW | RTLD_LOCAL, or LoadLibraryW of the UTF-8 path */
 void* plat_dl_open(const char* path) {
-    void* h = SDL_LoadObject(path);
-#if defined(__ANDROID__)
-    if (!h) h = dl_open_from_cache(path);
-#endif
-    return h;
+    return SDL_LoadObject(path);
 }
 void* plat_dl_sym(void* h, const char* name) {
     SDL_FunctionPointer f = SDL_LoadFunction((SDL_SharedObject*)h, name);

@@ -3,9 +3,6 @@
 #ifndef __FreeBSD__
 #define _POSIX_C_SOURCE 200809L
 #endif
-#ifdef __APPLE__
-#define _DARWIN_C_SOURCE /* PRIO_MAX, which the POSIX name above hides, as process_posix.c */
-#endif
 #include "gui/gui_process.h"
 #include "common/utilities/common.h"
 #include <assert.h>
@@ -178,7 +175,7 @@ static void priority(const char* self) {
     raised = gui_process_low(tree, false, error, sizeof error);
     if (raised)
         assert(tree_priority(pid) == own);
-    else /* Linux and macOS without the privilege: said, the tree as it was */
+    else /* Linux without the privilege: said, the tree as it was */
         assert(error[0] && tree_priority(pid) == low);
     printf("gui_process: a lowered tree raised again: %s\n", raised ? "yes" : error);
     gui_process_terminate(tree);

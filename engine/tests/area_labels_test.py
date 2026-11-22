@@ -12,7 +12,7 @@ from pathlib import Path
 SCRIPT = Path(__file__).resolve().parent.parent / 'scripts' / 'area-labels.py'
 CASES = [
     ('[gui] Fix the folders crash', ['area: gui', 'kind: bug']),
-    ('[macos, linux] The AppImage starts', ['platform: macos', 'platform: linux']),
+    ('[linux, windows] The AppImage starts', ['platform: linux', 'platform: windows']),
     ('[donotmerge needs #374] [gpu] Add a surface format', ['area: gpu', 'kind: enhancement']),
     ('[shader, surface] [vk] Half floats', ['area: gpu']),
     ('[Docs] How to build', ['kind: documentation']),

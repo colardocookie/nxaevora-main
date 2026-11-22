@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* ELF: x86-64, AArch64, PowerPC64, RISC-V or LoongArch ET_REL objects into an ET_DYN shared object for Linux, FreeBSD
-   and Android.
+/* ELF: x86-64, AArch64, PowerPC64, RISC-V or LoongArch ET_REL objects into an ET_DYN shared object for Linux and
+   FreeBSD.
    Layout: [R: headers, .hash .dynsym .dynstr .rela.dyn, read-only data] [RX: .text] [RW: .data .got .dynamic, .bss].
    Every symbol must be defined by one of the objects; the only dynamic relocations are R_*_RELATIVE, for absolute
    addresses in writable data and for GOT slots. The objects are read and relocated by elf_object.c, as the JIT loader
@@ -17,8 +17,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#if defined(_WIN32) || defined(__APPLE__)
-/* Windows loads PE and Darwin Mach-O: neither has <elf.h>, and an ELF module would not load there */
+#if defined(_WIN32)
+/* Windows loads PE: it has no <elf.h>, and an ELF module would not load there */
 int snx_link_elf(const SnxLinkInput* inputs, size_t count, const char* const* exports, size_t export_count,
                  const char* soname, SnxLinkOutput* output, char* error, size_t error_size) {
     (void)inputs;

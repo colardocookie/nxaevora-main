@@ -407,12 +407,10 @@ static int object_for(const char* triple, const char* callee_name, const char* d
     return 0;
 }
 
-#ifndef __APPLE__ /* the AOT checks' objects: macOS links no ELF module (link_elf.c) */
 static int object(const char* callee_name, const char* data_name, const char* caller_name, unsigned char** data,
                   size_t* size) {
     return object_for("aarch64-unknown-linux-gnu", callee_name, data_name, caller_name, data, size);
 }
-#endif
 
 /* the definitions object() calls into */
 static int definitions_for(const char* triple, unsigned char** data, size_t* size) {
@@ -431,11 +429,9 @@ static int definitions_for(const char* triple, unsigned char** data, size_t* siz
     snx_ir_free(ir);
     return 0;
 }
-#ifndef __APPLE__
 static int definitions(unsigned char** data, size_t* size) {
     return definitions_for("aarch64-unknown-linux-gnu", data, size);
 }
-#endif
 
 /* the first B or BL of the function at address, before its RET: its target (0 for none) */
 static uint64_t first_branch(uint64_t address) {
@@ -764,7 +760,6 @@ static int llvm_objects(void) {
         }
         snx_ir_free(probe);
     }
-#ifndef __APPLE__ /* where the AOT linker writes no ELF module (link_elf.c) */
     {
         unsigned char *caller_data, *defs_data;
         size_t caller_size, defs_size, i;
@@ -801,10 +796,8 @@ static int llvm_objects(void) {
         free(caller_data);
         free(defs_data);
     }
-#endif
-    /* the JIT's objects on Linux and on macOS, where they are ELF with Darwin's calling convention (ir.c): both are
-       what elf_object.c reads, with the same relocations, and Darwin's names have no leading underscore in ELF */
-    if (jit_objects("aarch64-unknown-linux-gnu") || jit_objects("arm64-apple-macosx11.0.0-elf") ||
+    /* the JIT's objects on Linux, which are what elf_object.c reads, with the same relocations */
+    if (jit_objects("aarch64-unknown-linux-gnu") ||
         need_counts("aarch64-unknown-linux-gnu", SNX_ELF_VENEER_SIZE) || need_holds("aarch64-unknown-linux-gnu") ||
         large_load("aarch64-unknown-linux-gnu"))
         return 1;
@@ -819,7 +812,6 @@ static int llvm_objects(void) {
     return need_counts("x86_64-unknown-linux-gnu", 8); /* jmp *slot(%rip) and two int3 */
 }
 
-#ifndef __APPLE__ /* AOT modules */
 /* an exported symbol's address in a linked module, from its .dynsym; 0 for none */
 static uint64_t export_address(const unsigned char* module, const char* name) {
     const Elf64_Ehdr* eh = (const Elf64_Ehdr*)(const void*)module;
@@ -1116,7 +1108,6 @@ static int other_objects(const char* triple, unsigned machine, const char* what)
     free(defs_data);
     return 0;
 }
-#endif
 
 int main(void) {
     data_relocations();
@@ -1127,12 +1118,10 @@ int main(void) {
     loongarch_relocations();
     need_too_large();
     if (llvm_objects()) ++failures;
-#ifndef __APPLE__ /* AOT modules, which macOS doesn't link as ELF (link_elf.c) */
     if (ppc64le_objects() || ppc64le_tail_call() || ppc64le_block_chain()) ++failures;
     if (other_objects("riscv64-unknown-linux-gnu", EM_RISCV, "RISC-V") ||
         other_objects("loongarch64-unknown-linux-gnu", EM_LOONGARCH, "LoongArch"))
         ++failures;
-#endif
     if (failures) {
         printf("%d failures\n", failures);
         return 1;

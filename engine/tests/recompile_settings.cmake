@@ -6,27 +6,29 @@
 set(dir "${CMAKE_CURRENT_BINARY_DIR}/recompile-settings")
 file(REMOVE_RECURSE "${dir}")
 file(MAKE_DIRECTORY "${dir}")
-foreach(case "--aot_threads=abc|aot_threads=abc is not a whole number from 0 to 1024"
-             "--aot_threads=1.5|aot_threads=1.5 is not a whole number from 0 to 1024"
-             "--aot_threads=2000|aot_threads=2000 is not a whole number from 0 to 1024"
-             "--aot_threads=|aot_threads= is not a whole number from 0 to 1024"
-             "--llvm_inliner_threshold=50x|llvm_inliner_threshold=50x is not a whole number from -2147483647 to 2147483647"
-             "--opt=5|opt = 5: not 0, 1, 2, 3, s or z"
-             "--unit_cache_gb=-1|unit_cache_gb=-1 is not a whole number from 0 to 100000"
-             "--unit_cache_gb=2.5|unit_cache_gb=2.5 is not a whole number from 0 to 100000"
-             "--aot_threads=4|holds no exefs/main" "--llvm_inliner_threshold=50|holds no exefs/main"
-             "--opt=z|holds no exefs/main" "--unit_cache_gb=0|holds no exefs/main")
-    string(REPLACE "|" ";" case "${case}")
-    list(GET case 0 option)
-    list(GET case 1 expected)
+# a bad option or a bad --KEY=VALUE is exit 2 (SNX_EXIT_USAGE), a missing exefs/main is exit 3 (SNX_EXIT_GAME_FILES)
+foreach(case "--aot_threads=abc|2|aot_threads=abc is not a whole number from 0 to 1024"
+             "--aot_threads=1.5|2|aot_threads=1.5 is not a whole number from 0 to 1024"
+             "--aot_threads=2000|2|aot_threads=2000 is not a whole number from 0 to 1024"
+             "--aot_threads=|2|aot_threads= is not a whole number from 0 to 1024"
+             "--llvm_inliner_threshold=50x|2|llvm_inliner_threshold=50x is not a whole number from -2147483647 to 2147483647"
+             "--opt=5|2|opt = 5: not 0, 1, 2, 3, s or z"
+             "--unit_cache_gb=-1|2|unit_cache_gb=-1 is not a whole number from 0 to 100000"
+             "--unit_cache_gb=2.5|2|unit_cache_gb=2.5 is not a whole number from 0 to 100000"
+             "--aot_threads=4|3|holds no exefs/main" "--llvm_inliner_threshold=50|3|holds no exefs/main"
+             "--opt=z|3|holds no exefs/main" "--unit_cache_gb=0|3|holds no exefs/main")
+    string(REPLACE "|" ";" fields "${case}")
+    list(GET fields 0 option)
+    list(GET fields 1 expected_code)
+    list(GET fields 2 expected)
     execute_process(COMMAND "${CMAKE_COMMAND}" -E env --unset=DISPLAY --unset=WAYLAND_DISPLAY SDL_VIDEO_DRIVER=dummy
                             "${RUNTIME}" -r missing.nro ${option}
                     WORKING_DIRECTORY "${dir}" TIMEOUT 20 RESULT_VARIABLE result OUTPUT_VARIABLE out
                     ERROR_VARIABLE out)
     string(FIND "${out}" "${expected}" at)
-    if(result EQUAL 0 OR at LESS 0)
+    if(NOT result EQUAL expected_code OR at LESS 0)
         file(REMOVE_RECURSE "${dir}")
-        message(FATAL_ERROR "scarletnx -r missing.nro ${option} ended with ${result}, not \"${expected}\":\n${out}")
+        message(FATAL_ERROR "scarletnx -r missing.nro ${option} ended with ${result}, not ${expected_code} with \"${expected}\":\n${out}")
     endif()
 endforeach()
 # AOT pack build: a prepared game, recompiled with the cache the launcher names. --jit-cache and
@@ -47,7 +49,7 @@ if(bad GREATER -1)
     message(FATAL_ERROR "AOT build's --jit-cache/--hook-direct-calls were taken for extra dumps:\n${out}")
 endif()
 string(FIND "${out}" "holds no exefs/main" reached)
-if(reached LESS 0)
-    message(FATAL_ERROR "AOT build did not reach the recompiler:\n${out}")
+if(reached LESS 0 OR NOT result EQUAL 3)
+    message(FATAL_ERROR "AOT build did not reach the recompiler with exit 3 (ended with ${result}):\n${out}")
 endif()
 file(REMOVE_RECURSE "${dir}")

@@ -65,13 +65,6 @@ int main(void) {
     user_old = join(appdata, "scarletnx");
 #elif defined(SNX_XDG)
     user_old = join(xdg, "scarletnx");
-#else
-    /* macOS: ~/Library/Application Support/scarletnx */
-    {
-        char* parent = join(home, "Library/Application Support");
-        user_old = join(parent, "scarletnx");
-        free(parent);
-    }
 #endif
 
     /* no old folder beside the program and none in the old user's data folder */

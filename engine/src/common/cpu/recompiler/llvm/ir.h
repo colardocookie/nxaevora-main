@@ -184,7 +184,7 @@ int snx_ir_volatile(void);
 /* opt is the -O letter: 0,1,2,3,s,z */
 SnxIr* snx_ir_new(const char* name, char opt, char* error, size_t error_size);
 /* the same for code the JIT loader loads into this process (code_loader.h): the host's target, CPU and calling
-   convention, its objects in the format the loader reads, ELF on Darwin, whose own is Mach-O */
+   convention, its objects in the format the loader reads */
 SnxIr* snx_ir_new_jit(const char* name, char opt, char* error, size_t error_size);
 /* the same for another target triple (NULL: the host), for tests of the linkers; CPU and features stay generic */
 SnxIr* snx_ir_new_target(const char* name, char opt, const char* triple, char* error, size_t error_size);
