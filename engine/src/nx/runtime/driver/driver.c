@@ -557,10 +557,10 @@ int snx_driver(int argc, char** argv) {
                 goto done;
             }
             if (recompiled) {
-                /* the recompile path checks each value with ini_check (recompile.c): check it here too, before the
-                   stamp decides that the game is made and the recompile is skipped */
+                /* the recompile path's own check (recompile.c), before the stamp decides that the game is made and the
+                   recompile is skipped */
                 char why[256];
-                if (ini_check(recompiled, strchr(rest[i], '=') + 1, why, sizeof why)) {
+                if (!snx_recompile_value_taken(recompiled, strchr(rest[i], '=') + 1, why, sizeof why)) {
                     snx_error("%s", why);
                     result = SNX_EXIT_USAGE;
                     goto done;

@@ -20,4 +20,7 @@ int snx_deploy_runtime(const char* run, const char* exe);
 int snx_recompile_game(int argc, char** argv, const SnxPaths* paths);
 /* a setting of the recompile (settings.txt's recompile and llvm tables), which --KEY=VALUE sets; NULL for another key */
 const IniOpt* snx_recompile_setting(const char* key);
+/* 1 when o's value from --KEY=VALUE is taken; 0 when it is refused, with the line why in out. It checks the row and
+   opt's words, so the recompile path and the driver's play path refuse the same values */
+int snx_recompile_value_taken(const IniOpt* o, const char* value, char* out, size_t n);
 #endif

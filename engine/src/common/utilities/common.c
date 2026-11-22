@@ -195,9 +195,12 @@ static char* utf8(const wchar_t* s) {
     WideCharToMultiByte(CP_UTF8, 0, s, -1, p, n, NULL, NULL);
     return p;
 }
-static DWORD attributes(const char* path) {
+/* the file's attributes, or INVALID_FILE_ATTRIBUTES with the host's reason in *error (NULL when not wanted): the reason
+   is read before the path's copy is freed, which may change the host's last error */
+static DWORD attributes(const char* path, DWORD* error) {
     wchar_t* p = wide(path);
     DWORD a = p ? GetFileAttributesW(p) : INVALID_FILE_ATTRIBUTES;
+    if (error) *error = a == INVALID_FILE_ATTRIBUTES ? GetLastError() : ERROR_SUCCESS;
     free(p);
     return a;
 }
@@ -480,7 +483,7 @@ char* snx_executable(const char* argv0) {
 }
 int snx_is_file(const char* path) {
 #ifdef _WIN32
-    DWORD a = attributes(path);
+    DWORD a = attributes(path, NULL);
     return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY);
 #else
     struct stat st;
@@ -489,7 +492,7 @@ int snx_is_file(const char* path) {
 }
 int snx_is_dir(const char* path) {
 #ifdef _WIN32
-    DWORD a = attributes(path);
+    DWORD a = attributes(path, NULL);
     return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY) != 0;
 #else
     struct stat st;
@@ -498,7 +501,7 @@ int snx_is_dir(const char* path) {
 }
 int snx_is_link(const char* path) {
 #ifdef _WIN32
-    DWORD a = attributes(path);
+    DWORD a = attributes(path, NULL);
     return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
 #else
     struct stat st;
@@ -507,7 +510,7 @@ int snx_is_link(const char* path) {
 }
 int snx_path_exists(const char* path) {
 #ifdef _WIN32
-    return attributes(path) != INVALID_FILE_ATTRIBUTES;
+    return attributes(path, NULL) != INVALID_FILE_ATTRIBUTES;
 #else
     struct stat st;
     return !lstat(path, &st);
@@ -516,8 +519,7 @@ int snx_path_exists(const char* path) {
 int snx_path_missing(const char* path) {
 #ifdef _WIN32
     DWORD code;
-    if (attributes(path) != INVALID_FILE_ATTRIBUTES) return 0;
-    code = GetLastError();
+    if (attributes(path, &code) != INVALID_FILE_ATTRIBUTES) return 0;
     return code == ERROR_FILE_NOT_FOUND || code == ERROR_PATH_NOT_FOUND;
 #else
     struct stat st;
