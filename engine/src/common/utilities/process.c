@@ -145,8 +145,9 @@ static int run_stage(const char* const* argv, const char* cwd, const char* stage
     size_t i;
     sigemptyset(&blocked);
     for (i = 0; i < 4; ++i) sigaddset(&blocked, signals[i]);
+    if (child_started) *child_started = 0;
     if (sigprocmask(SIG_BLOCK, &blocked, &previous)) {
-        perror("scarletnx: blocking stage signals");
+        snx_error("%s: cannot block the stage signals: %s", stage, strerror(errno));
         return SNX_EXIT_INTERNAL;
     }
     memset(&action, 0, sizeof(action));
@@ -238,7 +239,7 @@ static int run_stage(const char* const* argv, const char* cwd, const char* stage
         snx_error("%s failed (exit status %d). You can run the same command again.", stage, rc);
     goto done;
 setup_failed:
-    perror("scarletnx: starting child process");
+    snx_error("%s: cannot start %s: %s", stage, argv[0], strerror(errno));
     if (group[0] >= 0) close(group[0]);
     if (group[1] >= 0) close(group[1]);
 done:
