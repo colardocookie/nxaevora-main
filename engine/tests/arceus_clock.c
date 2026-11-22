@@ -16,6 +16,7 @@ int snx_discord_start(const char* app) {
 }
 #include "arceus_steps_30.h"
 #include <assert.h>
+#include <stdarg.h>
 
 static u8 memory[4096];
 u8* g_mem = memory;
@@ -35,11 +36,21 @@ void pm_unlock(PMutex* m) {
     if (hook) hook();
 }
 static unsigned waza_dependency_warnings;
-static unsigned low_fps_skip_logs, log_lines, drp_layer_notes, drp_bare_lines;
+static unsigned low_fps_skip_logs, log_lines, drp_layer_notes, drp_bare_lines, drp_bare_warnings;
+static char drp_bare_line[512]; /* the last bare start line, formatted */
 void logf_(int level, const char* fmt, ...) {
     log_lines++;
     if (strstr(fmt, "arceus-discord: presence off: it needs the timing layer")) drp_layer_notes++;
-    if (strstr(fmt, "arceus-discord: EXPERIMENT: without the timing layer")) drp_bare_lines++;
+    if (strstr(fmt, "arceus-discord: EXPERIMENT: without the timing layer")) {
+        va_list args;
+        va_start(args, fmt);
+        vsnprintf(drp_bare_line, sizeof drp_bare_line, fmt, args);
+        va_end(args);
+        drp_bare_lines++;
+    }
+    if (strstr(fmt, "arceus-discord: without the battle sequence count") ||
+        strstr(fmt, "arceus-discord: without the camera input count"))
+        drp_bare_warnings++;
     if (level == 0 && strstr(fmt, "arceus-waza-shot: enabled without WAZA_OBJECT_FIX"))
         waza_dependency_warnings++;
     if (level == 1 && strstr(fmt, "arceus-clock: timing layer skipped at fps_limit="))
@@ -49,7 +60,7 @@ static u64 host_ns = 1000000000;
 u64 plat_ns(void) { return host_ns; }
 void mem_query(u64 address, MemBlock* out) {
     (void)address;
-    *out = (MemBlock){.addr = 1, .size = sizeof memory - 1, .perm = PERM_RW};
+    *out = (MemBlock){.addr = 1, .size = g_as_size - 1, .perm = PERM_RW};
 }
 u64 mem_find_free(u64 lo, u64 hi, u64 size, u64 align) {
     (void)lo; (void)hi; (void)size; (void)align;
@@ -396,9 +407,12 @@ static void test_discord_bare(void) {
         if (values[i]) flag("SNX_ARCEUS_DISCORD_BARE", values[i]);
         else unset_flag("SNX_ARCEUS_DISCORD_BARE");
         discord_starts = 1, discord_start_calls = 0, drp_ticking = 0, drp_presence = 0, drp_base = 0;
-        drp_layer_notes = drp_bare_lines = 0;
+        drp_layer_notes = drp_bare_lines = drp_bare_warnings = 0, drp_bare_line[0] = 0;
         arceus_clock_post_jit();
         assert(drp_layer_notes == (unsigned)!on && drp_bare_lines == (unsigned)on);
+        /* neither site is in this memory: both counters refused, said in the line and by a warning each */
+        const char* refused = strstr(drp_bare_line, "main+193c04c, refused)");
+        assert(on ? refused && strstr(refused, "main+9dbeac, refused)") && drp_bare_warnings == 2 : !drp_bare_warnings);
         assert(discord_start_calls == (unsigned)on && drp_ticking == on && drp_presence == on);
         assert(table[clock / 4] == (on ? drp_bare_read : bare_clock_original));
         assert(main_base == 0 && drp_base == (on ? base : 0));
@@ -414,6 +428,11 @@ static void test_discord_bare(void) {
     arceus_clock_post_jit();
     assert(!discord_start_calls && !drp_ticking && !drp_presence && !drp_bare_lines);
     assert(table[clock / 4] == bare_clock_original);
+    /* the right word but an empty dispatch entry: the same, never a call through it */
+    gw32(clock, 0x8b21d008), table[clock / 4] = NULL;
+    arceus_clock_post_jit();
+    assert(!discord_start_calls && !drp_ticking && !drp_presence && !drp_bare_lines && !table[clock / 4]);
+    table[clock / 4] = bare_clock_original;
     /* no id (the start fails): off, the counters and the tick left alone */
     gw32(clock, 0x8b21d008), discord_starts = 0, discord_start_calls = 0, jit_changes = 0;
     arceus_clock_post_jit();
@@ -492,6 +511,144 @@ static void test_discord_bare(void) {
     camera_input_calls = saved_camera, battle_sequence_calls = saved_sequence;
     g_mod = saved_mod, g_disp = saved_disp, main_base = saved_base, g_code_lo = saved_lo, g_code_hi = saved_hi;
     drp_base = saved_drp;
+}
+/* The reviewer's N1 and N3 (23:46): the two fixes and the bare counters check a site by one helper. Its outcomes,
+   then each fix's init installing on the site and refusing it with a guard word changed */
+static void fill_site(const ArceusBodySite* site, u64 pc, int changed) {
+    memset(memory, 0, sizeof memory);
+    for (unsigned g = 0; g < site->guards; g++) gw32(pc + site->guard_at[g], site->guard[g] ^ (changed == (int)g + 1));
+}
+static void test_body_sites(void) {
+    static GuestFn table[sizeof memory / 4];
+    static u64 lo[1];
+    static u32 len[1];
+    static u8 stale[1];
+    static GuestFn entry[1];
+    SnxModule module = {.nfns = 1, .fn_lo = lo, .fn_len = len, .stale = stale, .entry_fn = entry};
+    const SnxModule* const saved_mod = g_mod;
+    GuestFn* const saved_disp = g_disp;
+    const u64 saved_base = main_base, saved_lo = g_code_lo, saved_hi = g_code_hi;
+    const int saved_clocks = clocks_installed, saved_even = battle_sequence_even;
+    const u64 pc = 0x100;
+    g_mod = &module, g_disp = table, g_code_lo = 0, g_code_hi = sizeof memory;
+    for (unsigned k = 0; k < BODY_SITES; k++) {
+        const ArceusBodySite* site = &body_sites[k];
+        const u64 base = pc - site->offset;
+        lo[0] = pc, len[0] = site->size;
+        fill_site(site, pc, 0);
+        assert(body_site_check(site, base) == 1);
+        for (unsigned g = 0; g < site->guards; g++) {
+            fill_site(site, pc, (int)g + 1);
+            assert(body_site_check(site, base) == 0);
+        }
+        fill_site(site, pc, 0);
+        len[0] = site->size + 4; /* another function at the address */
+        assert(body_site_check(site, base) == 0);
+        len[0] = site->size, lo[0] = pc + 4;
+        assert(body_site_check(site, base) == 0);
+        lo[0] = pc, g_code_hi = pc + site->size - 4; /* past the code */
+        assert(body_site_check(site, base) == 0);
+        g_code_hi = sizeof memory, module.nfns = 0;
+        assert(body_site_check(site, base) == 0);
+        module.nfns = 1;
+        for (unsigned m = 0; m < 4; m++) { /* no JIT function lists */
+            SnxModule bare = module;
+            if (m == 0) bare.fn_lo = NULL;
+            if (m == 1) bare.fn_len = NULL;
+            if (m == 2) bare.stale = NULL;
+            if (m == 3) bare.entry_fn = NULL;
+            g_mod = &bare;
+            assert(body_site_check(site, base) == -1);
+            g_mod = &module;
+        }
+        assert(body_site_check(site, base) == 1);
+    }
+    /* the fixes' inits on the helper */
+    clocks_installed = 1;
+    for (unsigned k = 0; k < BODY_SITES; k++)
+        for (int changed = 0; changed < 2; changed++) {
+            const ArceusBodySite* site = &body_sites[k];
+            fill_site(site, pc, changed ? (int)site->guards : 0);
+            memset(table, 0, sizeof table);
+            lo[0] = pc, len[0] = site->size, main_base = pc - site->offset;
+            camera_input_original = battle_sequence_original = NULL;
+            jit_allowed = 1, jit_changes = 0;
+            if (k == BODY_CAMERA_INPUT) camera_input_init();
+            else battle_sequence_fix_init();
+            jit_allowed = 0;
+            const GuestFn wrapper = k == BODY_CAMERA_INPUT ? camera_input_update : battle_sequence_update;
+            assert(table[pc / 4] == (changed ? NULL : wrapper) && jit_changes == (unsigned)!changed);
+            assert((gr32(pc + site->at) == site->word) == !changed);
+            assert((k == BODY_CAMERA_INPUT ? camera_input_original : battle_sequence_original) ==
+                   (changed ? NULL : jit_compiled));
+        }
+    camera_input_original = battle_sequence_original = NULL;
+    memset(memory, 0, sizeof memory);
+    g_mod = saved_mod, g_disp = saved_disp, main_base = saved_base, g_code_lo = saved_lo, g_code_hi = saved_hi;
+    clocks_installed = saved_clocks, battle_sequence_even = saved_even;
+}
+/* The bare path with every site at its real offset, in a guest memory that large: the three readers, both counters
+   and the tick installed, and the start line with nothing refused (the reviewer's N4) */
+static void test_discord_bare_sites(void) {
+    static const struct { u32 offset, word; } readers[DRPS_SITES] = {
+        {0x1eb2a7c, 0xf9403408}, {0x1dd7c68, 0xd103c3ff}, {0xfc20c8, 0xf81d0ff5}};
+    static const GuestFn wrappers[DRPS_SITES] = {drp_area_name, drp_battle_start, drp_text_set};
+    static u64 lo[BODY_SITES];
+    static u32 len[BODY_SITES];
+    static u8 stale[BODY_SITES];
+    static GuestFn entry[BODY_SITES];
+    const u64 base = 0x1000, clock = base + 0x278303c, code_lo = base + 0x9dbeac, size = clock + 0x100;
+    u8* const big = calloc(size, 1);
+    GuestFn* const table = calloc((clock + 4 - code_lo) / 4, sizeof *table);
+    assert(big && table);
+    SnxModInfo main_mod = {.name = "main", .base = base};
+    memcpy(main_mod.build_id, arceus_main_id, sizeof main_mod.build_id);
+    SnxModule module = {.nmods = 1, .mods = &main_mod, .nfns = BODY_SITES, .fn_lo = lo, .fn_len = len,
+                        .stale = stale, .entry_fn = entry};
+    u8* const saved_mem = g_mem;
+    const SnxModule* const saved_mod = g_mod;
+    GuestFn* const saved_disp = g_disp;
+    GuestFn saved_readers[DRPS_SITES];
+    memcpy(saved_readers, drp_original, sizeof saved_readers);
+    const u64 saved_size = g_as_size, saved_base = main_base, saved_lo = g_code_lo, saved_hi = g_code_hi;
+    const u64 saved_drp = drp_base;
+    g_mem = big, g_as_size = size, g_mod = &module, g_disp = table, g_code_lo = code_lo, g_code_hi = clock + 4;
+    main_base = 0, timing_enabled = clocks_installed = 0;
+    gw32(clock, 0x8b21d008), table[(clock - code_lo) / 4] = bare_clock_original;
+    for (unsigned k = 0; k < DRPS_SITES; k++)
+        gw32(base + readers[k].offset, readers[k].word), table[(base + readers[k].offset - code_lo) / 4] = jit_compiled;
+    for (unsigned k = 0; k < BODY_SITES; k++) {
+        const ArceusBodySite* site = &body_sites[k];
+        const u64 pc = base + site->offset;
+        for (unsigned g = 0; g < site->guards; g++) gw32(pc + site->guard_at[g], site->guard[g]);
+        lo[k] = pc, len[k] = site->size, table[(pc - code_lo) / 4] = jit_compiled;
+    }
+    flag("SNX_ARCEUS_DISCORD", "1");
+    flag("SNX_ARCEUS_DISCORD_APP", "1234567890");
+    flag("SNX_ARCEUS_DISCORD_BARE", "1");
+    discord_starts = 1, drp_ticking = 0, drp_presence = 0;
+    drp_bare_lines = drp_bare_warnings = drp_layer_notes = 0, drp_bare_line[0] = 0;
+    jit_allowed = 1, jit_changes = 0;
+    arceus_clock_post_jit();
+    jit_allowed = 0;
+    assert(drp_bare_lines == 1 && !strstr(drp_bare_line, "refused") && !drp_bare_warnings && !drp_layer_notes);
+    assert(strstr(drp_bare_line, "(main+193c04c) and the battle sequence update (main+9dbeac)"));
+    assert(jit_changes == 2 && drp_ticking && drp_presence && drp_base == base && main_base == 0);
+    assert(table[(clock - code_lo) / 4] == drp_bare_read && drp_bare_clock == bare_clock_original);
+    for (unsigned k = 0; k < DRPS_SITES; k++)
+        assert(table[(base + readers[k].offset - code_lo) / 4] == wrappers[k] && drp_original[k] == jit_compiled);
+    assert(table[(base + 0x193c04c - code_lo) / 4] == drp_bare_camera && gr32(base + 0x193c04c + 0x274) == 0xb4fffddf);
+    assert(table[(base + 0x9dbeac - code_lo) / 4] == drp_bare_sequence && gr32(base + 0x9dbeac + 0x2c) == 0x91000013);
+    assert(drp_bare_body[BODY_CAMERA_INPUT] == jit_compiled && drp_bare_body[BODY_BATTLE_SEQUENCE] == jit_compiled);
+    unset_flag("SNX_ARCEUS_DISCORD_BARE");
+    unset_flag("SNX_ARCEUS_DISCORD");
+    unset_flag("SNX_ARCEUS_DISCORD_APP");
+    discord_starts = 0, drp_ticking = 0, drp_presence = 0;
+    drp_bare_body[BODY_CAMERA_INPUT] = drp_bare_body[BODY_BATTLE_SEQUENCE] = NULL, drp_bare_clock = NULL;
+    memcpy(drp_original, saved_readers, sizeof saved_readers);
+    g_mem = saved_mem, g_as_size = saved_size, g_mod = saved_mod, g_disp = saved_disp;
+    main_base = saved_base, g_code_lo = saved_lo, g_code_hi = saved_hi, drp_base = saved_drp;
+    free(table), free(big);
 }
 static void test_defaults_on(void) {
     static const char* const all[] = {
@@ -2927,6 +3084,8 @@ int main(void) {
     test_discord_default();
     test_discord_layer_off();
     test_discord_bare();
+    test_body_sites();
+    test_discord_bare_sites();
     test_capped_fall_body();
     test_fade_slots_free();
     test_list_scroll();

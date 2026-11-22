@@ -510,14 +510,27 @@ static void blink_fix_init(void) {
 
 
 /* The camera input (193C04C) and the battle sequence update (9DBEAC) run from a JIT body of their own, selected by
-   one equivalent word at at: CBZ XZR for the camera's B, ADD X19,X0,#0 for the sequence's MOV. Their fixes and
-   Discord presence's counters without the timing layer read the function, its guard words and that word here. */
+   one equivalent word (CBZ XZR for the camera's B, ADD X19,X0,#0 for the sequence's MOV). Their fixes and Discord
+   presence's counters without the timing layer read the function, its guard words and that word here. */
 typedef struct { u32 offset, size, guards, guard_at[4], guard[4], at, word; } ArceusBodySite;
 enum { BODY_CAMERA_INPUT, BODY_BATTLE_SEQUENCE, BODY_SITES };
 static const ArceusBodySite body_sites[BODY_SITES] = {
     {0x193c04c, 0x278, 3, {0, 0x130, 0x274}, {0xfc1b0fec, 0x1e222862, 0x17ffffee}, 0x274, 0xb4fffddf},
     {0x9dbeac, 0x598, 4, {0, 0x2c, 0x534, 0x538}, {0x6db923e9, 0xaa0003f3, 0xbd40f262, 0x1e222821}, 0x2c, 0x91000013},
 };
+/* The site at base, for the fixes and the counters alike: -1 when the module has no JIT function lists, 0 when the
+   listed function or a guard word differs, 1 when it is the site */
+static int body_site_check(const ArceusBodySite* s, u64 base) {
+    const u64 pc = base + s->offset;
+    int covered = 0;
+    if (!g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return -1;
+    for (u32 i = 0; i < g_mod->nfns; i++)
+        if (g_mod->fn_lo[i] == pc && g_mod->fn_len[i] == s->size) covered = 1;
+    if (!covered || pc < g_code_lo || pc + s->size > g_code_hi || !readable(pc, s->size)) return 0;
+    for (unsigned g = 0; g < s->guards; g++)
+        if (gr32(pc + s->guard_at[g]) != s->guard[g]) return 0;
+    return 1;
+}
 
 static GuestFn camera_input_original;
 static u64 camera_input_calls;
@@ -579,13 +592,9 @@ static void camera_input_init(void) {
     if (!arceus_switch_enabled("SNX_ARCEUS_CAMERA_INPUT_FIX", 1) && !camera_trace_only) return;
     const ArceusBodySite* s = &body_sites[BODY_CAMERA_INPUT];
     u64 pc = main_base + s->offset;
-    int covered = 0;
-    if (!g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
-    for (u32 i = 0; i < g_mod->nfns; i++)
-        if (g_mod->fn_lo[i] == pc && g_mod->fn_len[i] == s->size) covered = 1;
-    if (!covered || pc < g_code_lo || pc + s->size > g_code_hi || !readable(pc, s->size) ||
-        gr32(pc + s->guard_at[0]) != s->guard[0] || gr32(pc + s->guard_at[1]) != s->guard[1] ||
-        gr32(pc + s->guard_at[2]) != s->guard[2]) {
+    const int site = body_site_check(s, main_base);
+    if (site < 0) return;
+    if (!site) {
         WARN("arceus-camera-input: refused instruction/function guard\n"); return;
     }
     gw32(pc + s->at, s->word); /* Equivalent CBZ XZR, pc+22c. */
@@ -1428,12 +1437,7 @@ static void battle_sequence_fix_init(void) {
     if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
     const ArceusBodySite* s = &body_sites[BODY_BATTLE_SEQUENCE];
     const u64 pc = main_base + s->offset;
-    int covered = 0;
-    for (u32 i = 0; i < g_mod->nfns; i++)
-        if (g_mod->fn_lo[i] == pc && g_mod->fn_len[i] == s->size) covered = 1;
-    if (!covered || pc < g_code_lo || pc + s->size > g_code_hi || !readable(pc, s->size) ||
-        gr32(pc + s->guard_at[0]) != s->guard[0] || gr32(pc + s->guard_at[1]) != s->guard[1] ||
-        gr32(pc + s->guard_at[2]) != s->guard[2] || gr32(pc + s->guard_at[3]) != s->guard[3]) {
+    if (body_site_check(s, main_base) != 1) {
         WARN("arceus-battle-sequence: refused instruction/function guard\n");
         return;
     }
@@ -4684,13 +4688,7 @@ static int drp_bare_counter(unsigned k, u64 base) {
     static const GuestFn counters[BODY_SITES] = {drp_bare_camera, drp_bare_sequence};
     const ArceusBodySite* s = &body_sites[k];
     const u64 pc = base + s->offset;
-    int covered = 0;
-    if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return 0;
-    for (u32 i = 0; i < g_mod->nfns; i++)
-        if (g_mod->fn_lo[i] == pc && g_mod->fn_len[i] == s->size) covered = 1;
-    if (!covered || pc < g_code_lo || pc + s->size > g_code_hi || !readable(pc, s->size)) return 0;
-    for (unsigned g = 0; g < s->guards; g++)
-        if (gr32(pc + s->guard_at[g]) != s->guard[g]) return 0;
+    if (body_site_check(s, base) != 1) return 0;
     gw32(pc + s->at, s->word);
     jit_code_changed(pc, s->size);
     if (!(drp_bare_body[k] = jit_wait(pc))) return 0;
