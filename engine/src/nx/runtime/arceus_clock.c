@@ -4589,11 +4589,14 @@ static void drp_battle_start(CPU* c, u64 entry) {
     drp_battle_decide(plat_ns());
     drp_original[DRPS_BATTLE](c, entry);
 }
+/* On by default (SNX_ARCEUS_DISCORD=0 turns it off). It needs the player's own application id: with neither the switch
+   nor an id set it stays off without a word, and only a 1 without an id says why */
 static void discord_presence_init(void) {
     const char* presence = getenv("SNX_ARCEUS_DISCORD");
-    drp_presence = presence && !strcmp(presence, "1");
+    const char* app = getenv("SNX_ARCEUS_DISCORD_APP");
+    drp_presence = arceus_switch_enabled("SNX_ARCEUS_DISCORD", 1) && (presence || (app && *app));
     if (!drp_presence || !main_base || !g_disp) return;
-    if (!snx_discord_start(getenv("SNX_ARCEUS_DISCORD_APP"))) {
+    if (!snx_discord_start(app)) {
         WARN("arceus-discord: presence off: SNX_ARCEUS_DISCORD_APP is missing or not an application id\n");
         drp_presence = 0;
         return;

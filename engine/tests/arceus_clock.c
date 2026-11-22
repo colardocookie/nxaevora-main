@@ -270,6 +270,37 @@ static void unset_flag(const char* name) {
     assert(!unsetenv(name));
 #endif
 }
+/* Discord presence is on by default, needs an application id, and says why it is off only when asked for */
+static void test_discord_default(void) {
+    static GuestFn table[1];
+    const u64 saved_base = main_base;
+    GuestFn* const saved_disp = g_disp;
+    const struct {
+        const char *presence, *app;
+        int on;
+    } cases[] = {{NULL, NULL, 0}, {NULL, "", 0}, {NULL, "1234567890", 1}, {"1", NULL, 1}, {"0", "1234567890", 0},
+                 {"2", "1234567890", 0}};
+    main_base = 0, g_disp = NULL;
+    for (unsigned i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        if (cases[i].presence) flag("SNX_ARCEUS_DISCORD", cases[i].presence);
+        else unset_flag("SNX_ARCEUS_DISCORD");
+        if (cases[i].app) flag("SNX_ARCEUS_DISCORD_APP", cases[i].app);
+        else unset_flag("SNX_ARCEUS_DISCORD_APP");
+        discord_presence_init();
+        assert(drp_presence == cases[i].on);
+    }
+    /* past the module check, a start that fails (the test's never starts) turns it off and says so */
+    main_base = 4096, g_disp = table;
+    flag("SNX_ARCEUS_DISCORD", "1");
+    unset_flag("SNX_ARCEUS_DISCORD_APP");
+    const unsigned lines = log_lines;
+    discord_presence_init();
+    assert(!drp_presence && log_lines == lines + 1);
+    unset_flag("SNX_ARCEUS_DISCORD"); /* unset with no id: off, nothing said */
+    discord_presence_init();
+    assert(!drp_presence && log_lines == lines + 1);
+    main_base = saved_base, g_disp = saved_disp;
+}
 static void test_defaults_on(void) {
     static const char* const all[] = {
         "SNX_ARCEUS_TIMING_FIXES", "SNX_ARCEUS_TARGET_FPS", "SNX_ARCEUS_FPS60",
@@ -2679,6 +2710,7 @@ int main(void) {
     test_battle_mon();
     test_ride_swap();
     test_defaults_on();
+    test_discord_default();
     test_capped_fall_body();
     test_fade_slots_free();
     test_list_scroll();
