@@ -625,7 +625,10 @@ void vk_surf_wrote(Surf* s) {
    target in vk_rt_before_write: a target adds its pages when it is made or taken out of parking, and removes them when it
    is parked or freed */
 static PendPages g_rt_pages;
+/* PERF-36: whether a render target is pending over [gva, gva + size), as vk_rt_before_write would flush */
+int vk_rt_pages_hit(u64 gva, u64 size) { return size && pend_hit_va(&g_rt_pages, gva, size); }
 static void rt_pages(const Surf* s, int delta) {
+    if (delta > 0) gpu_fly_wait_all(GPU_FLY_TARGET); /* PERF-36: no target becomes pending over a batch in B */
     if (g_perf_probes && delta > 0) __atomic_fetch_add(&g_perf_vkx.rt_add, 1, __ATOMIC_RELAXED); /* PERF-36G */
     if (!(s->gva >> 63)) pend_add_va(&g_rt_pages, s->gva, s->rt_size, delta);
 }
@@ -1362,7 +1365,7 @@ static u64 rt_mem_hash(const Surf* s) {
             n += size - o - n < 0x1000 ? size - o - n : 0x1000;
         /* an unmapped page counts as its length, pages the GPU holds as their owners (they are trapped) */
         if (!cpu || !own_hash(cpu, n, &h))
-            h = snx_fnv_step(h, cpu ? vk_hash(GP(cpu), n) : n);
+            h = snx_fnv_step(h, cpu ? (gpu_fly_wait(GP(cpu), n), vk_hash(GP(cpu), n)) : n); /* PERF-36's line */
         o += n;
     }
     return h;

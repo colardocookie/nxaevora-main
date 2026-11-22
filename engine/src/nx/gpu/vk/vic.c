@@ -96,6 +96,7 @@ static void plane_stage(const VicPlane* pl, u8* host, u64 at, Copies* cp) {
     if (n > sizeof o / sizeof *o || cp->n + n > sizeof cp->c / sizeof *cp->c) {
         /* more owners than noted: what the GPU holds of the plane lands, and it is read as it is then */
         own_acquire((u64)(pl->p - g_mem), pl->lim);
+        gpu_fly_wait(pl->p, pl->lim); /* PERF-36: in vk_vic_compose's hold */
         memcpy(host, pl->p, pl->lim);
         return;
     }

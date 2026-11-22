@@ -675,6 +675,19 @@ typedef struct {
     uint64_t unlocked[VKU_N];                                                    /* atomic */
 } PerfVkx;
 extern PerfVkx g_perf_vkx;
+/* PERF-36 (SNX_ARCEUS_PERF_BESIDE, research's BUILD SPEC 2026-11-22 14:08), with the probes: the release thread's
+   graphics landings written beside the GPU thread (beside), or on today's path by the first reason that sent them
+   there, results and bytes written in B, the ms of A, B and C, the waits that blocked by kind (gpu.h's GPU_FLY_*)
+   with their ms, submit()'s landings skipped and the joins that ran C */
+enum { FLYR_CALLER, FLYR_HOLD, FLYR_OWN, FLYR_IMAGE, FLYR_EMPTY, FLYR_INITIAL, FLYR_DST, FLYR_TARGET, FLYR_ARENA,
+       FLYR_N };
+typedef struct {
+    uint64_t beside, today[FLYR_N], results, bytes, a_ns, b_ns, c_ns; /* atomic */
+    uint64_t wait_n[5], wait_ns[5], skipped, joins;                    /* atomic: wait by GPU_FLY_* */
+} PerfBeside;
+extern PerfBeside g_perf_bs;
+extern int g_perf_beside; /* SNX_ARCEUS_PERF_BESIDE=1 and what it needs (main.c) */
+size_t perf_beside_line(PerfBeside* b, uint32_t frames, char* out, size_t size);
 size_t perf_vklock_line(PerfWaits* w, PerfVkx* x, uint32_t frames, char* out, size_t size);
 void perf_copy_wpage(PerfCopies* c, uint64_t page, uint64_t frame);
 /* PERF-23's, the same, with the stamps' counts since the last and the cost of one clock read. real NULL: the record as

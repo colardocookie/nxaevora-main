@@ -201,6 +201,13 @@ static void own_land(const OwnRange* r, u8* const* dst, u32 n) {
 }
 
 static u32 lock_owner(void) { return vk_lock_owner(); }
+/* PERF-36: own_stage's lines (host), and own_begin's wait for the whole batch (NULL) */
+static void owned_fly_wait(const void* host, u64 n) {
+    if (host)
+        gpu_fly_wait(host, n);
+    else
+        gpu_fly_wait_all(GPU_FLY_OWN);
+}
 
 int vk_own_init(void) {
     /* vk_lock and vk_unlock themselves, not g_vklock: the outermost unlock also signals what the hold's releases
@@ -211,7 +218,8 @@ int vk_own_init(void) {
                   .busy_tid = lock_owner,
                   .lock = vk_lock,
                   .unlock = vk_unlock,
-                  .landed = vk_ww_landed};
+                  .landed = vk_ww_landed,
+                  .fly_wait = g_perf_beside ? owned_fly_wait : NULL}; /* PERF-36: own.c makes no call when unset */
     g_owned.traps = !own_init(&h);
     return g_owned.traps ? 0 : -1;
 }
@@ -234,6 +242,7 @@ void vk_own_publish(u64 cpu, u64 size, VkOwnRes* r, u64 off) {
     o.res = r;
     o.res_off = off;
     d = GP(cpu);
+    gpu_fly_wait(d, size); /* PERF-36 */
     own_land(&o, &d, 1);
 }
 
@@ -255,12 +264,14 @@ static void cpu_read(u64 cpu, u64 size, u8* host, VkBuffer buf, u64 at, int* any
     OwnRange o[16];
     u32 n, i;
     if (!__atomic_load_n(&g_own_any, __ATOMIC_ACQUIRE)) {
+        gpu_fly_wait(GP(cpu), size); /* PERF-36 */
         memcpy(host, GP(cpu), (size_t)size);
         return;
     }
     n = own_stage(cpu, size, host, o, sizeof o / sizeof *o);
     if (n > sizeof o / sizeof *o) { /* more owners than noted: they land, and the bytes are read as they are then */
         own_acquire(cpu, size);
+        gpu_fly_wait(GP(cpu), size); /* PERF-36 */
         memcpy(host, GP(cpu), (size_t)size);
         return;
     }
@@ -306,12 +317,13 @@ void vk_guest_peek(u64 gva, void* dst, u64 size) {
             if (n > size - o) n = size - o;
             memset(d + o, 0, (size_t)n);
         } else if (!__atomic_load_n(&g_own_any, __ATOMIC_ACQUIRE))
-            memcpy(d + o, GP(cpu), (size_t)n);
+            gpu_fly_wait(GP(cpu), n), memcpy(d + o, GP(cpu), (size_t)n); /* PERF-36's line */
         else {
             OwnRange r[16];
             u32 k = own_stage(cpu, n, d + o, r, sizeof r / sizeof *r), i;
             if (k > sizeof r / sizeof *r) {
                 own_acquire(cpu, n);
+                gpu_fly_wait(GP(cpu), n); /* PERF-36 */
                 memcpy(d + o, GP(cpu), (size_t)n);
             } else
                 for (i = 0; i < k; i++) { /* the owner's identity in place of its stale bytes */

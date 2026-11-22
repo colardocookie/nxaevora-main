@@ -1004,6 +1004,7 @@ const Renderer vk_renderer = {
     .cs_mem_need = vk_compute_mem_need,
     .mem_pending = vkr_mem_pending,
     .gfx_mem_need = vkr_gfx_mem_need,
+    .fly_wait = vk_buf_fly_wait,
     .before_syncwait = vkr_before_syncwait,
     .stream_incr = vkr_stream_incr,
     .release_write = vk_release_write,

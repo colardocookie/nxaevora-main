@@ -31,6 +31,9 @@ typedef struct {
        the pages are let go of: the write tracking, which takes pages it watches again for written, can tell a later
        write from them. Called with the producer's lock held. Optional */
     void (*landed)(u64 addr, u64 size, const u8* bytes);
+    /* PERF-36 (SNX_ARCEUS_PERF_BESIDE): until a graphics landing written without the producer's lock no longer
+       writes host [p, p + n) (p NULL: own_begin's wait, for all of it). Set only with the switch. Optional */
+    void (*fly_wait)(const void* p, u64 n);
 } OwnHooks;
 
 /* 0 when the host can trap guest memory (plat_trap_init): own_begin can work from then on. -1: producers land their
