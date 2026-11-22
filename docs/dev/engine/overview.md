@@ -59,6 +59,8 @@ The recompiler has its own document: [aot-recompiler.md](aot-recompiler.md).
 
 `--help` must come alone. Any other argument gives exit code 2.
 
+`recompile` and `run` also take `--progress=jsonl` (`common/utilities/progress.c`). Then stdout carries only JSON Lines and the human text goes to stderr.
+
 ### Exit codes
 
 `engine/src/common/utilities/exit_codes.h` defines the codes. A child stage uses the same table, and the driver passes its code on unchanged.

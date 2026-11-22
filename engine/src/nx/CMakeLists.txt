@@ -187,6 +187,8 @@ if(BUILD_TESTING)
              -P "${PROJECT_SOURCE_DIR}/tests/settings_list.cmake")
     add_test(NAME runtime_cli_commands COMMAND "${CMAKE_COMMAND}" -DRUNTIME=$<TARGET_FILE:scarletnx>
              -P "${PROJECT_SOURCE_DIR}/tests/cli_commands.cmake")
+    add_test(NAME runtime_progress_commands COMMAND "${CMAKE_COMMAND}" -DRUNTIME=$<TARGET_FILE:scarletnx>
+             -P "${PROJECT_SOURCE_DIR}/tests/progress_commands.cmake")
     add_test(NAME runtime_settings_commands COMMAND "${CMAKE_COMMAND}" -DRUNTIME=$<TARGET_FILE:scarletnx>
              "-DSETTINGS_TXT=${snx_settings_spec}"
              -P "${PROJECT_SOURCE_DIR}/tests/settings_commands.cmake")

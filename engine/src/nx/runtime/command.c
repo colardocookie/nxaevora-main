@@ -7,6 +7,7 @@
 
 #include "common/utilities/common.h"
 #include "common/utilities/exit_codes.h"
+#include "common/utilities/progress.h"
 #include "nx/runtime/settings_cli.h"
 
 #include <stdarg.h>
@@ -68,37 +69,57 @@ static const char* list_usage(void) {
            "  --scope=recompile      The launcher's and the recompiler's settings";
 }
 
+/* 1 for the progress option of recompile and run, in the form --progress=value */
+static int is_progress(const char* arg) {
+    return !strncmp(arg, "--progress=", 11) || !strcmp(arg, "--progress");
+}
+
 static int translate_recompile(int argc, char** argv, int* out_argc, char*** out_argv) {
     char** out = new_argv(argc + 1);
-    int i;
+    int i, n = 2, separator = 0, parsed;
     if (!out) {
         snx_command_error("out of memory");
         return SNX_EXIT_INTERNAL;
     }
     out[0] = argv[0];
     out[1] = "-r";
-    for (i = 2; i < argc; ++i) out[i] = argv[i];
-    out[argc] = NULL;
-    *out_argc = argc;
+    for (i = 2; i < argc; ++i) {
+        if (!separator) {
+            if (!strcmp(argv[i], "--"))
+                separator = 1;
+            else if (is_progress(argv[i])) {
+                parsed = snx_progress_parse(argv[i]);
+                if (parsed < 0) {
+                    free(out);
+                    snx_command_error("recompile: %s: not jsonl", argv[i]);
+                    return SNX_EXIT_USAGE;
+                }
+                if (snx_progress_open(parsed)) {
+                    free(out);
+                    return SNX_EXIT_INTERNAL;
+                }
+                continue;
+            }
+        }
+        out[n++] = argv[i];
+    }
+    out[n] = NULL;
+    *out_argc = n;
     *out_argv = out;
     return -1;
 }
 
 static int translate_run(int argc, char** argv, int* out_argc, char*** out_argv) {
     char** out;
-    int i, n = 0;
+    int i, n = 0, program = 0, mode = SNX_PROGRESS_OFF;
     if (argc < 3) {
         snx_command_error("run: name a game program");
         return SNX_EXIT_USAGE;
     }
     if (!strcmp(argv[2], "--help")) {
-        snx_command_print("Usage: nxaevora-engine run PROGRAM [--KEY=VALUE] [-- GAME_ARGUMENTS...]\n"
+        snx_command_print("Usage: nxaevora-engine run PROGRAM [--progress=jsonl] [--KEY=VALUE] [-- GAME_ARGUMENTS...]\n"
                           "  PROGRAM                A game made already, or an NRO");
         return SNX_EXIT_OK;
-    }
-    if (argv[2][0] == '-') {
-        snx_command_error("run: %s is an option, not a program", argv[2]);
-        return SNX_EXIT_USAGE;
     }
     out = new_argv(argc);
     if (!out) {
@@ -106,7 +127,41 @@ static int translate_run(int argc, char** argv, int* out_argc, char*** out_argv)
         return SNX_EXIT_INTERNAL;
     }
     out[n++] = argv[0];
-    for (i = 2; i < argc; ++i) out[n++] = argv[i];
+    for (i = 2; i < argc; ++i) {
+        int parsed;
+        if (!strcmp(argv[i], "--")) { /* the game's own arguments: copied, never read */
+            while (i < argc) out[n++] = argv[i++];
+            break;
+        }
+        if (is_progress(argv[i])) {
+            parsed = snx_progress_parse(argv[i]);
+            if (parsed < 0) {
+                free(out);
+                snx_command_error("run: %s: not jsonl", argv[i]);
+                return SNX_EXIT_USAGE;
+            }
+            mode = parsed;
+            continue;
+        }
+        if (!program) {
+            if (argv[i][0] == '-' && argv[i][1]) {
+                free(out);
+                snx_command_error("run: %s is an option, not a program", argv[i]);
+                return SNX_EXIT_USAGE;
+            }
+            program = 1;
+        }
+        out[n++] = argv[i];
+    }
+    if (!program) {
+        free(out);
+        snx_command_error("run: name a game program");
+        return SNX_EXIT_USAGE;
+    }
+    if (mode != SNX_PROGRESS_OFF && snx_progress_open(mode)) {
+        free(out);
+        return SNX_EXIT_INTERNAL;
+    }
     out[n] = NULL;
     *out_argc = n;
     *out_argv = out;

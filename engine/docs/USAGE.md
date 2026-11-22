@@ -9,6 +9,7 @@
   * [Updates and DLC](#updates-and-dlc)
   * [NRO applications](#nro-applications)
 * [Exit codes](#exit-codes)
+* [Progress stream](#progress-stream)
 * [GDB (Linux)](#gdb-linux)
   * [GDB through the MCP server](#gdb-through-the-mcp-server)
 * [Headless Vulkan / lavapipe](#headless-vulkan--lavapipe)
@@ -349,6 +350,36 @@ stage that cannot be prepared exits 126 and one that cannot be started exits 127
 Windows a start failure is 1. A `fatal` before the renderer runs goes to stderr and to `scarletnx-error.log` in the
 state folder ([Folders](#folders)) and shows no dialog; after the renderer runs a crash still shows the box until the
 new UI replaces it. A usage error before the log file exists goes to stderr only.
+
+## Progress stream
+
+`recompile` and `run` take `--progress=jsonl` before `--`:
+
+```sh
+./build/nxaevora-engine run recompiled/Game/Game --progress=jsonl
+```
+
+Then stdout carries only JSON Lines and every human line goes to stderr. Each line is one object with `"v":1`,
+`"stage"` and `"event"`, then the fields of the event.
+
+| Event | Fields |
+| --- | --- |
+| `start` | None |
+| `progress` | `"value"` and `"total"`, for example the compiled code units |
+| `done` | None |
+| `error` | `"message"` with the cause and `"code"` with the exit code |
+
+The stages are `input`, `recompile`, `build`, `prepare` (shader preparation), `start` (window) and `run`. `extract`
+is not written: the command path loads the game folder with `snx_load_program` and has no extraction step. `link` is
+not written: the link is inside the module build. With `--quiet` the stream has no `progress` lines.
+
+The last line is the exit line, `{"v":1,"event":"exit","code":N}`. A game that ends with a nonzero code gives the
+`run` stage an error line with `"code":8` and `"game_code":N`, then the exit line with code 8. A test reads the
+stream of a recompile. An error after a stage has closed gets that stage's name, when the process noted an error
+after the close.
+
+`--progress=jsonl-stage` is internal: the driver gives it to its child stages, which write stage and error lines and
+no exit line.
 
 ## GDB (Linux)
 
