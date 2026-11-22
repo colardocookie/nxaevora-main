@@ -4,18 +4,13 @@
 #ifndef __FreeBSD__
 #define _POSIX_C_SOURCE 200809L
 #endif
-#ifdef __APPLE__
-#define _DARWIN_C_SOURCE /* libproc's types, which the POSIX name above hides */
-#endif
 #include "gui/gui_process.h"
 #include "common/utilities/common.h"
 #include "gui/i18n.h"
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <pthread.h>
 #include <signal.h>
-#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -32,38 +27,18 @@
 #include <sys/types.h>
 #include <sys/user.h>
 #endif
-#ifdef __APPLE__
-#include <TargetConditionals.h>
-#if !TARGET_OS_IPHONE
-#include <libproc.h>
-#include <mach/mach_time.h>
-#endif
-#endif
-
 typedef struct {
     pid_t pid, session;
     uint64_t resident;
     double cpu;
     bool live;
 } Sample;
-#if defined(__APPLE__) && TARGET_OS_IPHONE
-/* iOS starts no process: the driver is this program's own (snx_driver), run on a thread of its own with the
-   output it prints (this process's stdout and stderr, for as long as it runs) in the pipe the menu reads */
-#define GUI_DRIVER_THREAD 1
-int snx_driver(int argc, char** argv);
-#endif
 struct GuiProcess {
     pid_t pid;
     int output, status;
     bool exited, eof;
     bool low; /* the tree's priority under this program's (gui_process_low), the next start's too */
     GuiCpuBase cpu_base, tree_base;
-#ifdef GUI_DRIVER_THREAD
-    pthread_t thread;
-    int argc, saved[2], writer;
-    char** argv;
-    _Atomic int done;
-#endif
 };
 static double seconds(void) {
     struct timespec now;
@@ -166,36 +141,8 @@ static Sample* snapshot(size_t* count) {
         }
     free(entries);
     return samples;
-#elif defined(__APPLE__) && !TARGET_OS_IPHONE
-    /* a zombie has no task to describe and is left out, which counts it as gone */
-    int listed = proc_listallpids(NULL, 0);
-    pid_t* pids;
-    mach_timebase_info_data_t timebase;
-    if (listed <= 0 || mach_timebase_info(&timebase)) return NULL;
-    listed += 16; /* room for the processes started since */
-    pids = malloc((size_t)listed * sizeof(*pids));
-    if (!pids) return NULL;
-    listed = proc_listallpids(pids, listed * (int)sizeof(*pids));
-    Sample* samples = listed > 0 ? calloc((size_t)listed, sizeof(*samples)) : NULL;
-    for (int i = 0; samples && i < listed; ++i) {
-        struct proc_taskallinfo info;
-        if (pids[i] <= 0 || proc_pidinfo(pids[i], PROC_PIDTASKALLINFO, 0, &info, sizeof info) != sizeof info) continue;
-        Sample* sample = &samples[(*count)++];
-        sample->pid = pids[i];
-        sample->session = getsid(pids[i]);
-        sample->live = true;
-        sample->resident = info.ptinfo.pti_resident_size;
-        /* the task's times are in Mach ticks, which are not nanoseconds on Apple silicon */
-        sample->cpu =
-            (double)(info.ptinfo.pti_total_user + info.ptinfo.pti_total_system) * timebase.numer / timebase.denom / 1e9;
-    }
-    free(pids);
-    return samples;
-#elif defined(__APPLE__)
-    /* iOS starts no processes (gui_process_start): there is none to count */
-    return NULL;
 #else
-#error "scarletnx-gui process accounting currently supports Linux, FreeBSD, macOS and Windows"
+#error "scarletnx-gui process accounting currently supports Linux, FreeBSD and Windows"
 #endif
 }
 GuiProcess* gui_process_create(void) {
@@ -206,74 +153,6 @@ GuiProcess* gui_process_create(void) {
     }
     return process;
 }
-#ifdef GUI_DRIVER_THREAD
-/* LLVM's passes recurse deeply: a thread's default stack on iOS (512 KiB) is not enough */
-#define GUI_DRIVER_STACK ((size_t)64 << 20)
-static void* driver_thread(void* data) {
-    GuiProcess* process = data;
-    int status = snx_driver(process->argc, process->argv);
-    fflush(stdout);
-    fflush(stderr);
-    /* the process's own output back first, then the pipe's end: closing the writer is the menu's end of file */
-    dup2(process->saved[0], STDOUT_FILENO);
-    dup2(process->saved[1], STDERR_FILENO);
-    close(process->saved[0]);
-    close(process->saved[1]);
-    close(process->writer);
-    for (int i = 0; i < process->argc; ++i) free(process->argv[i]);
-    free(process->argv);
-    process->status = status;
-    atomic_store(&process->done, 1);
-    return NULL;
-}
-static bool driver_start(GuiProcess* process, const char* const* argv, char* error, size_t size) {
-    int output[2] = {-1, -1};
-    pthread_attr_t attributes;
-    int argc = 0, saved = 0;
-    while (argv[argc]) ++argc;
-    if (pipe(output) || fcntl(output[0], F_SETFL, O_NONBLOCK)) goto failed;
-    process->saved[0] = dup(STDOUT_FILENO);
-    process->saved[1] = dup(STDERR_FILENO);
-    saved = 1;
-    if (process->saved[0] < 0 || process->saved[1] < 0) goto failed;
-    process->argv = calloc((size_t)argc + 1, sizeof(*process->argv));
-    if (!process->argv) goto failed;
-    for (process->argc = 0; process->argc < argc; ++process->argc)
-        if (!(process->argv[process->argc] = strdup(argv[process->argc]))) goto failed;
-    process->writer = output[1];
-    fflush(NULL);
-    if (dup2(output[1], STDOUT_FILENO) < 0 || dup2(output[1], STDERR_FILENO) < 0) goto failed;
-    atomic_store(&process->done, 0);
-    snx_abort_request(0);
-    if (pthread_attr_init(&attributes) || pthread_attr_setstacksize(&attributes, GUI_DRIVER_STACK) ||
-        pthread_create(&process->thread, &attributes, driver_thread, process)) {
-        dup2(process->saved[0], STDOUT_FILENO);
-        dup2(process->saved[1], STDERR_FILENO);
-        errno = EAGAIN;
-        goto failed;
-    }
-    pthread_attr_destroy(&attributes);
-    process->output = output[0];
-    process->status = 0;
-    process->exited = process->eof = false;
-    return true;
-failed:
-    {
-        int saved_errno = errno;
-        for (int i = 0; i < 2; ++i) {
-            if (output[i] >= 0) close(output[i]);
-            if (saved && process->saved[i] >= 0) close(process->saved[i]);
-        }
-        if (process->argv) {
-            for (int i = 0; i < process->argc; ++i) free(process->argv[i]);
-            free(process->argv);
-            process->argv = NULL;
-        }
-        snprintf(error, size, snx_tr("Cannot start the run: %s"), strerror(saved_errno));
-        return false;
-    }
-}
-#endif
 /* this program's priority, and a low one: ten steps of nice under it, the lowest at most */
 static int own_nice(void) {
     int n;
@@ -292,12 +171,6 @@ bool gui_process_start(GuiProcess* process, const char* const* argv, char* error
         snprintf(error, size, "%s", snx_tr("A run is already going"));
         return false;
     }
-#ifdef GUI_DRIVER_THREAD
-    /* an iOS app may not start a process: fork fails there */
-    (void)output;
-    (void)failure;
-    return driver_start(process, argv, error, size);
-#endif
     if (pipe(output) || pipe(failure)) goto failed;
     for (int i = 0; i < 2; ++i)
         if (fcntl(output[i], F_SETFD, FD_CLOEXEC) || fcntl(failure[i], F_SETFD, FD_CLOEXEC)) goto failed;
@@ -384,16 +257,6 @@ int gui_process_read(GuiProcess* process, char* buffer, size_t size) {
     return -1;
 }
 bool gui_process_finished(GuiProcess* process, int* status) {
-#ifdef GUI_DRIVER_THREAD
-    if (!process->exited) {
-        if (!atomic_load(&process->done)) return false;
-        pthread_join(process->thread, NULL);
-        process->exited = true;
-    }
-    if (!process->eof) return false;
-    *status = process->status;
-    return true;
-#endif
     if (!process->exited) {
         int result;
         pid_t waited = waitpid(process->pid, &result, WNOHANG);
@@ -453,8 +316,7 @@ GuiUsage gui_process_usage_of(GuiProcess* process) {
     free(samples);
     return usage;
 }
-#ifndef GUI_DRIVER_THREAD
-/* every thread of the tree at nice (Linux keeps it a thread's; the BSDs and macOS a process's): 0, else the first
+/* every thread of the tree at nice (Linux keeps it a thread's; the BSDs a process's): 0, else the first
    errno the system gave, one gone meanwhile being none */
 static int tree_nice(const GuiProcess* process, int nice) {
     size_t count;
@@ -483,26 +345,14 @@ static int tree_nice(const GuiProcess* process, int nice) {
     free(samples);
     return failed;
 }
-#endif
 bool gui_process_low(GuiProcess* process, bool low, char* error, size_t size) {
     process->low = low;
-#ifdef GUI_DRIVER_THREAD
-    if (low) snprintf(error, size, "%s", snx_tr("the driver runs on a thread of the app, at the app's priority"));
-    return !low;
-#else
     int failed = process->pid ? tree_nice(process, low ? low_nice() : own_nice()) : 0;
     if (failed) snprintf(error, size, "%s", strerror(failed));
     return !failed;
-#endif
 }
 void gui_process_terminate(GuiProcess* process) {
     if (!process) return;
-#ifdef GUI_DRIVER_THREAD
-    /* a thread cannot be killed: the driver is asked to stop (the recompiler looks between its units), and the menu
-       waits for it to end */
-    snx_abort_request(1);
-    return;
-#endif
     if (process->pid) {
         /* Freeze the session before killing it, so a compiler cannot fork a new
            worker between enumeration and cleanup. Three passes for a concurrent fork, then the kill. */
@@ -519,12 +369,6 @@ void gui_process_terminate(GuiProcess* process) {
 }
 void gui_process_destroy(GuiProcess* process) {
     if (!process) return;
-#ifdef GUI_DRIVER_THREAD
-    /* the app is ending: a driver still running ends with it */
-    if (process->output >= 0) close(process->output);
-    if (atomic_load(&process->done)) free(process);
-    return;
-#endif
     gui_process_terminate(process);
     if (process->pid && !process->exited)
         while (waitpid(process->pid, NULL, 0) < 0 && errno == EINTR) {}

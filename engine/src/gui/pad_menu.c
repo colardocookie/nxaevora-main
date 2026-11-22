@@ -34,12 +34,7 @@ bool gui_pad_key(int control, const int labels[4], SDL_Keycode* key, SDL_Keymod*
         case SNX_PAD_LS: *key = SDLK_M; return true; /* Games' mods folder */
         case SNX_PAD_RS: *key = SDLK_B; return true; /* and its AOT pack */
         case SNX_PAD_START: *key = SDLK_F5; return true;
-#ifdef SDL_PLATFORM_ANDROID
-        /* a controller's Back key is SDL's BACK while a pad is open, and Android's back once it is not */
-        case SNX_PAD_BACK: *key = SDLK_ESCAPE; return true;
-#else
         case SNX_PAD_BACK: *key = SDLK_F1; return true; /* F1's box of keys */
-#endif
         case SNX_PAD_LT:
         case SNX_PAD_RT: *key = control == SNX_PAD_LT ? SDLK_PAGEUP : SDLK_PAGEDOWN; break;
         case SNX_PAD_UP: *key = SDLK_UP; break;

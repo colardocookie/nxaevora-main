@@ -95,6 +95,28 @@ git clone <this repository>
 The build steps for Windows are in [docs/build/ENGINE_BUILD-NOTES.md](docs/build/ENGINE_BUILD-NOTES.md). They use MSYS2
 and the CLANG64 environment.
 
+## Recompile and run
+
+The build makes `engine/build/default/nxaevora-engine.exe`. Recompile the game from your own decrypted game folder:
+
+```sh
+engine/build/default/nxaevora-engine.exe recompile "/path/to/game folder" --outdir recompiled
+```
+
+Then run the recompiled program:
+
+```sh
+engine/build/default/nxaevora-engine.exe run recompiled/<id>
+```
+
+The input folder holds the ExeFS (`exefs/`), the RomFS (`romfs/`) and `control.nacp`. No keys are needed. The
+recompile records the folder as `romfs=` in the game's `.ini`, and the run reads the RomFS from it in place.
+
+The `settings` command reads and writes the game's settings. `settings list` prints them, `settings get KEY
+--game=PATH` prints one value, `settings set KEY VALUE --game=PATH` writes one value, and `settings check KEY
+VALUE` checks one value with no file. The full list of commands and options is in
+[engine/docs/USAGE.md](engine/docs/USAGE.md).
+
 ## Legal
 
 NXAevora is an independent project. It is not affiliated with or endorsed by Nintendo, The Pokemon Company or Game

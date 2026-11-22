@@ -3,6 +3,7 @@
 /* Unattended runs, for the windowed and the headless backend alike: the run's limit, screenshots and scripted
    presses */
 #include "nx/runtime/platform/unattended.h"
+#include "common/utilities/progress.h"
 #include "nx/runtime/ini.h"
 #include "nx/runtime/main.h"
 #include "nx/runtime/options.h"
@@ -170,6 +171,7 @@ void unattended_exit(u64 hash, int w, int h) {
     snx_save_before_exit();
     /* The same close as process_exit: it ends the frontend's open zone and lets the capture write. */
     snx_tracy_shutdown();
+    snx_progress_done(SNX_PROGRESS_STAGE_RUN);
     plat_exit_now(0);
 }
 

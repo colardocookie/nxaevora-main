@@ -49,17 +49,15 @@ page cache.
   scanned before (write-protect markers left after the zap), re-registering a span replaces its modes, and a
   kernel-mode access gets EFAULT.
 
-A host without these (older kernels, FreeBSD, Android's 5.10 kernels) uses Skyline's own shape: `mprotect` and a
+A host without these (older kernels, FreeBSD) uses Skyline's own shape: `mprotect` and a
 signal handler checked before the crash handler, which hands the work to the same handler thread and waits for it
 rather than landing in the signal handler.
 
-## Windows, macOS
+## Windows
 
 - Windows: `VirtualProtect(PAGE_NOACCESS)` on every view of an owned span and a vectored exception handler, which runs
   in normal context on the faulting thread. The mirror needs the alias pool, which Windows doesn't have yet:
   placeholders (`VirtualAlloc2`) and pagefile section views (`MapViewOfFile3`).
-- macOS: Mach exception ports deliver the fault to a handler thread with the faulting thread suspended (the
-  userfaultfd shape), and `mach_vm_remap` gives a mirror.
 - A host with no correct trap doesn't make ranges GPU-owned: a producer's results are copied at its own fence into
   host-cached memory and landed, as render target writebacks are now. The GPU still does the work, nothing is
   skipped, and the mode is logged at startup.

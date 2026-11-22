@@ -2,6 +2,7 @@
 # Copyright 2026 the ScarletNX contributors
 add_library(scarletnx-common STATIC
     utilities/common.c utilities/process.c utilities/font.c utilities/ini_lines.c utilities/game_ini.c utilities/pad_map.c
+    utilities/progress.c
     utilities/pad_screen.c utilities/users.c utilities/logscan.c utilities/language_tag.c utilities/mods.c utilities/patches.c utilities/cheat_list.c utilities/state_header.c
     utilities/spirv_emit.c
     cpu/aarch64/a64_decoder.c cpu/recompiler/codegen.c cpu/recompiler/variants.c runtime/cas128.c)
@@ -33,14 +34,12 @@ add_library(snx_demangle STATIC utilities/demangle.c)
 set_target_properties(snx_demangle PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
 target_compile_options(snx_demangle PRIVATE -pedantic-errors -Wall -Wextra -Werror -Werror=missing-prototypes)
 # snx-logscan: the log summary (utilities/logscan.h) as a program, as scarletnx --scan-log, for the game reports
-# workflow and the tests: only the C library and the demangler. Not for the phones, which run no programs of their own
-if(NOT ANDROID AND NOT IOS)
-    add_executable(snx-logscan utilities/logscan_main.c utilities/logscan.c)
-    set_target_properties(snx-logscan PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
-                                                 LINKER_LANGUAGE CXX RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}")
-    target_compile_options(snx-logscan PRIVATE -pedantic-errors -Wall -Wextra -Werror -Werror=missing-prototypes)
-    target_link_libraries(snx-logscan PRIVATE snx_demangle)
-endif()
+# workflow and the tests: only the C library and the demangler
+add_executable(snx-logscan utilities/logscan_main.c utilities/logscan.c)
+set_target_properties(snx-logscan PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
+                                             LINKER_LANGUAGE CXX RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}")
+target_compile_options(snx-logscan PRIVATE -pedantic-errors -Wall -Wextra -Werror -Werror=missing-prototypes)
+target_link_libraries(snx-logscan PRIVATE snx_demangle)
 
 # The setup a first start goes through (utilities/setup.h), the launcher's and the driver's: OpenSSL for the first
 # user's random uid
@@ -67,8 +66,6 @@ target_compile_options(scarletnx-net PRIVATE -Wall -Wextra -Werror=missing-proto
 target_link_libraries(scarletnx-net PUBLIC Threads::Threads)
 if(WIN32)
     target_link_libraries(scarletnx-net PUBLIC ws2_32 iphlpapi)
-elseif(APPLE) # the system resolver's DNS servers (network/net_iface.c)
-    target_link_libraries(scarletnx-net PUBLIC resolv)
 endif()
 
 # Local wireless for nx's ldn and bsd (network/net_ldn.h): over the LAN, or through an Eden room (network/net_room.h),

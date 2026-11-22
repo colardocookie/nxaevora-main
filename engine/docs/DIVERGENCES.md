@@ -24,7 +24,7 @@ behavior.
 
 ## Verdict and scope
 
-**ScarletNX is not a fully conforming Cortex-A57 CPU implementation.** The
+**NXAevora Engine is not a fully conforming Cortex-A57 CPU implementation.** The
 application recompiler implements most A64 instruction families, but remaining
 FP arithmetic/conversion/estimate failures and the intentionally virtualized
 machine/system behavior prevent that claim. Passing samples are not a proof
@@ -75,7 +75,7 @@ not redistributed with this patch.
 
 - **Optional Cryptography Extension:** AESE, AESD, AESMC, AESIMC; SHA1C,
   SHA1M, SHA1P, SHA1H, SHA1SU0, SHA1SU1; SHA256H, SHA256H2, SHA256SU0,
-  SHA256SU1; and the **64-bit-element** PMULL/PMULL2 forms. ScarletNX implements
+  SHA256SU1; and the **64-bit-element** PMULL/PMULL2 forms. NXAevora Engine implements
   these and does not currently feature-gate them. They are outside the requested
   base profile, not missing base instructions. A strict base-only CPU mode would
   have to reject them. The **8-bit polynomial** PMULL/PMULL2 forms are base SIMD
@@ -173,7 +173,7 @@ repair does not automatically repair conversions using other helpers.
 Examples:
 
 - `1e200020`, `FCVTNS W0,S1`, S1=`ffffffff`: integer result zero agrees,
-  but invalid conversion must set FPSR.IOC; ScarletNX leaves it clear.
+  but invalid conversion must set FPSR.IOC; NXAevora Engine leaves it clear.
 - `1e220020`, `SCVTF S0,W1`, W1=`7fffffff`: rounded result agrees, but
   FPSR.IXC is missing.
 - `1e22c020`, `FCVT D0,S1`, S1=`7f800456`: SNaN conversion loses IOC.

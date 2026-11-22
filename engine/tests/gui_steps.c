@@ -80,7 +80,7 @@ int main(void) {
     gui_steps_finish(&s, 0);
     assert(at(&s, 0)->state == GUI_STEP_FAILED);
 
-    /* on Android the driver ends naming the game it made ready, which the app then runs */
+    /* the driver ends naming the game it made ready, which the app then runs */
     gui_steps_reset(&s);
     feed(&s, "Recompiling Game (1 modules)\n  compiled block 1/4: x\nReady Game\n", 5);
     gui_steps_finish(&s, 1);

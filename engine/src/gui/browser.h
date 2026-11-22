@@ -13,8 +13,7 @@ typedef struct {
     size_t count;
     size_t room; /* the entries the lists have room for, one past the last included */
 } GuiGames;
-/* what a folder's games are: ready to run (executables; on Android a game's code or a dump), and dumps (NRO files),
-   prepared when they run */
+/* what a folder's games are: ready to run (executables), and dumps (NRO files), prepared when they run */
 enum { GUI_GAMES_RUN = 1, GUI_GAMES_DUMP = 2 };
 /* A folder's games of kinds added after those listed: its own files, and each folder of it that holds its game
    (<name>/<name>), named by the folder; nothing deeper. False, error saying why, when it cannot be read */
@@ -54,7 +53,7 @@ bool gui_is_dump(const char* name);
    is not one */
 bool gui_game_folder(const char* path);
 /* The program of the game in directory/name, a folder of its own as gui_game_folder has it (<name>/<name>, .exe on
-   Windows, <name>_code.so on Android), as Games lists it: owned, else NULL */
+   Windows), as Games lists it: owned, else NULL */
 char* gui_folder_game(const char* directory, const char* name);
 /* What Games shows the game whose program is at path as, a game of a folder of its own: the name in its
    <name>_data/control.nacp, else its folder's name. Owned */

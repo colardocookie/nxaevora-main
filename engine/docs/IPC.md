@@ -15,7 +15,7 @@ The services the runtime emulates answer the game through IPC (`hle/kernel/ipc.c
 declared once, in a `.swipc` file beside the service's C file, and `tools/swipc/swipc.c` generates the code that turns
 a request into a call of a typed handler and the handler's outputs into the reply. The services' C files hold only
 the handlers. This replaced one `switch (c->cmd)` per interface that read every argument by hand at an offset
-(`in32(c, 8)`) and wrote every output in order (`out64(c, x)`), which is where layout mistakes hid (#155). The one
+(`in32(c, 8)`) and wrote every output in order (`out64(c, x)`), which is where layout mistakes hid. The one
 object without an interface is sm's stand-in for a service the runtime doesn't have (`sm.c`), which answers every
 command with success.
 

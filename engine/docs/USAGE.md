@@ -4,9 +4,12 @@
 
 ## Index
 
+* [Commands](#commands)
 * [Extract → AOT → run](#extract--aot--run)
   * [Updates and DLC](#updates-and-dlc)
   * [NRO applications](#nro-applications)
+* [Exit codes](#exit-codes)
+* [Progress stream](#progress-stream)
 * [GDB (Linux)](#gdb-linux)
   * [GDB through the MCP server](#gdb-through-the-mcp-server)
 * [Headless Vulkan / lavapipe](#headless-vulkan--lavapipe)
@@ -20,16 +23,63 @@
 Setup: [BUILD](BUILD.md). Checkout CWD; own game files.
 For the keyboard-controlled SDL3 menu and file drops, see [GUI](GUI.md).
 
+## Commands
+
+The first argument selects the command:
+
+| Command | Job | Old form |
+|---|---|---|
+| `recompile <game folder> [options] [--KEY=VALUE]` | Recompile the game. All recompile options stay | `-r` |
+| `run <game program> [--KEY=VALUE] [-- game arguments]` | Run the game | Play mode and `--game=PATH` |
+| `settings list [--scope=game\|recompile]` | Print the nine-field settings text | `--settings`, `--settings=recompile` |
+| `settings schema` | Print the settings definition as one JSON document on stdout | None |
+| `settings get KEY --game=PATH` | Print one value of the game's `.ini`, or its default | None |
+| `settings set KEY VALUE --game=PATH` | Write one value of the game's `.ini` | None |
+| `settings check KEY VALUE` | Check one value against the settings definition, with no file | None |
+
+`recompile --help` shows the recompile options. `run --help`, `settings --help` and `settings <command> --help` show
+the command's usage. `--help` comes alone: any other argument with it is exit 2, for all five settings words. `logs`
+and `cache` are reserved: they stop with exit 2 until their command exists.
+
+`settings schema` needs no game. Its rows are the tables of `src/nx/runtime/settings.txt`, the game's own (in-game)
+rows included, and each row gives its `scope`: `startup`, `in-game`, `launcher` or `recompile`. The rows of LLVM
+Internals come from the LLVM the build uses, so their number follows that install.
+
+`settings get` and `settings set` read and write `<config>/<id>.ini` ([Folders](#folders)), the file that a run opens,
+and need no run. `PATH` is the game's program, as `run` takes it. The `.ini` must exist: without it the command is
+exit 3. A value the settings refuse is exit 7, and the file keeps its bytes. A value with a line break or a blank or
+tab at an end is refused too, because the `.ini` reader does not give it back as written. `set` writes beside the file
+and replaces it, so an unknown key stays; a file with more keys or a longer key or value than the store keeps is
+exit 1. A `set` while the game runs can be lost when the game saves at the same time. `settings check` reads
+and writes no file and needs no `--game`; it refuses such a value with exit 7 as well.
+
+`settings check` takes every key that `settings schema` prints. `settings get` and `settings set` take the game's
+`.ini` keys only. `get` prints a number as the runtime keeps it: a float has 6 significant digits. `--game=` given
+twice: the last one wins. An add-on's program (an update's `<game>_<update id>`, or a DLC's `<game>_<dlc id>`) is
+refused with exit 2: name the game's program.
+
+The old flags are aliases:
+
+| Old form | Command |
+|---|---|
+| `-r` | `recompile` |
+| Play mode and `--game=PATH` | `run` |
+| `--settings` | `settings list` |
+| `--settings=recompile` | `settings list --scope=recompile` |
+| No argument | The old start GUI, until unit 5 |
+
+Later: `logs export` and `cache clean`.
+
 ## Extract → AOT → run
 
 Pass one decrypted game folder to recompile:
 
 ```sh
-./build/scarletnx -r "/path/to/game folder" --outdir recompiled
+./build/nxaevora-engine -r "/path/to/game folder" --outdir recompiled
 ```
 
 This forces recompilation, even if a cached executable exists. To play, run the game made already:
-`./build/scarletnx recompiled/<id>`.
+`./build/nxaevora-engine recompiled/<id>`.
 Encrypted dumps and keys are not read: decrypt the game to a folder first.
 The folder holds its ExeFS in `exefs/` (or `ExeFS/`), with `main`, `main.npdm`, `rtld`, `sdk` and `subsdk*`, its RomFS
 in `romfs/` (or `RomFS/`), and `control.nacp`. A game with an update takes the ExeFS of the update and one RomFS with
@@ -52,14 +102,14 @@ Omitting it starts the game with a window.
 `-r` means `--recompile` (`--recomp`, its older name, still works and says so once).
 On UNIX, short flags can be combined. Windows accepts separate short flags only.
 
-A game made already plays the same way, named by its folder or its program: `./build/scarletnx recompiled/<id>` (or
+A game made already plays the same way, named by its folder or its program: `./build/nxaevora-engine recompiled/<id>` (or
 `recompiled/<id>/<id>`) runs it, recompiled first where it is when a build of another ABI made it, from what its `<id>_data/`
 keeps (the ExeFS or the NRO) and the folder its `romfs=` records. `-r` recompiles it without playing. `--outdir` is
 refused for it. `--game=recompiled/<id>` runs it as it is, whichever build made it.
 Pass arguments to the game executable after `--`, for example:
 
 ```sh
-./build/scarletnx recompiled/<id> -- some arg
+./build/nxaevora-engine recompiled/<id> -- some arg
 ```
 
 The argument boundary is retained when launching the deployed game, so game arguments
@@ -70,9 +120,9 @@ which then starts fullscreen (not in timed test runs). `--fullscreen=0` starts i
 game's `.ini` decides (`fullscreen=1` starts fullscreen).
 `--touch=0|1|2` is forwarded to the game too: its touch screen takes nothing, the fingers, or the fingers and the
 mouse's left button (the default). The game's menu sets it too; the game's `.ini` keeps its own `touch`.
-`--controls=0|1` likewise hides or shows the [on-screen controls](#on-screen-controls) (on by default on Android);
+`--controls=0|1` likewise hides or shows the [on-screen controls](#on-screen-controls);
 the game's `.ini` keeps `controls`. Any other `--key=value` of the game's
-`.ini` is forwarded as well, for that run (`scarletnx --settings` lists them all), and so are the timed-run ones
+`.ini` is forwarded as well, for that run (`nxaevora-engine --settings` lists them all), and so are the timed-run ones
 (`--seconds=`, `--shot=`...); any other key stops the run with `unknown option`.
 The game's own executable also takes `-v`, the same as `--log=2`.
 LLVM is the only backend. `--backend=llvm`, which older scripts give, is accepted and changes nothing, and any
@@ -130,11 +180,8 @@ under its own name, the original left where it is; the mod shows checked at once
 The copy goes into a hidden `.<name>.adding` first and takes the mod's name once every file is in, so a copy that
 stops never shows as a mod. It refuses, naming the folder: a name the mods folder has already, a folder inside the
 mods folder or one that holds it, one with neither `exefs/` nor `romfs/`, a name that starts with a dot (the mods list
-hides those), a link inside the folder, and on a phone a folder of an app or a cloud that no path reaches; a file that
-cannot be copied is named with the system's reason. On Android and iOS Open Mods Folder, Open Cheats Folder and Open
-Folder show the folder in the system's Files app: Android's shows the app's data folder and the shared storage (a
-dump's folder in `Download/`), iOS's the app's Documents alone, so there a folder of the app's `Library/` is greyed and
-says so.
+hides those), a link inside the folder; a file that
+cannot be copied is named with the system's reason.
 
 The box also has **Open Folder**, the game's other folders a row each: its dump's (as the recompile named it), the game's
 own, its saves (`<id>_data/save/`), its settings, its logs and its caches, each where the table below puts it. One not
@@ -144,7 +191,7 @@ folder: the pipeline cache, the translated shaders and those prepared ahead of t
 (`<id>.jitcache`), asked first with each one's size and folder; the game makes them again as it runs, and its saves,
 settings and dump stay. It is greyed while the game has neither.
 
-A mod's `exefs/` changes the game's code, which ScarletNX compiles ahead of time. The game's stamp (`<id>.abi`) records
+A mod's `exefs/` changes the game's code, which NXAevora Engine compiles ahead of time. The game's stamp (`<id>.abi`) records
 the mods' ExeFS files it was recompiled with, and playing it through the driver or the launcher recompiles it when the
 mods played have other ones. Run directly, a game made with other mods' files runs the ExeFS it was made from, and the
 log says so.
@@ -170,8 +217,7 @@ A file already named by a build ID (16 hex digits) keeps that name, in capitals,
 with another, the message naming both. Another takes the build ID of the main module the game plays with as the box has
 it: a played mod's `exefs/main`, else the checked update's own, else the game's `exefs/main` or `main.nro`; with none
 to read, the file is refused, the message naming the module it looked for. It refuses too a name the cheats folder has
-already (files are never merged), a file that is not a `.txt`, one over 1 MiB, one with no `[name]` line, and on a
-phone a document of an app or a cloud that no path reaches.
+already (files are never merged), a file that is not a `.txt`, one over 1 MiB, one with no `[name]` line.
 
 Run the same command again to retry after a failure or interruption:
 
@@ -199,13 +245,13 @@ explicit commands when changing a game folder or rebuilding game code.
 Pass an uncompressed NRO directly to recompile and play, without extraction:
 
 ```sh
-./build/scarletnx "app.nro" -H
+./build/nxaevora-engine "app.nro" -H
 ```
 
 The `.nro` extension is case-insensitive. NRO launches always recompile and restage the input,
 so a same-named cached executable or extraction directory cannot silently select an older program.
 Embedded RomFS assets are staged by the recompiler. Compressed NROs are not supported.
-This uses ScarletNX's existing guest runtime, not a complete homebrew-loader environment.
+This uses NXAevora Engine's existing guest runtime, not a complete homebrew-loader environment.
 Compatibility still depends on the application's runtime and service requirements.
 See [NRO implementation notes](NRO.md) for the reference and validation policy.
 
@@ -213,12 +259,12 @@ To run the steps separately, here in folders of the current one (`--outdir` and 
 folder's `recompiled/`):
 
 ```sh
-./build/scarletnx -r "/path/to/game folder" --name Game --outdir recompiled
+./build/nxaevora-engine -r "/path/to/game folder" --name Game --outdir recompiled
 recompiled/Game/Game
 ```
 
 ```powershell
-.\build\scarletnx.exe -r "C:\path\to\game folder" --name Game --outdir games
+.\build\nxaevora-engine.exe -r "C:\path\to\game folder" --name Game --outdir games
 .\games\Game\Game.exe
 ```
 
@@ -226,11 +272,11 @@ Remaining examples: POSIX.
 
 ```sh
 # a game from its decrypted folder, named Game
-./build/scarletnx -r "/path/to/game folder" --name Game --outdir games
+./build/nxaevora-engine -r "/path/to/game folder" --name Game --outdir games
 
-./build/scarletnx -r "/path/to/game folder" --outdir games --jobs 8
-./build/scarletnx -r app.nro --name App --outdir games
-./build/scarletnx -r -h
+./build/nxaevora-engine -r "/path/to/game folder" --outdir games --jobs 8
+./build/nxaevora-engine -r app.nro --name App --outdir games
+./build/nxaevora-engine -r -h
 ```
 
 - **Recompile:** AOT → module (LLVM) →
@@ -238,20 +284,18 @@ Remaining examples: POSIX.
   `-O 0..3,s,z` (`--opt=`) sets the optimization level (2 by default), and `--jobs N` (`--aot_threads=N`) the threads
   compiling (0 or none, one for each core). Every pass of LLVM's pipelines can be turned off for the game's code,
   `--llvm_pass_<pass>=0` (`--llvm_pass_instcombine=0`), and each option LLVM's C API sets on the pass builder and the
-  target machine set, `--llvm_<option>=N` (`--llvm_inliner_threshold=50`). `scarletnx --settings=recompile` lists
+  target machine set, `--llvm_<option>=N` (`--llvm_inliner_threshold=50`). `nxaevora-engine --settings=recompile` lists
   them, as the launcher's LLVM Internals page shows them: the passes are those of the pipelines the build's LLVM prints
   for each level, and a build without an `opt` of that LLVM has none. A game with these is recompiled with them
   when it has to be, and a game made already keeps its code until `-r` recompiles it. A value a setting does not take
   (`--aot_threads=abc`) stops the recompile. The code the runtime compiles while the game runs keeps LLVM's own, but
   for the SLP vectorizer, which `slp_vectorizer` turns on or off for both.
   `--target auto|linux|win64` takes only this host's own system: modules are built for the machine that builds
-  them. `--target ios` writes `<id>_code.snxobj` instead, a pack of the code's objects for the iOS app to load into JIT
-  memory (64-bit games only, [APPLE](APPLE.md)); it makes no runtime copy. `--runtime FILE` deploys that runtime instead of the running one, or of the one a tools-only build builds in
+  them. `--runtime FILE` deploys that runtime instead of the running one, or of the one a tools-only build builds in
   its checkout's `build/native-recomp` (`build/win64-recomp` on Windows). `-q` (`--quiet`) prints no progress.
   `--keep-c` is the deprecated spelling of `--keep-ir`.
 - **Codegen:** `--no-build` stages data/INI only; `--jit-only` omits AOT functions.
-  `--chunk N` (`--unit_instructions=N`) sets the instructions per code unit: 90000 by default, 20000 on Android and
-  iOS, where a smaller unit takes less memory at once. Each unit's object, a 32-bit game's blocks too, is kept in
+  `--chunk N` (`--unit_instructions=N`) sets the instructions per code unit: 90000 by default. Each unit's object, a 32-bit game's blocks too, is kept in
   `units/` of the cache folder ([Folders](#folders)), which every game's recompile shares, under the SHA-256 of the
   unit's LLVM IR, the LLVM, the CPU and its features, the optimization level and the LLVM Internals: a unit found
   there is not compiled again (a recompile after an `SNX_ABI` change that leaves the unit's IR alone, of a game whose
@@ -279,7 +323,63 @@ With `--outdir games` as above (without it, see [Folders](#folders)):
 | `recompiled/<id>/shader_cache/vk_pipelines.bin` | Vulkan pipeline cache |
 | `recompiled/<id>/shader_cache/<id>.vkshaders` | Translated shaders and the pipelines made, made again at the next start |
 | `recompiled/<id>/shader_cache/<id>.vkshipped` | The shaders found in the game's own files and executables, prepared ahead of time (`prepare_shaders`), each read when the game first draws with it. It can be large: one game's 2,700 shaders took 245 MB, another's 18,500 took 2 GB |
-| `recompiled/<id>/shader_cache/<id>.vkscan` | The game's files found to hold no shaders, so that after an update of ScarletNX or the driver the files aren't all read again to look for them |
+| `recompiled/<id>/shader_cache/<id>.vkscan` | The game's files found to hold no shaders, so that after an update of NXAevora Engine or the driver the files aren't all read again to look for them |
+
+## Exit codes
+
+The program returns one of these codes, the same for a driver stage and the runtime. A launcher acts on the code and
+reads the text on stderr.
+
+| Code | Meaning |
+| --- | --- |
+| 0 | Success, also a normal game end and a window close by the user |
+| 1 | Internal error: a bug, out of memory, or a settings file the store cannot keep |
+| 2 | Wrong usage: an unknown option or command, a bad argument count |
+| 3 | Game files missing or wrong: the input folder, `exefs/main`, the NPDM or the RomFS, or the game's `.ini` that `settings get` and `settings set` read |
+| 4 | The recompile failed: compile, link, staging or build |
+| 5 | The start failed before the renderer runs: the settings file exists but cannot be read, or Vulkan or the renderer did not start |
+| 6 | A crash of the game: `fatal`, a crash report or an unhandled exception |
+| 7 | A setting value was refused (`settings set` and `settings check`) |
+| 8 | The game ended with a nonzero code, which the log keeps |
+| 126 | POSIX only: a driver stage program could not be prepared (process group, terminal or working directory) |
+| 127 | POSIX only: a driver stage program could not be started (exec failed) |
+| 130 | The command was stopped by the user (Ctrl+C) |
+
+A child stage uses the same table, and the driver passes its code on unchanged. A code above 255 stays 1. On POSIX a
+stage that cannot be prepared exits 126 and one that cannot be started exits 127, and the driver passes both on; on
+Windows a start failure is 1. A `fatal` before the renderer runs goes to stderr and to `scarletnx-error.log` in the
+state folder ([Folders](#folders)) and shows no dialog; after the renderer runs a crash still shows the box until the
+new UI replaces it. A usage error before the log file exists goes to stderr only.
+
+## Progress stream
+
+`recompile` and `run` take `--progress=jsonl` before `--`:
+
+```sh
+./build/nxaevora-engine run recompiled/Game/Game --progress=jsonl
+```
+
+Then stdout carries only JSON Lines and every human line goes to stderr. Each line is one object with `"v":1`,
+`"stage"` and `"event"`, then the fields of the event.
+
+| Event | Fields |
+| --- | --- |
+| `start` | None |
+| `progress` | `"value"` and `"total"`, for example the compiled code units |
+| `done` | None |
+| `error` | `"message"` with the cause and `"code"` with the exit code |
+
+The stages are `input`, `recompile`, `build`, `prepare` (shader preparation), `start` (window) and `run`. `extract`
+is not written: the command path loads the game folder with `snx_load_program` and has no extraction step. `link` is
+not written: the link is inside the module build. With `--quiet` the stream has no `progress` lines.
+
+The last line is the exit line, `{"v":1,"event":"exit","code":N}`. A game that ends with a nonzero code gives the
+`run` stage an error line with `"code":8` and `"game_code":N`, then the exit line with code 8. A test reads the
+stream of a recompile. An error after a stage has closed gets that stage's name, when the process noted an error
+after the close.
+
+`--progress=jsonl-stage` is internal: the driver gives it to its child stages, which write stage and error lines and
+no exit line.
 
 ## GDB (Linux)
 
@@ -323,7 +423,7 @@ crash. The runtime prints a line saying so and runs on.
 
 ### GDB through the MCP server
 
-An agent can drive GDB through the MCP server (`scarletnx --mcp`). It needs `gdb` (9 or later)
+An agent can drive GDB through the MCP server (`nxaevora-engine --mcp`). It needs `gdb` (9 or later)
 on PATH as well as `gdbserver`, and a runtime with its debug information (the default
 RelWithDebInfo build, not one built with `-g0`).
 
@@ -353,7 +453,7 @@ RelWithDebInfo build, not one built with `-g0`).
 The normal SDL3 build can run without initializing SDL video or opening a window:
 
 ```sh
-./build/scarletnx --game=recompiled/Game -H --seconds=30 --shot=/tmp/frame
+./build/nxaevora-engine --game=recompiled/Game -H --seconds=30 --shot=/tmp/frame
 ```
 
 `-H` enables it. Omit the flag for the normal window. `--headless` is the long spelling
@@ -374,7 +474,7 @@ report this device as `llvmpipe` in the Vulkan log. Selecting a CPU ICD is indep
 ```sh
 # Linux example. Substitute the actual lvp ICD manifest installed on your machine.
 VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
-  ./build/scarletnx --game=recompiled/Game -H --seconds=30 --shot=/tmp/frame
+  ./build/nxaevora-engine --game=recompiled/Game -H --seconds=30 --shot=/tmp/frame
 ```
 
 Manifest names vary (for example `lvp_icd.json`). FreeBSD packages normally install manifests under
@@ -397,7 +497,7 @@ On an ARM64 machine the image is `ScarletNX-linux-aarch64.AppImage`, on PowerPC6
 `--game` selects the game's folder, its `Game_code.so` and `Game_data/`; or name the image `recompiled/Game/Game.AppImage`
 to load the files beside it.
 The AppImage also prepares games: `./ScarletNX-linux-x86_64.AppImage -r "/path/to/game folder"`, in the folder
-[Folders](#folders) names, and each game gets a copy of the AppImage (on Windows, of `scarletnx.exe` and the DLLs next to it).
+[Folders](#folders) names, and each game gets a copy of the AppImage (on Windows, of `nxaevora-engine.exe` and the DLLs next to it).
 X11 bypasses Wayland. [Licenses](CREDITS.md).
 
 ## Folders
@@ -405,10 +505,8 @@ X11 bypasses Wayland. [Licenses](CREDITS.md).
 The driver works in one folder, its data folder, the first of these that applies:
 
 1. the one `--data DIR` names (the menu names its own);
-2. a portable copy's: `.scarletnx/` beside the AppImage, or beside the Windows zip's programs, when it is there;
-3. the user's data folder: `~/.local/share/scarletnx` on Linux, `%APPDATA%\scarletnx` on Windows,
-   `~/Library/Application Support/scarletnx` on macOS. On Android the app names its own, `.scarletnx/` in its own
-   storage ([ANDROID](ANDROID.md)).
+2. a portable copy's: `.nxaevora/` beside the AppImage, or beside the Windows zip's programs, when it is there;
+3. the user's data folder: `~/.local/share/nxaevora` on Linux, `%APPDATA%\nxaevora` on Windows.
 
 A driver run from its build tree works in the same folder as an installed one: the checkout it was built from is
 not a data folder. `--data DIR`, or `--outdir DIR` for a recompile, keeps a run's files in one folder of your choice.
@@ -422,18 +520,18 @@ list). The user's data folder and a portable copy's keep each kind of file apart
 
 | What | Another `--data`, an `--outdir` | Linux, the user's data folder | A portable copy's, the user's elsewhere |
 | --- | --- | --- | --- |
-| a game: its program, `<id>_code.so`, `<id>_data/` (saves, `control.nacp`), `captures/` | `recompiled/<id>/` | `~/.local/share/scarletnx/recompiled/<id>/` | `recompiled/<id>/` |
-| its settings, `<id>.ini` | `recompiled/<id>/` | `~/.config/scarletnx/recompiled/<id>/` | `config/recompiled/<id>/` |
-| its `<id>.log` (this run's; the 4 before in `logs/<date>.log`) and `threads.txt` | `recompiled/<id>/` | `~/.local/state/scarletnx/recompiled/<id>/` | `state/recompiled/<id>/` |
-| its pipeline cache | `recompiled/<id>/shader_cache/` | `~/.cache/scarletnx/recompiled/<id>/shader_cache/` | `cache/recompiled/<id>/shader_cache/` |
-| extractions | `work/` | `~/.cache/scarletnx/work/` | `cache/work/` |
-| the recompile's code units, `<key>.o`, every game's | `units/` of the user's cache folder | `~/.cache/scarletnx/units/` | `cache/units/` |
-| the menu's themes, `<name>/theme.ini` | - | `~/.local/share/scarletnx/themes/` | `themes/` |
-| the menu's `settings.ini`, `app.ini`, `folders.txt`, `gamecontrollerdb.txt` | - | `~/.config/scarletnx/` | `config/` |
-| the setup's `setup.ini` ([Setup](#setup)) | - | `~/.config/scarletnx/` | `config/` |
-| the menu's `recent.txt`, `last-run.log`, `last-recompile.log` (a second launcher open at once `last-run-2.log` and `last-recompile-2.log`), its log `scarletnx-console-<date>.log` (a file a day, the 14 newest kept) and fatal errors `scarletnx-error.log` ([GUI](GUI.md); iOS: `logs/` of its Documents) | - | `~/.local/state/scarletnx/` | `state/` |
-| the menu's Share Log, `scarletnx-logs-<date>.zip` or `scarletnx.log` (iOS: `logs/share/` of its Documents) | - | `~/.local/state/scarletnx/share/` | `state/share/` |
-| the console's users, `users.ini` and `<uid>.jpg` ([Users](#users)), and `online.ini`, an Eden room's password (`room`) | `users/` of the user's data folder | `~/.local/share/scarletnx/users/` | `users/` |
+| a game: its program, `<id>_code.so`, `<id>_data/` (saves, `control.nacp`), `captures/` | `recompiled/<id>/` | `~/.local/share/nxaevora/recompiled/<id>/` | `recompiled/<id>/` |
+| its settings, `<id>.ini` | `recompiled/<id>/` | `~/.config/nxaevora/recompiled/<id>/` | `config/recompiled/<id>/` |
+| its `<id>.log` (this run's; the 4 before in `logs/<date>.log`) and `threads.txt` | `recompiled/<id>/` | `~/.local/state/nxaevora/recompiled/<id>/` | `state/recompiled/<id>/` |
+| its pipeline cache | `recompiled/<id>/shader_cache/` | `~/.cache/nxaevora/recompiled/<id>/shader_cache/` | `cache/recompiled/<id>/shader_cache/` |
+| extractions | `work/` | `~/.cache/nxaevora/work/` | `cache/work/` |
+| the recompile's code units, `<key>.o`, every game's | `units/` of the user's cache folder | `~/.cache/nxaevora/units/` | `cache/units/` |
+| the menu's themes, `<name>/theme.ini` | - | `~/.local/share/nxaevora/themes/` | `themes/` |
+| the menu's `settings.ini`, `app.ini`, `folders.txt`, `gamecontrollerdb.txt` | - | `~/.config/nxaevora/` | `config/` |
+| the setup's `setup.ini` ([Setup](#setup)) | - | `~/.config/nxaevora/` | `config/` |
+| the menu's `recent.txt`, `last-run.log`, `last-recompile.log` (a second launcher open at once `last-run-2.log` and `last-recompile-2.log`), its log `scarletnx-console-<date>.log` (a file a day, the 14 newest kept) and fatal errors `scarletnx-error.log` ([GUI](GUI.md)) | - | `~/.local/state/nxaevora/` | `state/` |
+| the menu's Share Log, `scarletnx-logs-<date>.zip` or `scarletnx.log` | - | `~/.local/state/nxaevora/share/` | `state/share/` |
+| the console's users, `users.ini` and `<uid>.jpg` ([Users](#users)), and `online.ini`, an Eden room's password (`room`) | `users/` of the user's data folder | `~/.local/share/nxaevora/users/` | `users/` |
 
 The menu works in the user's data folder or a portable copy's, unless its Settings > App > Folders picks a data
 folder, a games folder or an extractions folder ([GUI](GUI.md)): it passes them to the driver as `--data` and `--outdir`
@@ -441,8 +539,7 @@ and its own files stay where they are. Its Logs and Caches move the state and
 cache folders of the table: `[folders] state =` and `cache =` in `app.ini`, full paths, which the menu, the drivers
 and the games read (a game's `.folders` below names them), its files going to the same place under them
 (`recompiled/<id>/<id>.log` of the state folder); a value that is not a full path is said once and the default kept.
-The config folder holds `app.ini`, so it moves only with `$XDG_CONFIG_HOME` or a portable copy. On Android they
-are in its data folder's `config/` and `state/`, in the app's own storage, which needs no permission. `~/.local/share`, `~/.config`, `~/.local/state` and `~/.cache` are the
+The config folder holds `app.ini`, so it moves only with `$XDG_CONFIG_HOME` or a portable copy. `~/.local/share`, `~/.config`, `~/.local/state` and `~/.cache` are the
 defaults of `$XDG_DATA_HOME`, `$XDG_CONFIG_HOME`, `$XDG_STATE_HOME` and `$XDG_CACHE_HOME` (a relative one is ignored).
 Each time the driver makes or starts a game of the user's data folder, it names the folders of the game's settings, log
 and caches in `recompiled/<id>/<id>.folders`, where the game reads them: started with other variables (its copy of an
@@ -456,8 +553,8 @@ none of it by itself: as long as it is there, the menu lists each folder and whe
 each run, and an older game runs where it is, its run saying where its folder goes. Asked, it moves them:
 
 ```
-./build/scarletnx --migrate       # each entry a line and where it would go; nothing is touched
-./build/scarletnx --migrate=yes   # moved, the same lines; Settings > App > Move Old Files in the menu
+./build/nxaevora-engine --migrate       # each entry a line and where it would go; nothing is touched
+./build/nxaevora-engine --migrate=yes   # moved, the same lines; Settings > App > Move Old Files in the menu
 ```
 
 Each entry of an older folder goes into the folder this version keeps it in, the data folder's `games/` with its games'
@@ -502,7 +599,7 @@ only said, nothing is moved), then asks:
    one is picked), and in the launcher's setup its theme, UI scale, side panel and Games' view and icon size beside it;
    the terminal's asks the language alone.
 2. **Install type**: installed, in the user's folders ([Folders](#folders)), or portable, everything in
-   `.scarletnx/` beside the program (or the AppImage), which it makes. An app (Android, iOS) has no other.
+   `.nxaevora/` beside the program (or the AppImage), which it makes.
 3. **Folders**, the launcher's: where its recompiled games go and the folders of dumps it lists (Settings > App >
    Folders).
 4. **First user**: a `users/users.ini` there is kept, or overwritten, the one before kept as `users.ini.old`. A new one
@@ -524,9 +621,9 @@ notices = 9
 shown, and one a newer version adds shows alone, with OK, before anything else.
 
 ```sh
-./build/scarletnx --setup                  # all of it again, in the terminal
-printf '\n\n\n\n\nAogo\n' | ./build/scarletnx --setup  # its answers a line each, Enter the one in brackets
-./build/scarletnx --no-setup "/path/to/game folder"    # no setup this run, nothing written
+./build/nxaevora-engine --setup                  # all of it again, in the terminal
+printf '\n\n\n\n\nAogo\n' | ./build/nxaevora-engine --setup  # its answers a line each, Enter the one in brackets
+./build/nxaevora-engine --no-setup "/path/to/game folder"    # no setup this run, nothing written
 ```
 
 A run whose stdin or stdout is no terminal (a pipe, the launcher's runs) asks nothing. With `--no-setup` nothing is
@@ -537,7 +634,7 @@ written, so a data folder with no users.ini plays as `Player`, uid `0123456789ab
 `Game.ini`: help rewritten at startup, most settings hot-reload. `--key=value` overrides one run.
 Restart for `fullscreen`, `language`, `render_resolution`, `anisotropy`, `memory_gb`, `memory_fit`, `heap_max_mb`,
 `thread_stack_mb`, `map_limit_mb`, `map_limit_files`, `airplane_mode`, `ldn`, `room`, `pipeline_threads`, `prepare_shaders`, `jit_threads`, and the `[Debug]` settings other than `log`, `auto_stub_ipc` and `diag`.
-`scarletnx --settings` prints each setting the launcher's Settings offer, one a line: its section, key, default,
+`nxaevora-engine --settings` prints each setting the launcher's Settings offer, one a line: its section, key, default,
 type, range and help, tab-separated. Every setting, the recompiler's too, is described once in
 `src/nx/runtime/settings.txt`, which the build generates the tables and `g_settings` from.
 
@@ -559,22 +656,22 @@ type, range and help, tab-separated. Every setting, the recompiler's too, is des
 | `anisotropy` | `0` | Texture filtering as the game asks. `2` to `16` sharpens surfaces seen at an angle |
 | `fps_limit` | `game` | The pace the game asks for, as on the console: 60 FPS, or 30 for a game made for 30. `0` is unlimited, and `10` to `1000` is that many FPS |
 | `memory_gb` | `0` | Memory the game sees. Below `6` it is the console's 3.2 GB, `6` gives 4.8 GB and `8` gives 6.8 GB. Games that run out of memory on 3.2 GB need `6` |
-| `memory_fit` | `0` (iOS `1`) | `1` tells the game no more of `memory_gb`'s memory than the device can still give it, measured as the game starts, less what the rest of ScarletNX takes, so a device with less than the console has is not run out of memory. The log says what it measured. `0` tells it all of it |
+| `memory_fit` | `0` | `1` tells the game no more of `memory_gb`'s memory than the device can still give it, measured as the game starts, less what the rest of NXAevora Engine takes, so a device with less than the console has is not run out of memory. The log says what it measured. `0` tells it all of it |
 | `heap_max_mb` | `0` | The most heap the game can allocate, in MB. `0` is as much as the memory allows |
-| `map_limit_mb` | `0` (iOS `256`) | The most of the game's RomFS and ExeFS files mapped into memory, in MB: the ExeFS and a `romfs.bin` at start, a `romfs` folder's files as the game first reads them. `0` is no limit. A file past it is read from disk when the game asks, which is slower and leaves address space for threads and graphics where a device has little |
-| `map_limit_files` | `0` (iOS `2048`) | The most of those files mapped. `0` is no limit. Each mapped file holds a descriptor, of which a device may give the whole app a few thousand |
-| `thread_stack_mb` | `32` (iOS `8`) | The host stack of each of the game's threads, in MB, which a game's deep calls take. Less leaves address space for more threads where a device has little, and a game that calls very deep may then stop |
+| `map_limit_mb` | `0` | The most of the game's RomFS and ExeFS files mapped into memory, in MB: the ExeFS and a `romfs.bin` at start, a `romfs` folder's files as the game first reads them. `0` is no limit. A file past it is read from disk when the game asks, which is slower and leaves address space for threads and graphics where a device has little |
+| `map_limit_files` | `0` | The most of those files mapped. `0` is no limit. Each mapped file holds a descriptor, of which a device may give the whole app a few thousand |
+| `thread_stack_mb` | `32` | The host stack of each of the game's threads, in MB, which a game's deep calls take. Less leaves address space for more threads where a device has little, and a game that calls very deep may then stop |
 | `pipeline_threads` | `0` | Threads that make the GPU's new pipelines while the game goes on, and those of earlier runs before it starts with `prepare_shaders=2`. `0` uses all the computer's threads but two, two to twelve. `1` to `32` is that many. More make a first run's new pipelines sooner, with less CPU left for the game |
 | `async_pipelines` | `0` | `1` skips what a new shader draws while its pipeline is made, where the game would otherwise pause until it is ready. The game no longer stops where a new shader first appears, and the things that shader draws show up a few frames later. `0` waits for every pipeline |
-| `prepare_shaders` | `2` | Prepares the shaders the game ships in its files and executables ahead of time, so the game's draws needn't make them and it stutters less. They are prepared again after ScarletNX, the GPU or its driver is updated. `0` (Off) makes each shader only when the game first draws with it. `1` (While playing) prepares them in the background, and the game uses them once all are ready. `2` (Before starting) prepares them behind a loading screen in the launcher theme's look, which also waits for the shader cache of earlier sessions, so an opening movie doesn't stutter. A key that types, an arrow or the keypad, a gamepad button other than Home, or a tap starts the game at once, and the rest is prepared while it runs. Esc quits (on Android, back opens the menu, whose Exit quits). F2 or a gamepad's Home opens the menu, and F11 or Alt+Enter switches fullscreen, without starting the game. The screen shows only when the wait passes a quarter second, its words are in English, and a timed run (`--seconds`) starts its clock after it |
+| `prepare_shaders` | `2` | Prepares the shaders the game ships in its files and executables ahead of time, so the game's draws needn't make them and it stutters less. They are prepared again after NXAevora Engine, the GPU or its driver is updated. `0` (Off) makes each shader only when the game first draws with it. `1` (While playing) prepares them in the background, and the game uses them once all are ready. `2` (Before starting) prepares them behind a loading screen in the launcher theme's look, which also waits for the shader cache of earlier sessions, so an opening movie doesn't stutter. A key that types, an arrow or the keypad, a gamepad button other than Home, or a tap starts the game at once, and the rest is prepared while it runs. Esc quits. F2 or a gamepad's Home opens the menu, and F11 or Alt+Enter switches fullscreen, without starting the game. The screen shows only when the wait passes a quarter second, its words are in English, and a timed run (`--seconds`) starts its clock after it |
 | `jit_threads` | `0` | Threads compiling the game code the recompiler missed, which a thread waits for when it reaches it. `0` uses every CPU the game may run on but two, at most 4. They run below the game's threads |
 | `network` | `0` | `0` reports offline and lets the game reach only loopback, which is not a network sandbox. `1` uses the computer's connection, and the resolver blocks known console service domains. Local wireless works either way (`ldn`) |
 | `airplane_mode` | `0` | `1` is the console in airplane mode: offline whatever `network` says, no local wireless, as the game hears it, and in no Eden room |
-| `ldn` | `lan` | Local wireless. `lan` is over the LAN with ldn_mitm's protocol, with another ScarletNX, a Ryujinx or a console running ldn_mitm: with `network=1` the console is the computer's address, with `0` it is `127.0.0.N`, one per ScarletNX on the machine, so two of them play together through loopback. `room` is through the Eden room `room` names, with the Edens and ScarletNXs in it. `off` is local wireless disabled, as the game hears it. Another word stops the game |
+| `ldn` | `lan` | Local wireless. `lan` is over the LAN with ldn_mitm's protocol, with another NXAevora Engine, a Ryujinx or a console running ldn_mitm: with `network=1` the console is the computer's address, with `0` it is `127.0.0.N`, one per NXAevora Engine on the machine, so two of them play together through loopback. `room` is through the Eden room `room` names, with the Edens and NXAevora Engine copies in it. `off` is local wireless disabled, as the game hears it. Another word stops the game |
 | `room` | empty | The Eden room `ldn=room` joins at start: `host` or `host:port` (`24872` without one); empty with `ldn=room`, or with a space in it, stops the game. The console is there as the user playing, by its nickname ([Users](#users)), at the address the room gives it (`192.168.x.y`), which nifm gives the game too, and the game's datagrams go through the room. A room with a password takes it from `users/online.ini` ([Folders](#folders)), a file only you may read (`chmod 600`, not checked on Windows) that holds `room_password=...` alone: another key or a section stops the game. A room that refuses stops the game and says why |
 | `user` | `1` | The console's user the game plays as, `1` to `8`, as [Users](#users) lists them. A number with no user stops the game |
 | `touch` | `2` | The game's touch screen: `2` fingers and the mouse's left button, `1` fingers, `0` off |
-| `controls` | `1` on Android, else `0` | The [on-screen controls](#on-screen-controls) shown |
+| `controls` | `0` | The [on-screen controls](#on-screen-controls) shown |
 | `controls_snap`, `controls_scale`, `controls_opacity`, `controls_rel_center`, `controls_dpad_slide`, `controls_haptics` | `0`, `50`, `100`, `1`, `1`, `1` | As [On-screen controls](#on-screen-controls) describes them. `controls_scale` runs from `0` to `100` for 50% to 150% |
 | `gamepad_swap_ab` | `0` | `1` swaps a gamepad's A and B. `0` sends A, B, X and Y where the console's are |
 | `gamepad_map` | none | The player's map over that, below |
@@ -624,7 +721,7 @@ restart the game after changing it.
 
 For a joystick that SDL detects but does not recognize as a gamepad, put SDL mapping lines in
 `gamecontrollerdb.txt` beside the launcher's `settings.ini` ([Folders](#folders)). A game in the launcher's
-`recompiled/` reads the same file; any other game, the user's (on Android every game, the launcher's). To use a file
+`recompiled/` reads the same file; any other game, the user's. To use a file
 elsewhere, set
 `SDL_GAMECONTROLLERCONFIG_FILE` to its path before starting the launcher or game. A mapping line starts with the
 joystick GUID shown in the game log or the launcher's Controllers page, which names the file too, followed by a name
@@ -634,7 +731,7 @@ and SDL button and axis bindings. For example:
 GUID,My Controller,a:b0,b:b1,x:b2,y:b3,leftx:a0,lefty:a1,rightx:a2,righty:a3,platform:Linux,
 ```
 
-Replace `GUID` and each binding with values for the device, and `Linux` with `Windows`, `FreeBSD` or `Android`
+Replace `GUID` and each binding with values for the device, and `Linux` with `Windows` or `FreeBSD`
 where it runs: SDL takes a line of the file only with its own platform. This SDL mapping selects physical joystick
 controls; `gamepad_map` instead selects which Switch buttons the mapped controls send. The game log reports every
 detected joystick, whether it has an SDL mapping, and any gamepad open error. On Linux, installing
@@ -668,7 +765,7 @@ page lists the slots with the date, the play time and a picture of each, and sav
 and a delete ask first. The game waits while the page is open. Before a load the game is saved to the auto slot,
 listed first, so a load can be undone (`state_auto_backup`). The game's own save files are never part of a state,
 and loading one leaves them as they are. A state loads only into the game, update and mods it was saved with. A newer
-ScarletNX loads it too, unless it changed the recompiled code (`SNX_ABI`) or the layout of what a state holds, and
+NXAevora Engine loads it too, unless it changed the recompiled code (`SNX_ABI`) or the layout of what a state holds, and
 then it says so.
 
 In the launcher, S on Games lists the save states of the game in focus, the newest first, with the picture of the one
@@ -681,16 +778,14 @@ B do the same, the on-screen controls' too, and a direction held goes on after a
 
 A game that asks for text (a name, a password, a search) shows a box over the game, in the menu's look and the same
 on every platform: the game's own words for it, the line with the text the game started it with, and how many
-characters it holds against the game's least and most. What you type goes in, from the keyboard or an input method,
-and on Android and iOS the system's keyboard comes up with the box (a tap on the line brings it back). Backspace takes
+characters it holds against the game's least and most. What you type goes in, from the keyboard or an input method. Backspace takes
 the last character away, Enter or A gives the line, and Esc or B cancels; a tap on the box's OK or Cancel does the
 same. Short of the game's least, Enter says how many more it needs. The menu (Home, F2) opens over the box, and
 `swkbd_text` answers in its place. With no window to show it in (`-H`), the game's text is the answer, or the
 nickname of the user playing when the game gives none, and the log says which.
 
 A game that stops on an error shows a panel with **Share Log**, **Copy path** and **Close**. Share Log saves
-`scarletnx.log` (the build, the error and the game's log) beside the game's log, as the menu's does, and on Android
-sends it to the app you pick; Copy path copies that file's path once it is saved, else the game's log's. The panel says
+`scarletnx.log` (the build, the error and the game's log) beside the game's log, as the menu's does; Copy path copies that file's path once it is saved, else the game's log's. The panel says
 what each did. Up and Down move between the items, Enter or A does the one in focus, and any other key or button
 closes it. On a desktop the game's log path is
 underlined once the log exists: a click opens it in the system's viewer, the panel staying open.
@@ -700,11 +795,11 @@ underlined once the log exists: a click opens it in the system's viewer, the pan
 A pad drawn over the game, with rEden's buttons and sizes, laid out as the console's two controllers hold them:
 sticks, D-pad, A B X Y, L R ZL ZR, plus and minus, the stick buttons, Home (the game's menu) and Capture (a
 screenshot). Fingers press them, the mouse's left button too; a finger that lands off them goes to the game's
-touch screen. They are on by default on Android and off elsewhere.
+touch screen. They are off by default.
 
-The game's menu (Back on Android, Home on a gamepad, F2) has their page: show them, *Edit layout* (drag a control;
+The game's menu (Home on a gamepad, F2) has their page: show them, *Edit layout* (drag a control;
 tap one and size it with the bar on top; *Done* or Back ends it), snap to a grid, scale and opacity, the buttons
-shown, a stick's middle where the finger lands, a D-pad a finger slides on, a buzz on each press (Android), the touch
+shown, a stick's middle where the finger lands, a D-pad a finger slides on, the touch
 screen, and *Reset layout*. The game's `.ini` keeps them: `controls`, `controls_scale`, `controls_opacity`,
 `controls_snap`, `controls_rel_center`, `controls_dpad_slide`, `controls_haptics`, a control's place once it
 was moved (`controls_a=0.930 0.470 100`: its middle across the screen and its size in percent), and whether it is

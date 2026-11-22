@@ -2,7 +2,7 @@
 <!-- Copyright 2026 the ScarletNX contributors -->
 # edenprobe
 
-[edenprobe](https://github.com/scarletnx/edenprobe) is a homebrew program of hardware probes: suites of cases, each
+edenprobe is a homebrew program of hardware probes: suites of cases, each
 asking the machine one question and judging the answer against the console's. A run leaves `report.jsonl`, a line per
 case (`pass`, `fail` or `skip`, with a detail) and a summary. `scripts/edenprobe.py` recompiles it, runs it headless and
 holds the report against a baseline, how each case ended before: a case of the baseline that no longer ends that way
@@ -11,7 +11,7 @@ fails.
 ## Running it
 
 ```sh
-python3 scripts/edenprobe.py run --runtime build/scarletnx --nro edenprobe.nro --out /tmp/edenprobe \
+python3 scripts/edenprobe.py run --runtime build/nxaevora-engine --nro edenprobe.nro --out /tmp/edenprobe \
     --mode "quick notime fatal cpu graphics fs video display kernel audio" \
     [--baseline tests/edenprobe/linux-x86_64.txt]
 ```
@@ -26,8 +26,7 @@ run says what differs rather than what regressed.
 
 ## The mode words
 
-Those of the example, which CI runs; edenprobe's
-[mode file](https://github.com/scarletnx/edenprobe/blob/main/docs/ModeFile.md) has them all. The judge's suites
+Those of the example. edenprobe's mode file has them all. The judge's suites
 (selfcheck, support, reference) run whatever is named:
 
 | word | what it adds |
@@ -46,30 +45,15 @@ Those of the example, which CI runs; edenprobe's
 Left out: `net` (servers the runner does not have), `pad` and `listen` (a person), `stress` (256 MiB lists), `hang`
 (cases that never return on a machine that gets them wrong).
 
-## In CI
-
-The `edenprobe` job of `.github/workflows/build.yml` takes the Linux x86-64 install and runs the release
-`EDENPROBE_VERSION` of edenprobe, pinned by `EDENPROBE_SHA256`, on lavapipe with the words of `EDENPROBE_MODE`, against
-`tests/edenprobe/linux-x86_64.txt`. The result goes in the run's summary and in the pull request's comment of builds;
-the artifact `edenprobe-<commit>-<attempt>` holds the report, pictures, logs and `baseline.txt`.
-
-A regression there fails the Build run, and a run that failed publishes nothing: neither the nightly nor a version.
-
-Then the job runs edenprobe's main, its `nightly` release (checked by its `.sha256`), with
-`scripts/edenprobe.py run --advisory edenprobe/report.jsonl`: beside the pinned release's report it never fails. A case
-the release has not got that does not pass, a case the release passes that does not pass here, a run that ends early, or
-a nightly that cannot be fetched is a warning on the run, and the summary has a section of its own. A case new in main
-becomes binding when a release that has it is pinned and the baseline written again.
-
 ## The baseline
 
 `tests/edenprobe/<platform>.txt` names the edenprobe build and the mode words it was written with, then one case a
 line: `suite: name` for a case that passes, `[RESULT] suite: name` for one that ends as RESULT, the result as the summary
 lists it (`skip (crashed)`, `fail: DETAIL`; no `]` in it). That second form is for a case that ends the program on the
 console too, as an instruction the console refuses: the line keeps the case held to that end, and any other, a pass
-included, fails the job. Another build or other words fail the job until it is written again; a case that starts to
-pass is listed, to be added. Write it from CI's own runs, never a desktop GPU's: download the artifact of two or three
-runs (run the job again for more) and keep what ended the same way in each, so a case that passes now and then stays
+included, fails the run. Another build or other words fail the run until it is written again; a case that starts to
+pass is listed, to be added. Write it from the runs that check it, never a desktop GPU's: keep the reports of two or three
+runs (run it again for more) and keep what ended the same way in each, so a case that passes now and then stays
 out. A run given the baseline writes into its `baseline.txt` the other results it expects that the run had, so they
 come through:
 
@@ -79,27 +63,27 @@ python3 scripts/edenprobe.py baseline run1/baseline.txt run2/baseline.txt -o tes
 
 ## A case from a game report
 
-A game report whose failure a maintainer understands gets the label `status: confirmed`, and the Game reports
-workflow comments on it once: it is ready for an edenprobe case, one that asks the console the question the failure
-comes down to, so every build is held to the answer. `scarletnx --mcp` has the tools an agent writes it with, in a
-clone of [edenprobe](https://github.com/scarletnx/edenprobe):
+A game report whose failure a maintainer understands gets the label `status: confirmed`: it is ready for an
+edenprobe case, one that asks the console the question the failure comes down to, so every build is held to the
+answer. `nxaevora-engine --mcp` has the tools an agent writes it with, in a
+clone of edenprobe:
 
 - `edenprobe_scaffold` (service cases): writes the parts edenprobe's layout fixes into the clone, every file or none.
   Those are the case's enum entry and `CASES[]` row, its judge and the judge's reference check in
   `source/serviceref.[ch]` and `source/tests/t_serviceref.c`, the device side in `source/tests/t_service.c` called at
   `RunService`'s end, and a new suite's row in `source/ui.c`. Each `TODO` it leaves names the issue. What is left is
   the service call, the judge's logic, the expected answer and where it comes from (reden's commit and line, or a
-  console), the wrong answers the reference check holds the judge to, ScarletNX's among them, and the docs' counts.
+  console), the wrong answers the reference check holds the judge to, NXAevora Engine's among them, and the docs' counts.
 - `edenprobe_check`: `make -f host.mk host-run` in the clone. The judges and their checks run with the host's
   compiler, no devkitPro. Until the docs' counts in words are updated, its `test_judge_counts` fails on purpose.
 - `edenprobe_run`: the NRO, built from the clone with edenprobe's pinned devkitPro image or taken from its pull
-  request's CI artifact, recompiled with this program and run headless in the mode's words until its summary. It
+  request's build artifact, recompiled with this program and run headless in the mode's words until its summary. It
   answers the report's lines for one suite or case and the report's path. The recompile is kept while the NRO is
-  unchanged, and nothing of the person's ScarletNX folders is read or written.
-- `edenprobe_finding`: the case's line in ScarletNX's report and in the reference's (Eden's, or a console's), checked
-  that it fails on ScarletNX and passes on the reference, and the pull request's text: the commit subject (72
+  unchanged, and nothing of the person's NXAevora Engine folders is read or written.
+- `edenprobe_finding`: the case's line in NXAevora Engine's report and in the reference's (Eden's, or a console's), checked
+  that it fails on NXAevora Engine and passes on the reference, and the pull request's text: the commit subject (72
   characters at most), the issue, what each machine answered and the rules a case keeps. Nothing of a game goes in
   it: no code, no disassembly, no assets, no value only that game uses.
 
-The commit and the pull request to scarletnx/edenprobe stay with the agent and the person, under edenprobe's
+The commit and the pull request to edenprobe stay with the agent and the person, under edenprobe's
 `hooks/commit-msg`.

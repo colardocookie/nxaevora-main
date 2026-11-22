@@ -665,11 +665,7 @@ FsTreeResult fs_tree_mtime(FsTree* tree, const FsNode* node, uint64_t* unix_ms) 
     struct stat st;
     if (stat(path, &st) || st.st_mtime < 0) return FS_TREE_IO;
     uint64_t ms = (uint64_t)st.st_mtime * 1000;
-#if defined(__APPLE__)
-    ms += (uint64_t)st.st_mtimespec.tv_nsec / 1000000;
-#else
     ms += (uint64_t)st.st_mtim.tv_nsec / 1000000;
-#endif
     *unix_ms = ms;
 #endif
     return FS_TREE_OK;

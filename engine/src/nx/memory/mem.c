@@ -608,49 +608,10 @@ static void layout_for(u64 size) {
     }
     g_layout.kern_end = size;
 }
-#ifdef __APPLE__
-#include <mach/mach.h>
-#include <mach/vm_map.h>
-/* The largest run of address space in the task that nothing maps, from its range (TASK_VM_INFO) and its regions
-   (vm_region): what a reservation can be at most, whatever the system would say to a bigger one */
-static u64 largest_hole(void) {
-    task_vm_info_data_t info;
-    mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
-    vm_address_t at = 0;
-    u64 lo = 0, hi = 0, end, best = 0, best_at = 0;
-    if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&info, &count) == KERN_SUCCESS) {
-        lo = info.min_address;
-        hi = info.max_address;
-    }
-    end = lo;
-    for (;;) {
-        vm_size_t size = 0;
-        vm_region_basic_info_data_64_t region;
-        mach_msg_type_number_t n = VM_REGION_BASIC_INFO_COUNT_64;
-        mach_port_t object;
-        if (vm_region_64(mach_task_self(), &at, &size, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&region, &n,
-                         &object) != KERN_SUCCESS)
-            break;
-        {
-            /* a run ends where the task's range does, not at a region past it */
-            u64 stop = (u64)at < hi ? (u64)at : hi;
-            if (stop > end && stop - end > best) best = stop - end, best_at = end;
-        }
-        end = (u64)at + size;
-        at += size;
-        if (end >= hi) break;
-    }
-    if (hi > end && hi - end > best) best = hi - end, best_at = end;
-    LOG("memory: the task's address space is %#llx to %#llx, its largest free run %llu MiB at %#llx\n",
-        (unsigned long long)lo, (unsigned long long)hi, (unsigned long long)(best >> 20), (unsigned long long)best_at);
-    return best;
-}
-#else
-/* elsewhere the reservation's own answer says whether a run that large is free */
+/* the reservation's own answer says whether a run that large is free */
 static u64 largest_hole(void) { return UINT64_MAX; }
-#endif
 /* The largest of these the system gives is the guest's address space: the console's 128 GiB where it can, else a
-   smaller layout (an iOS app without the extended virtual addressing entitlement, a process RLIMIT_AS holds to less) */
+   smaller layout (a process RLIMIT_AS holds to less) */
 static u8* reserve_tiers(void) {
     static const u64 tiers[] = {128 * GIB, 64 * GIB, 48 * GIB, 32 * GIB, 24 * GIB, 16 * GIB,
                                 12 * GIB,  8 * GIB,  7 * GIB,  6 * GIB,  5 * GIB};

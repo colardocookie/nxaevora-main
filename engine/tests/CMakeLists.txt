@@ -134,6 +134,10 @@ add_executable(snx-test-patches patches.c)
 snx_test_target(snx-test-patches 99)
 target_link_libraries(snx-test-patches PRIVATE scarletnx-common)
 add_test(NAME patches COMMAND snx-test-patches)
+# the exit codes of docs/records/ui/engine-ui-plan.md, unit 3: the numbers of its table
+add_executable(snx-test-exit-codes exit_codes.c)
+snx_test_target(snx-test-exit-codes 99)
+add_test(NAME exit_codes COMMAND snx-test-exit-codes)
 # a recompiled game's stamp: what it is compared by, the made line after it, and the save states' copy of it
 add_executable(snx-test-game-stamp game_stamp.c)
 snx_test_target(snx-test-game-stamp 99)
@@ -817,7 +821,8 @@ endif()
 add_test(NAME startup_options COMMAND snx-test-startup)
 
 add_library(snx_test_common STATIC "${PROJECT_SOURCE_DIR}/src/common/utilities/common.c"
-    "${PROJECT_SOURCE_DIR}/src/common/utilities/ini_lines.c" "${PROJECT_SOURCE_DIR}/src/common/utilities/game_ini.c")
+    "${PROJECT_SOURCE_DIR}/src/common/utilities/ini_lines.c" "${PROJECT_SOURCE_DIR}/src/common/utilities/game_ini.c"
+    "${PROJECT_SOURCE_DIR}/src/common/utilities/progress.c")
 snx_test_target(snx_test_common 99)
 if(WIN32)
     target_link_libraries(snx_test_common PUBLIC advapi32)
@@ -836,22 +841,12 @@ add_executable(snx-test-driver driver_workflow.c
 snx_test_target(snx-test-driver 99)
 target_link_libraries(snx-test-driver PRIVATE snx_test_common snx_setup snx_lz4 OpenSSL::Crypto snx_demangle)
 set_target_properties(snx-test-driver PROPERTIES LINKER_LANGUAGE CXX)
-if(APPLE) # driver/setup.c's weak snx_menu_language, as snx_driver has it: ld64 wants it named
-    target_link_options(snx-test-driver PRIVATE "LINKER:-U,_snx_menu_language")
-endif()
 add_test(NAME driver_workflow COMMAND snx-test-driver)
 set_tests_properties(driver_workflow PROPERTIES TIMEOUT 60)
 add_executable(snx-test-link-file link_file.c)
 snx_test_target(snx-test-link-file 99)
 target_link_libraries(snx-test-link-file PRIVATE snx_test_common)
 add_test(NAME link_file COMMAND snx-test-link-file)
-if(APPLE)
-    # MoltenVK, which the app carries and a game's runtime copy (outside the bundle) gets beside it (docs/APPLE.md)
-    add_executable(snx-test-vulkan-driver vulkan_driver.c)
-    snx_test_target(snx-test-vulkan-driver 99)
-    target_link_libraries(snx-test-vulkan-driver PRIVATE snx_test_common)
-    add_test(NAME vulkan_driver COMMAND snx-test-vulkan-driver)
-endif()
 add_executable(snx-test-launcher-name launcher_name.c)
 snx_test_target(snx-test-launcher-name 99)
 target_link_libraries(snx-test-launcher-name PRIVATE scarletnx-common)
@@ -860,6 +855,12 @@ add_executable(snx-test-game-title game_title.c)
 snx_test_target(snx-test-game-title 99)
 target_link_libraries(snx-test-game-title PRIVATE scarletnx-common)
 add_test(NAME game_title COMMAND snx-test-game-title)
+# the JSON Lines progress stream (common/utilities/progress.c): every event's bytes, the escapes, the cut of a long
+# message, the exit line's modes and the game_code field
+add_executable(snx-test-progress-stream progress_stream.c)
+snx_test_target(snx-test-progress-stream 99)
+target_link_libraries(snx-test-progress-stream PRIVATE scarletnx-common)
+add_test(NAME progress_stream COMMAND snx-test-progress-stream)
 if(UNIX)
     foreach(name user_dirs left_behind)
         string(REPLACE "_" "-" target "snx-test-${name}")
@@ -1193,8 +1194,7 @@ target_link_libraries(snx-test-gdb-jit PRIVATE snx_llvm)
 add_test(NAME gdb_jit COMMAND snx-test-gdb-jit)
 set_tests_properties(gdb_jit PROPERTIES SKIP_RETURN_CODE 77)
 if(NOT WIN32)
-    # the relocations both ELF paths share (elf_object.c), AArch64's included, checked on any ELF host and on macOS,
-    # whose JIT loads ELF objects
+    # the relocations both ELF paths share (elf_object.c), AArch64's included, checked on any ELF host
     add_executable(snx-test-elf-relocate elf_relocate.c)
     snx_test_target(snx-test-elf-relocate 11)
     target_link_libraries(snx-test-elf-relocate PRIVATE snx_llvm)
@@ -1285,46 +1285,6 @@ add_executable(snx-test-recompiler-library recompiler_library.c)
 snx_test_target(snx-test-recompiler-library 11)
 target_link_libraries(snx-test-recompiler-library PRIVATE scarletnx-recompiler)
 add_test(NAME recompiler_library COMMAND snx-test-recompiler-library)
-# The Mach-O linker on objects Clang compiles for arm64 macOS, which any host's Clang with AArch64 can: what macOS
-# would check of the dylib (link_macho.c), on hosts that can't load one
-if(TARGET OpenSSL::Crypto)
-    set(snx_macho_probe "${CMAKE_CURRENT_BINARY_DIR}/link_macho_probe.o")
-    execute_process(COMMAND "${CMAKE_C_COMPILER}" --target=arm64-apple-macos13 -ffreestanding -c
-        "${CMAKE_CURRENT_SOURCE_DIR}/link_macho_fixture.c" -DPART=2 -o "${snx_macho_probe}"
-        RESULT_VARIABLE snx_macho_result OUTPUT_QUIET ERROR_QUIET)
-    if(snx_macho_result EQUAL 0)
-        foreach(part 1 2 3 4)
-            # LLVM's modules have no common symbols, which the linker refuses: a tentative definition is not one
-            # whatever the compiler's default
-            add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/link_macho_${part}.o"
-                COMMAND "${CMAKE_C_COMPILER}" --target=arm64-apple-macos13 -ffreestanding -O2 -fPIC -fno-common
-                    -DPART=${part} -c "${CMAKE_CURRENT_SOURCE_DIR}/link_macho_fixture.c"
-                    -o "${CMAKE_CURRENT_BINARY_DIR}/link_macho_${part}.o"
-                DEPENDS link_macho_fixture.c VERBATIM)
-        endforeach()
-        set(snx_link_sources "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/llvm")
-        add_executable(snx-test-link-macho link_macho.c "${snx_link_sources}/link.c" "${snx_link_sources}/link_elf.c"
-            "${snx_link_sources}/elf_object.c" "${snx_link_sources}/link_coff.c" "${snx_link_sources}/link_macho.c"
-            "${CMAKE_CURRENT_BINARY_DIR}/link_macho_1.o" "${CMAKE_CURRENT_BINARY_DIR}/link_macho_2.o"
-            "${CMAKE_CURRENT_BINARY_DIR}/link_macho_3.o" "${CMAKE_CURRENT_BINARY_DIR}/link_macho_4.o")
-        # the objects are the test's data, not part of its own link
-        set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/link_macho_1.o"
-            "${CMAKE_CURRENT_BINARY_DIR}/link_macho_2.o" "${CMAKE_CURRENT_BINARY_DIR}/link_macho_3.o"
-            "${CMAKE_CURRENT_BINARY_DIR}/link_macho_4.o" PROPERTIES EXTERNAL_OBJECT FALSE HEADER_FILE_ONLY TRUE)
-        snx_test_target(snx-test-link-macho 11)
-        target_include_directories(snx-test-link-macho PRIVATE "${PROJECT_SOURCE_DIR}/src")
-        target_link_libraries(snx-test-link-macho PRIVATE OpenSSL::Crypto)
-        add_test(NAME link_macho COMMAND snx-test-link-macho "${CMAKE_CURRENT_BINARY_DIR}/link_macho_1.o"
-            "${CMAKE_CURRENT_BINARY_DIR}/link_macho_2.o" "${CMAKE_CURRENT_BINARY_DIR}/link_macho.dylib"
-            "${CMAKE_CURRENT_BINARY_DIR}/link_macho_3.o" "a call to the undefined weak symbol _missing"
-            "${CMAKE_CURRENT_BINARY_DIR}/link_macho_4.o" "aligned beyond a page")
-    endif()
-endif()
-if(APPLE)
-    # aot_variants links a JIT cache unit as ELF into an AOT module that is Mach-O on this host: it needs its own fix
-    # before it can run here
-    set_tests_properties(aot_variants PROPERTIES DISABLED TRUE)
-endif()
 
 # the generated decoder, function discovery, and LLVM steps against expected values (llvm_steps.c)
 add_executable(snx_codegen_test codegen_test.c llvm_steps.c)
@@ -1598,7 +1558,8 @@ snx_test_target(snx-test-pending-pages 23)
 add_test(NAME pending_pages COMMAND snx-test-pending-pages)
 add_executable(snx-test-unattended-script unattended_script.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
 snx_test_target(snx-test-unattended-script 11)
-target_link_libraries(snx-test-unattended-script PRIVATE m)
+# unattended.c now writes the run stage's done line: progress.c and its snx_error/snx_os_error, not a stub
+target_link_libraries(snx-test-unattended-script PRIVATE m scarletnx-common)
 add_test(NAME unattended_script COMMAND snx-test-unattended-script)
 # the log's file, early lines, stamps, redirect, limits, fatal and crash mode (platform/plat.c)
 add_executable(snx-test-platform-log platform_log.c "${PROJECT_SOURCE_DIR}/src/common/filesystem/host.c")
