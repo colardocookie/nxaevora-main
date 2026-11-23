@@ -1,14 +1,15 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the NXAevora contributors */
 /* SNX_ARCEUS_PASS_GUEST's switch, draw rule and line (gpu/vk/pass_guest.c), with the log kept by a stand-in
-   (pass_guest_stub): read once, on only at render scale exactly 2.0, the reduced passes of the game's bloom chain and
-   nothing at the scene's size, and the 600-present line with its programs, blits and fallbacks. Every case runs
-   pass_guest.c afresh, since its state is static */
+   (pass_guest_stub): read once, on by default (0 off and silent) and only at render scale exactly 2.0, a warning only
+   when asked for at another scale, the reduced passes of the game's bloom chain and nothing at the scene's size, and
+   the 600-present line with its programs, blits and fallbacks. Every case runs pass_guest.c afresh, since its state is
+   static */
 #include <stdlib.h>
 #include "nx/gpu/vk/pass_guest.c"
 
 char g_test_log[65536];
-int g_test_lines;
+int g_test_lines, g_test_warns;
 static int failures;
 #define CHECK(cond)                                                                                                    \
     do {                                                                                                               \
@@ -39,27 +40,50 @@ static int one(uint32_t count, uint32_t instances, uint32_t tw, uint32_t th) {
 int main(int argc, char** argv) {
     const char* which = argc > 1 ? argv[1] : "";
     if (!strcmp(which, "unset")) {
+        /* on by default at 2.0, read once */
         set(NULL);
+        CHECK(pass_guest_on(2.0f) == 1 && g_pass_guest == 1 && g_test_lines == 1 && g_test_warns == 0);
+        CHECK(has("arceus-pass-guest: on at render scale 2.0") && has("(SNX_ARCEUS_PASS_GUEST unset, 0 turns it off)"));
+        set("0");
+        CHECK(pass_guest_on(2.0f) == 1 && g_test_lines == 1);
+    } else if (!strcmp(which, "unsetscale")) {
+        /* unset at another scale: off, one line and no warning, since nobody asked for it */
+        set(NULL);
+        CHECK(pass_guest_on(4.0f / 3.0f) == 0 && g_pass_guest == 0 && g_test_lines == 1 && g_test_warns == 0);
+        CHECK(has("nothing to do at render scale 1.33333, it acts at exactly 2.0 only"));
+        CHECK(pass_guest_on(2.0f) == 0 && g_test_lines == 1);
+    } else if (!strcmp(which, "zero")) {
+        /* 0: off and silent at any scale, as an unset switch was before the default changed */
+        set("0");
         CHECK(pass_guest_on(2.0f) == 0 && g_pass_guest == 0 && g_test_lines == 0);
-        set("1"); /* read once */
+        set(NULL); /* read once */
         CHECK(pass_guest_on(2.0f) == 0 && g_test_lines == 0);
+    } else if (!strcmp(which, "empty")) {
+        /* set but empty: off and silent, as before the default changed */
+        set("");
+        CHECK(pass_guest_on(2.0f) == 0 && g_pass_guest == 0 && g_test_lines == 0);
+    } else if (!strcmp(which, "zeroscale")) {
+        set("0");
+        CHECK(pass_guest_on(4.0f / 3.0f) == 0 && g_pass_guest == 0 && g_test_lines == 0);
     } else if (!strcmp(which, "on")) {
         set("1");
-        CHECK(pass_guest_on(2.0f) == 1 && g_pass_guest == 1 && g_test_lines == 1);
-        CHECK(has("arceus-pass-guest: on at render scale 2.0, the only scale") && has("(SNX_ARCEUS_PASS_GUEST=1)"));
+        CHECK(pass_guest_on(2.0f) == 1 && g_pass_guest == 1 && g_test_lines == 1 && g_test_warns == 0);
+        CHECK(has("arceus-pass-guest: on at render scale 2.0, the only scale"));
+        CHECK(has("(SNX_ARCEUS_PASS_GUEST=1, 0 turns it off)"));
         CHECK(pass_guest_on(2.0f) == 1 && g_test_lines == 1);
     } else if (!strcmp(which, "scale")) {
-        /* any scale but exactly 2.0: off, and said once */
+        /* asked for at any scale but exactly 2.0: off, and warned once */
         set("1");
-        CHECK(pass_guest_on(1.5f) == 0 && g_pass_guest == 0 && g_test_lines == 1);
+        CHECK(pass_guest_on(1.5f) == 0 && g_pass_guest == 0 && g_test_lines == 1 && g_test_warns == 1);
         CHECK(has("is off at render scale 1.5"));
         CHECK(pass_guest_on(2.0f) == 0 && g_test_lines == 1);
     } else if (!strcmp(which, "scale3")) {
         set("1");
-        CHECK(pass_guest_on(3.0f) == 0 && has("is off at render scale 3"));
+        CHECK(pass_guest_on(3.0f) == 0 && has("is off at render scale 3") && g_test_warns == 1);
     } else if (!strcmp(which, "bad")) {
         set("2");
-        CHECK(pass_guest_on(2.0f) == 0 && g_test_lines == 1 && has("SNX_ARCEUS_PASS_GUEST=2 is not 1, ignored"));
+        CHECK(pass_guest_on(2.0f) == 0 && g_test_warns == 1 && has("SNX_ARCEUS_PASS_GUEST=2 is not 0 or 1, off"));
+        CHECK(pass_guest_on(2.0f) == 0 && g_test_lines == 1);
     } else if (!strcmp(which, "rule")) {
         /* the bloom chain's reduced passes, at most half of 1920x1080 */
         CHECK(one(3, 1, 960, 540) && one(4, 1, 480, 270) && one(3, 1, 64, 33) && one(3, 1, 32, 1) && one(3, 1, 8, 4));

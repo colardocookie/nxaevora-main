@@ -623,7 +623,7 @@ add_test(NAME nvn_measure COMMAND snx-test-nvn-measure)
 add_executable(snx-test-pass-guest pass_guest.c)
 snx_test_target(snx-test-pass-guest 11)
 target_include_directories(snx-test-pass-guest BEFORE PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/pass_guest_stub")
-foreach(case unset on scale scale3 bad rule window programs full)
+foreach(case unset unsetscale zero zeroscale empty on scale scale3 bad rule window programs full)
     add_test(NAME pass_guest_${case} COMMAND snx-test-pass-guest ${case})
 endforeach()
 

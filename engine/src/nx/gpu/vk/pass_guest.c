@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the NXAevora contributors */
-/* SNX_ARCEUS_PASS_GUEST's switch, draw rule and line (pass_guest.h). Nothing is allocated, and with the switch unset
-   nothing but its one read runs. The copies are texture.c's vk_rt_guest, bound by render.c's stage_set_ */
+/* SNX_ARCEUS_PASS_GUEST's switch, draw rule and line (pass_guest.h). Nothing is allocated, and with the switch at 0
+   or a scale other than 2.0 nothing but its one read runs. The copies are texture.c's vk_rt_guest, bound by render.c's
+   stage_set_ */
 #include "nx/gpu/vk/pass_guest.h"
 #include "nx/runtime/platform/log.h"
 #include <stdio.h>
@@ -13,22 +14,27 @@ uint32_t g_pass_shown_w, g_pass_shown_h;
 
 int pass_guest_on(float scale) {
     if (g_pass_guest < 0) {
+        /* on by default (a fix the fork owner verified), 0 turns it off: then only this read runs, as before */
         const char* v = getenv("SNX_ARCEUS_PASS_GUEST");
+        const int asked = v && !strcmp(v, "1");
         g_pass_guest = 0;
-        if (v && !strcmp(v, "1")) {
+        if (!v || asked) {
             if (scale == 2.0f) {
                 g_pass_guest = 1;
                 LOG("arceus-pass-guest: on at render scale 2.0, the only scale it acts at: draws of at most 4 "
                     "vertices and one instance into colour targets of at most half the presented size read the scaled "
                     "colour targets they sample through copies at guest size, a line every %u presents "
-                    "(SNX_ARCEUS_PASS_GUEST=1)\n",
-                    PASS_GUEST_WINDOW);
-            } else
+                    "(SNX_ARCEUS_PASS_GUEST%s, 0 turns it off)\n",
+                    PASS_GUEST_WINDOW, asked ? "=1" : " unset");
+            } else if (asked)
                 WARN("arceus-pass-guest: SNX_ARCEUS_PASS_GUEST=1 is off at render scale %g: its copy is the mean of "
                      "each 2x2 block only at exactly 2.0\n",
                      (double)scale);
-        } else if (v && *v)
-            WARN("arceus-pass-guest: SNX_ARCEUS_PASS_GUEST=%s is not 1, ignored\n", v);
+            else
+                LOG("arceus-pass-guest: nothing to do at render scale %g, it acts at exactly 2.0 only\n",
+                    (double)scale);
+        } else if (*v && strcmp(v, "0"))
+            WARN("arceus-pass-guest: SNX_ARCEUS_PASS_GUEST=%s is not 0 or 1, off\n", v);
     }
     return g_pass_guest;
 }
