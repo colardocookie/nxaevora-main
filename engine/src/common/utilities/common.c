@@ -574,9 +574,13 @@ int snx_list_dir(const char* path, char*** names, size_t* count) {
     char* pattern = snx_path_join(path, "*");
     wchar_t* wp = wide(pattern);
     HANDLE h = wp ? FindFirstFileW(wp, &data) : INVALID_HANDLE_VALUE;
+    if (h == INVALID_HANDLE_VALUE) code = fail_code();
     free(pattern);
     free(wp);
-    if (h == INVALID_HANDLE_VALUE) return 1;
+    if (h == INVALID_HANDLE_VALUE) {
+        fail_code_keep(code);
+        return 1;
+    }
     do {
         if (!wcscmp(data.cFileName, L".") || !wcscmp(data.cFileName, L"..")) continue;
         char* name = utf8(data.cFileName);
