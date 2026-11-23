@@ -554,22 +554,38 @@ void snx_free_strings(char** strings, size_t count) {
     for (size_t i = 0; i < count; ++i) free(strings[i]);
     free(strings);
 }
+/* the OS's last error code, which snx_os_error reads: GetLastError on Windows, errno on POSIX */
+#ifdef _WIN32
+typedef DWORD SnxFailCode;
+static SnxFailCode fail_code(void) { return GetLastError(); }
+static void fail_code_keep(SnxFailCode code) { SetLastError(code); }
+#else
+typedef int SnxFailCode;
+static SnxFailCode fail_code(void) { return errno; }
+static void fail_code_keep(SnxFailCode code) { errno = code; }
+#endif
 int snx_list_dir(const char* path, char*** names, size_t* count) {
     char** list = NULL;
     size_t n = 0, cap = 0;
     int error = 0;
+    SnxFailCode code = 0;
 #ifdef _WIN32
     WIN32_FIND_DATAW data;
     char* pattern = snx_path_join(path, "*");
     wchar_t* wp = wide(pattern);
     HANDLE h = wp ? FindFirstFileW(wp, &data) : INVALID_HANDLE_VALUE;
+    if (h == INVALID_HANDLE_VALUE) code = fail_code();
     free(pattern);
     free(wp);
-    if (h == INVALID_HANDLE_VALUE) return 1;
+    if (h == INVALID_HANDLE_VALUE) {
+        fail_code_keep(code);
+        return 1;
+    }
     do {
         if (!wcscmp(data.cFileName, L".") || !wcscmp(data.cFileName, L"..")) continue;
         char* name = utf8(data.cFileName);
         if (!name) {
+            code = fail_code();
             error = 1;
             break;
         }
@@ -579,7 +595,10 @@ int snx_list_dir(const char* path, char*** names, size_t* count) {
         }
         list[n++] = name;
     } while (FindNextFileW(h, &data));
-    if (!error && GetLastError() != ERROR_NO_MORE_FILES) error = 1;
+    if (!error && GetLastError() != ERROR_NO_MORE_FILES) {
+        code = fail_code();
+        error = 1;
+    }
     FindClose(h);
 #else
     DIR* dir = opendir(path);
@@ -589,6 +608,7 @@ int snx_list_dir(const char* path, char*** names, size_t* count) {
         errno = 0;
         ent = readdir(dir);
         if (!ent) {
+            code = fail_code();
             error = errno != 0;
             break;
         }
@@ -603,6 +623,7 @@ int snx_list_dir(const char* path, char*** names, size_t* count) {
 #endif
     if (error) {
         snx_free_strings(list, n);
+        fail_code_keep(code);
         return 1;
     }
     if (n > 1) qsort(list, n, sizeof(*list), snx_compare_strings);
@@ -626,11 +647,15 @@ int snx_remove_tree(const char* path) {
     size_t n;
     int rc = 0;
     int dir = snx_is_dir(path);
+    SnxFailCode first = 0;
     if (dir && !snx_is_link(path)) {
         if (snx_list_dir(path, &names, &n)) return 1;
         for (size_t i = 0; i < n; ++i) {
             p = snx_path_join(path, names[i]);
-            if (snx_remove_tree(p)) rc = 1;
+            if (snx_remove_tree(p)) {
+                if (!rc) first = fail_code(); /* the first failure's code, over the folder's own that follows */
+                rc = 1;
+            }
             free(p);
         }
         snx_free_strings(names, n);
@@ -638,7 +663,12 @@ int snx_remove_tree(const char* path) {
 #ifndef _WIN32
     if (snx_is_link(path)) dir = 0;
 #endif
-    return remove_one(path, dir) || rc;
+    if (remove_one(path, dir)) {
+        if (!rc) first = fail_code();
+        rc = 1;
+    }
+    if (rc) fail_code_keep(first);
+    return rc;
 }
 unsigned char* snx_read_file(const char* path, size_t* size) {
     FILE* f = snx_fopen(path, "rb");

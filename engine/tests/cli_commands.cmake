@@ -33,7 +33,7 @@ endif()
 # a bad word is exit 2, and stderr has a part of that refusal: the bad word, or, where the word is the message's start,
 # the line's own words (a wrong line then fails here)
 foreach(case "settings list extra|extra" "settings list --scope=bogusscope|bogusscope" "settings|name a command"
-             "settings bogus|bogus" "logs|not available in this build" "cache|not available in this build"
+             "settings bogus|bogus" "logs|name a command" "cache|name a command"
              "run|name a game program" "run -x|-x")
     string(REPLACE "|" ";" fields "${case}")
     list(GET fields 0 args)

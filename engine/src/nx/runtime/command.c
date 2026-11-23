@@ -1,13 +1,14 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the NXAevora contributors */
-/* The subcommand dispatch: argv[1] recompile, run or settings, translated to the old option form, and the settings
-   commands that read, write and check one value (settings_cli.c). The old flags stay as aliases
-   (docs/records/ui/engine-ui-plan.md, unit 3) */
+/* The subcommand dispatch: argv[1] recompile, run, settings, logs or cache, translated to the old option form, and
+   the settings, logs and cache commands that finish here (settings_cli.c, maintenance_cli.c). The old flags stay as
+   aliases (docs/records/ui/engine-ui-plan.md, unit 3) */
 #include "nx/runtime/command.h"
 
 #include "common/utilities/common.h"
 #include "common/utilities/exit_codes.h"
 #include "common/utilities/progress.h"
+#include "nx/runtime/maintenance_cli.h"
 #include "nx/runtime/settings_cli.h"
 
 #include <stdarg.h>
@@ -60,7 +61,7 @@ static const char* settings_usage(void) {
            "  get KEY --game=PATH             Print one value of the game's .ini\n"
            "  set KEY VALUE --game=PATH       Write one value of the game's .ini\n"
            "  check KEY VALUE                 Check one value against the settings definition\n"
-           "Each command takes --help. logs and cache come later";
+           "Each command takes --help";
 }
 
 static const char* list_usage(void) {
@@ -225,6 +226,81 @@ static int translate_settings(int argc, char** argv, int* out_argc, char*** out_
     return -1;
 }
 
+static const char* logs_usage(void) {
+    return "Usage: nxaevora-engine logs <command>\n"
+           "  export --game=PATH [--out FILE.zip]   Write one zip with the game's diagnostic files";
+}
+
+static const char* logs_export_usage(void) {
+    return "Usage: nxaevora-engine logs export --game=PATH [--out FILE.zip]\n"
+           "  --game=PATH     The game's program\n"
+           "  --out FILE.zip  The zip to write; by default <state>/<name>-logs-<date>_<time>.zip";
+}
+
+static const char* cache_usage(void) {
+    return "Usage: nxaevora-engine cache <command>\n"
+           "  clean --game=PATH [--shaders] [--code] [--units]   Delete the game's caches";
+}
+
+static const char* cache_clean_usage(void) {
+    return "Usage: nxaevora-engine cache clean --game=PATH [--shaders] [--code] [--units]\n"
+           "  --shaders  The shader cache, <cache>/shader_cache\n"
+           "  --code     The code cache, <cache>/<name>.jitcache\n"
+           "  --units    The recompile unit cache, shared by all games of the data folder\n"
+           "             Alone, it deletes only that cache\n"
+           "  With none of --shaders, --code and --units, the shader cache and the code cache are deleted";
+}
+
+/* logs and cache finish in maintenance_cli.c: the zip writer and the tree removal need the runtime, so a build of the
+   host tools says that the command is not there */
+static int translate_logs(int argc, char** argv, int* out_argc, char*** out_argv) {
+    const char* job = argc > 2 ? argv[2] : NULL;
+    int status;
+    (void)out_argc;
+    (void)out_argv;
+    if (!job) {
+        snx_command_error("logs: name a command: export");
+        return SNX_EXIT_USAGE;
+    }
+    if (!strcmp(job, "--help")) return snx_command_help(argc, argv, 2, "logs", logs_usage());
+    if (!strcmp(job, "export")) {
+        status = snx_command_help(argc, argv, 3, "logs export", logs_export_usage());
+        if (status != -1) return status;
+#if defined(SNX_WITH_RUNTIME)
+        return snx_logs_export(argc, argv);
+#else
+        snx_command_error("logs: export: the logs command is not in a build of the host tools");
+        return SNX_EXIT_USAGE;
+#endif
+    }
+    snx_command_error("logs: %s: not a command (export)", job);
+    return SNX_EXIT_USAGE;
+}
+
+static int translate_cache(int argc, char** argv, int* out_argc, char*** out_argv) {
+    const char* job = argc > 2 ? argv[2] : NULL;
+    int status;
+    (void)out_argc;
+    (void)out_argv;
+    if (!job) {
+        snx_command_error("cache: name a command: clean");
+        return SNX_EXIT_USAGE;
+    }
+    if (!strcmp(job, "--help")) return snx_command_help(argc, argv, 2, "cache", cache_usage());
+    if (!strcmp(job, "clean")) {
+        status = snx_command_help(argc, argv, 3, "cache clean", cache_clean_usage());
+        if (status != -1) return status;
+#if defined(SNX_WITH_RUNTIME)
+        return snx_cache_clean(argc, argv);
+#else
+        snx_command_error("cache: clean: the cache command is not in a build of the host tools");
+        return SNX_EXIT_USAGE;
+#endif
+    }
+    snx_command_error("cache: %s: not a command (clean)", job);
+    return SNX_EXIT_USAGE;
+}
+
 int snx_command_translate(int argc, char** argv, int* out_argc, char*** out_argv) {
     if (!out_argc || !out_argv) return SNX_EXIT_INTERNAL;
     *out_argc = argc;
@@ -233,9 +309,7 @@ int snx_command_translate(int argc, char** argv, int* out_argc, char*** out_argv
     if (!strcmp(argv[1], "recompile")) return translate_recompile(argc, argv, out_argc, out_argv);
     if (!strcmp(argv[1], "run")) return translate_run(argc, argv, out_argc, out_argv);
     if (!strcmp(argv[1], "settings")) return translate_settings(argc, argv, out_argc, out_argv);
-    if (!strcmp(argv[1], "logs") || !strcmp(argv[1], "cache")) {
-        snx_command_error("%s: command not available in this build", argv[1]);
-        return SNX_EXIT_USAGE;
-    }
+    if (!strcmp(argv[1], "logs")) return translate_logs(argc, argv, out_argc, out_argv);
+    if (!strcmp(argv[1], "cache")) return translate_cache(argc, argv, out_argc, out_argv);
     return -1;
 }

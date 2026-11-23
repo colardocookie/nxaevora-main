@@ -36,10 +36,14 @@ The first argument selects the command:
 | `settings get KEY --game=PATH` | Print one value of the game's `.ini`, or its default | None |
 | `settings set KEY VALUE --game=PATH` | Write one value of the game's `.ini` | None |
 | `settings check KEY VALUE` | Check one value against the settings definition, with no file | None |
+| `logs export --game=PATH [--out FILE.zip]` | Write one zip with the game's diagnostic files | None |
+| `cache clean --game=PATH [--shaders] [--code] [--units]` | Delete the game's caches | None |
 
 `recompile --help` shows the recompile options. `run --help`, `settings --help` and `settings <command> --help` show
-the command's usage. `--help` comes alone: any other argument with it is exit 2, for all five settings words. `logs`
-and `cache` are reserved: they stop with exit 2 until their command exists.
+the command's usage. `logs --help`, `logs export --help`, `cache --help` and `cache clean --help` show the command's
+usage too. `--help` comes alone: any other argument with it is exit 2, for all five settings words. `logs` and `cache`
+with no command, an unknown command, an unknown option or a missing `--game=` are exit 2, and they write and delete
+nothing.
 
 `settings schema` needs no game. Its rows are the tables of `src/nx/runtime/settings.txt`, the game's own (in-game)
 rows included, and each row gives its `scope`: `startup`, `in-game`, `launcher` or `recompile`. The rows of LLVM
@@ -58,6 +62,20 @@ and writes no file and needs no `--game`; it refuses such a value with exit 7 as
 twice: the last one wins. An add-on's program (an update's `<game>_<update id>`, or a DLC's `<game>_<dlc id>`) is
 refused with exit 2: name the game's program.
 
+`logs export` writes one zip: `<name>.log`, the kept older runs in `logs/`, `threads.txt`, `<name>.ini` and
+`scarletnx-error.log`. For a game of a data folder, the last one is that folder's early error file, shared by its
+games; it is not the game's own file. A missing file is not an error: `summary.txt` names it and the reason. `--out`
+names the zip; without it the zip is `<state>/<name>-logs-<date>_<time>.zip`, in local time. An existing file is
+refused with exit 2. The zip is made in memory and then written whole. The command prints the zip's path and the
+number of the game's files that went into it. An add-on's program is refused with exit 2, as `settings get` refuses
+it.
+
+`cache clean` deletes the shader cache, `<cache>/shader_cache`, and the code cache, `<cache>/<name>.jitcache`. With
+none of `--shaders`, `--code` and `--units` it deletes both. `--units` adds the recompile unit cache,
+`<menu cache>/units`, which every game of the data folder shares; `--units` alone deletes only that cache. A path that
+is not there is `not present` and is not an error; a failed delete names the reason and the exit is 1. Close the game
+before `cache clean`: the command has no check for a running game.
+
 The old flags are aliases:
 
 | Old form | Command |
@@ -67,8 +85,6 @@ The old flags are aliases:
 | `--settings` | `settings list` |
 | `--settings=recompile` | `settings list --scope=recompile` |
 | No argument | The old start GUI, until unit 5 |
-
-Later: `logs export` and `cache clean`.
 
 ## Extract → AOT → run
 

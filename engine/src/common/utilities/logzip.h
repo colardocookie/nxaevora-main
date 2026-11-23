@@ -1,10 +1,10 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
-   Copyright 2026 the ScarletNX contributors */
+   Copyright 2026 the NXAevora contributors */
 /* Share Log's file: the logs in one zip, deflated by miniz, a text of what the launcher says first (summary.txt) and
    each log under a name of its own; every home folder written as ~ (logscan.h's snx_logscan_tilde), since the paths
-   name the player */
-#ifndef SNX_GUI_LOGZIP_H
-#define SNX_GUI_LOGZIP_H
+   name the player. The launcher and the runtime's `logs export` share it */
+#ifndef SNX_LOGZIP_H
+#define SNX_LOGZIP_H
 #include <stddef.h>
 
 typedef struct {
@@ -13,7 +13,8 @@ typedef struct {
 } GuiZipFile;
 
 /* the zip at path: summary.txt (summary, then a line for each file left out: its path and why), and each of the count
-   files that could be read, under its name and with its last change. 0, or nonzero with why in error */
-int gui_logs_zip(const char* path, const char* summary, const GuiZipFile* files, size_t count, char* error,
-                 size_t size);
+   files that could be read, under its name and with its last change. added, when not NULL, takes the number of those
+   files that went into the zip, summary.txt not counted. 0, or nonzero with why in error */
+int snx_logs_zip(const char* path, const char* summary, const GuiZipFile* files, size_t count, size_t* added,
+                 char* error, size_t size);
 #endif

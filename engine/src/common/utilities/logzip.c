@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
-   Copyright 2026 the ScarletNX contributors */
-#include "gui/logzip.h"
+   Copyright 2026 the NXAevora contributors */
+#include "common/utilities/logzip.h"
 #include "common/utilities/common.h"
 #include "common/utilities/logscan.h"
 #include <miniz.h>
@@ -21,13 +21,14 @@ static mz_zip_error add(mz_zip_archive* zip, const char* name, const char* text,
     return done ? MZ_ZIP_NO_ERROR : mz_zip_get_last_error(zip);
 }
 
-int gui_logs_zip(const char* path, const char* summary, const GuiZipFile* files, size_t count, char* error,
-                 size_t size) {
+int snx_logs_zip(const char* path, const char* summary, const GuiZipFile* files, size_t count, size_t* added,
+                 char* error, size_t size) {
     mz_zip_archive zip;
     mz_zip_error failed = MZ_ZIP_NO_ERROR;
     void* bytes = NULL;
-    size_t length = 0, i, left = 0;
+    size_t length = 0, i, left = 0, made = 0;
     char* text = snx_strdup(summary);
+    if (added) *added = 0;
     error[0] = 0;
     mz_zip_zero_struct(&zip);
     if (!mz_zip_writer_init_heap(&zip, 0, (size_t)1 << 20)) {
@@ -44,6 +45,8 @@ int gui_logs_zip(const char* path, const char* summary, const GuiZipFile* files,
             if (failed)
                 snprintf(error, size, "%s could not be made: %s: %s", path, files[i].path,
                          mz_zip_get_error_string(failed));
+            else
+                ++made;
             free(data);
             continue;
         }
@@ -65,5 +68,6 @@ int gui_logs_zip(const char* path, const char* summary, const GuiZipFile* files,
     mz_zip_writer_end(&zip);
     mz_free(bytes);
     free(text);
+    if (added) *added = made;
     return error[0] != 0;
 }

@@ -291,6 +291,31 @@ void snx_game_folders(void) {
     free(full);
 }
 
+/* The early error file's path: beside the launcher's log (docs/USAGE.md#folders), whose Share Log sends it, for a game
+   of a data folder in that folder's state folder; another folder's game beside its own log, or before it has one in its
+   folder. make makes the folder first, as the backend does before a write; logs export passes 0 and only reads the
+   path. NULL when no folder is known yet or make fails */
+char* snx_early_error_path(int make) {
+    char here[sizeof g_exedir], *moved, *folder, *path;
+    size_t n = strlen(g_exedir);
+    snprintf(here, sizeof here, "%.*s", (int)(n ? n - 1 : 0), g_exedir); /* without its separator */
+    moved = snx_user_path(here[0] ? here : ".", SNX_USER_STATE);
+    folder = moved && strcmp(moved, here[0] ? here : ".") ? snx_menu_dir(here[0] ? here : ".", SNX_USER_STATE)
+             : g_statedir[0]                              ? snx_strdup(g_statedir)
+             : here[0]                                    ? snx_strdup(here)
+                                                          : NULL; /* nothing known yet: stderr has it */
+    free(moved);
+    if (!folder) folder = snx_user_dir(SNX_USER_STATE); /* no game folder: the user's state folder */
+    if (!folder) return NULL;
+    if (make && snx_mkdirs(folder)) {
+        free(folder);
+        return NULL;
+    }
+    path = snx_path_join(folder, SNX_ERROR_LOG);
+    free(folder);
+    return path;
+}
+
 /* The add-on the program at exedir named exename is (snx_addon_name: <folder>/<folder>_<the add-on's entry>, the folder
    the base game's name): SNX_ADDON_UPDATE or SNX_ADDON_DLC, its ID in *id, the base game's name in base; SNX_ADDON_NONE
    for the game's own program, base "". addon_init and the CLI's settings get and set both read a program so */

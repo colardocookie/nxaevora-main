@@ -41,6 +41,11 @@ void snx_game_folders(void);
 /* The add-on that the program at exedir named exename is (addon_init's test): SNX_ADDON_UPDATE or SNX_ADDON_DLC, its
    ID in id, the base game's name (the folder's) in base; SNX_ADDON_NONE for the game's own program, base "" */
 int snx_game_addon(const char* exedir, const char* exename, char* base, size_t base_size, u64* id);
+/* The early error file's path, <folder>/scarletnx-error.log: the data folder's state folder for a game of a data
+   folder, else the game's state folder, else its own folder, else the user's state folder. The backend's early error
+   file and `logs export` both use it; make makes the folder, as the backend does before a write, and `logs export`
+   passes 0. NULL when no folder is known yet or make fails */
+char* snx_early_error_path(int make);
 extern volatile int g_quit; /* set to leave the main loop, which saves and exits */
 extern int g_frames;        /* the frames shown so far, atomic: the presenting thread counts them */
 /* the crash handler's report (plat_posix.c, plat_win32.c): the faulting host pc, the address it touched (NULL when not

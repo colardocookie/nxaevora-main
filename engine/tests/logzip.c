@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
-   Copyright 2026 the ScarletNX contributors */
-/* Share Log's zip (gui/logzip.h): each log under its name, deflated, with its last change; the homes as ~ in every
-   one; summary.txt with the files left out; a zip that cannot be written says where and why */
-#include "gui/logzip.h"
+   Copyright 2026 the NXAevora contributors */
+/* Share Log's zip (common/utilities/logzip.h): each log under its name, deflated, with its last change; the homes as ~
+   in every one; summary.txt with the files left out; a zip that cannot be written says where and why */
+#include "common/utilities/logzip.h"
 #include "common/utilities/common.h"
 #include <assert.h>
 #include <miniz.h>
@@ -29,7 +29,7 @@ int main(void) {
     mz_zip_archive zip;
     mz_zip_archive_file_stat stat;
     unsigned char* bytes;
-    size_t size, i;
+    size_t size, i, added;
     static const char said[] = "a run at /home/someone/games/x crashed\nC:\\Users\\Someone\\AppData\\x opened\n"
                                "/data/user/0/org.scarletnx/files/state left\n/homework stays\n";
     assert(dir);
@@ -47,8 +47,9 @@ int main(void) {
     files[1] = (GuiZipFile){b, "games/Some Game [0100ABCD12340000]/2026-10-28_14-05-33.log"};
     files[2] = (GuiZipFile){gone, "games/Gone/2026-10-28_14-05-34.log"};
 
-    assert(!gui_logs_zip(zip_path, "Message: saved at /home/someone/x\n", files, 3, error, sizeof error));
+    assert(!snx_logs_zip(zip_path, "Message: saved at /home/someone/x\n", files, 3, &added, error, sizeof error));
     assert(!error[0]);
+    assert(added == 2); /* the gone one left out */
     bytes = snx_read_file(zip_path, &size);
     assert(bytes);
     mz_zip_zero_struct(&zip);
@@ -78,7 +79,7 @@ int main(void) {
 
     /* a folder that is not there: nothing made, its path and why */
     bad = snx_path_join(gone, "logs.zip");
-    assert(gui_logs_zip(bad, "x\n", files, 1, error, sizeof error));
+    assert(snx_logs_zip(bad, "x\n", files, 1, NULL, error, sizeof error));
     assert(!strncmp(error, bad, strlen(bad)) && strstr(error, " could not be written: ") && !snx_path_exists(bad));
 
     free(bad);
@@ -89,6 +90,6 @@ int main(void) {
     free(a);
     assert(!snx_remove_tree(dir));
     free(dir);
-    puts("gui_logzip passed");
+    puts("logzip passed");
     return 0;
 }

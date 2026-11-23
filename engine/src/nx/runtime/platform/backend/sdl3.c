@@ -900,24 +900,8 @@ static int fatal_screen(const char* msg) {
     SDL_DestroyRenderer(r);
     return 1;
 }
-/* The early error file's path: beside the launcher's log (docs/USAGE.md#folders), whose Share Log sends it, for a game
-   of a data folder in that folder's state folder; another folder's game beside its own log, or before it has one in its
-   folder. NULL when no folder is known yet */
-static char* early_error_path(void) {
-    char here[sizeof g_exedir], *moved, *folder, *path;
-    size_t n = strlen(g_exedir);
-    snprintf(here, sizeof here, "%.*s", (int)(n ? n - 1 : 0), g_exedir); /* without its separator */
-    moved = snx_user_path(here[0] ? here : ".", SNX_USER_STATE);
-    folder = moved && strcmp(moved, here[0] ? here : ".") ? snx_menu_dir(here[0] ? here : ".", SNX_USER_STATE)
-             : g_statedir[0]                              ? snx_strdup(g_statedir)
-             : here[0]                                    ? snx_strdup(here)
-                                                          : NULL; /* nothing known yet: stderr has it */
-    free(moved);
-    if (!folder) folder = snx_user_dir(SNX_USER_STATE); /* no game folder: the user's state folder */
-    path = folder && !snx_mkdirs(folder) ? snx_path_join(folder, SNX_ERROR_LOG) : NULL;
-    free(folder);
-    return path;
-}
+/* The early error file's path: main.c's snx_early_error_path, with the folder made before the write */
+static char* early_error_path(void) { return snx_early_error_path(1); }
 /* appends text to the early error file. 1 when the state folder is known (the write was tried), 0 when it is not */
 static int win_early_error_line(const char* text) {
     char* path = early_error_path();
