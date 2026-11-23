@@ -223,8 +223,10 @@ static void dispatch_init(void) {
 /* ---- folders ---- */
 
 /* the folder of kind for the game's files of that kind: recorded, the one the file record names, when it is there;
-   else beside the game, or the XDG folder for a game of an installed build's data folder */
-static void kind_dir(char* out, size_t cap, int kind, const char* what, const char* recorded, const char* record) {
+   else beside the game, or the XDG folder for a game of an installed build's data folder. make makes that folder, and
+   keeps the files beside the game when it cannot */
+static void kind_dir(char* out, size_t cap, int kind, int make, const char* what, const char* recorded,
+                     const char* record) {
     char here[1024];
     size_t n = strlen(g_exedir);
     char *moved, *full;
@@ -238,7 +240,7 @@ static void kind_dir(char* out, size_t cap, int kind, const char* what, const ch
         snprintf(here, sizeof here, "%.*s", (int)(n - 1), g_exedir);
         moved = snx_user_path(here, kind);
         if (moved && strcmp(moved, here)) {
-            if (snx_mkdirs(moved))
+            if (make && snx_mkdirs(moved))
                 WARN("%s cannot be created, so the game's %s stay beside it\n", moved, what);
             else {
                 snprintf(out, cap, "%s/", moved);
@@ -257,8 +259,8 @@ static void kind_dir(char* out, size_t cap, int kind, const char* what, const ch
 
 /* the game's folders of each kind: those its driver recorded in <name>.folders beside it (snx_record_folders), which
    the environment the game runs in may not name (an AppImage's copy, without its portable home or config), else its
-   environment's. The CLI's settings commands call it after snx_game_locate, before they open the game's .ini */
-void snx_game_folders(void) {
+   environment's. make makes the folders; without it the same paths are only resolved (snx_game_folders_find) */
+static void game_folders(int make) {
     static const char* const keys[] = {"config", "state", "cache"};
     char path[sizeof g_exedir + sizeof g_exename + 16], why[256], *text, *key, *value, *full;
     char* recorded[SNX_USER_CACHE + 1] = {NULL}; /* in text */
@@ -281,15 +283,23 @@ void snx_game_folders(void) {
             WARN("%s: %s=%s is none of config=, state= and cache=, the folders the game reads from it\n", record, key,
                  value);
     }
-    kind_dir(g_confdir, sizeof g_confdir, SNX_USER_CONFIG, "settings", recorded[SNX_USER_CONFIG], record);
-    kind_dir(g_statedir, sizeof g_statedir, SNX_USER_STATE, "log and threads.txt", recorded[SNX_USER_STATE], record);
-    kind_dir(g_cachedir, sizeof g_cachedir, SNX_USER_CACHE, "caches", recorded[SNX_USER_CACHE], record);
+    kind_dir(g_confdir, sizeof g_confdir, SNX_USER_CONFIG, make, "settings", recorded[SNX_USER_CONFIG], record);
+    kind_dir(g_statedir, sizeof g_statedir, SNX_USER_STATE, make, "log and threads.txt", recorded[SNX_USER_STATE],
+             record);
+    kind_dir(g_cachedir, sizeof g_cachedir, SNX_USER_CACHE, make, "caches", recorded[SNX_USER_CACHE], record);
     if (!text && snx_path_exists(path))
         WARN("cannot read %s (%s): the game's settings are in %s, its log in %s, its caches in %s\n", record, why,
              g_confdir, g_statedir, g_cachedir);
     free(text);
     free(full);
 }
+
+/* The game's folders, made: snx_main calls it before it opens the game's .ini */
+void snx_game_folders(void) { game_folders(1); }
+
+/* The same paths, resolved only, with no folder made and no "cannot be created" warning: the CLI's settings and
+   maintenance commands call it after snx_game_locate, before they open the game's .ini */
+void snx_game_folders_find(void) { game_folders(0); }
 
 /* The early error file's path: beside the launcher's log (docs/USAGE.md#folders), whose Share Log sends it, for a game
    of a data folder in that folder's state folder; another folder's game beside its own log, or before it has one in its

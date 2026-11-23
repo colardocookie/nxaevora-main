@@ -21,20 +21,25 @@ static mz_zip_error add(mz_zip_archive* zip, const char* name, const char* text,
     return done ? MZ_ZIP_NO_ERROR : mz_zip_get_last_error(zip);
 }
 
-int snx_logs_zip(const char* path, const char* summary, const GuiZipFile* files, size_t count, size_t* added,
-                 char* error, size_t size) {
+/* the zip at path, made in memory then written whole: with new_file the file is made exclusively, so it must not be
+   there yet. 0; 1 when new_file and path is there already; -1 otherwise, error with the reason */
+static int logs_zip(const char* path, const char* summary, const GuiZipFile* files, size_t count, size_t* added,
+                    int new_file, char* error, size_t size) {
     mz_zip_archive zip;
     mz_zip_error failed = MZ_ZIP_NO_ERROR;
     void* bytes = NULL;
     size_t length = 0, i, left = 0, made = 0;
-    char* text = snx_strdup(summary);
+    int written = 0;
+    char* text;
     if (added) *added = 0;
+    if (!error || !size) return -1;
     error[0] = 0;
+    text = snx_strdup(summary);
     mz_zip_zero_struct(&zip);
     if (!mz_zip_writer_init_heap(&zip, 0, (size_t)1 << 20)) {
         snprintf(error, size, "%s could not be made: %s", path, mz_zip_get_error_string(mz_zip_get_last_error(&zip)));
         free(text);
-        return 1;
+        return -1;
     }
     for (i = 0; i < count && !failed; ++i) {
         size_t n = 0;
@@ -61,13 +66,29 @@ int snx_logs_zip(const char* path, const char* summary, const GuiZipFile* files,
         failed = mz_zip_get_last_error(&zip);
         snprintf(error, size, "%s could not be made: %s", path, mz_zip_get_error_string(failed));
     }
-    if (!failed && snx_write_file(path, bytes, length)) {
-        char why[256];
-        snprintf(error, size, "%s could not be written: %s", path, snx_os_error(why, sizeof why));
+    if (!failed) {
+        if (new_file)
+            written = snx_write_new_file(path, bytes, length, error, size);
+        else if (snx_write_file(path, bytes, length)) {
+            char why[256];
+            snprintf(error, size, "%s could not be written: %s", path, snx_os_error(why, sizeof why));
+            written = -1;
+        }
     }
     mz_zip_writer_end(&zip);
     mz_free(bytes);
     free(text);
     if (added) *added = made;
-    return error[0] != 0;
+    if (failed) return -1;
+    return new_file ? written : error[0] != 0;
+}
+
+int snx_logs_zip(const char* path, const char* summary, const GuiZipFile* files, size_t count, size_t* added,
+                 char* error, size_t size) {
+    return logs_zip(path, summary, files, count, added, 0, error, size);
+}
+
+int snx_logs_zip_new(const char* path, const char* summary, const GuiZipFile* files, size_t count, size_t* added,
+                     char* error, size_t size) {
+    return logs_zip(path, summary, files, count, added, 1, error, size);
 }

@@ -17,4 +17,9 @@ typedef struct {
    files that went into the zip, summary.txt not counted. 0, or nonzero with why in error */
 int snx_logs_zip(const char* path, const char* summary, const GuiZipFile* files, size_t count, size_t* added,
                  char* error, size_t size);
+/* As snx_logs_zip, but the file at path is made exclusively, so an output that is there already is refused. A failed
+   write deletes the file, and when that delete also fails the file stays and the error says so. 0; 1 when path is
+   there already; -1 otherwise, error with the path and the reason */
+int snx_logs_zip_new(const char* path, const char* summary, const GuiZipFile* files, size_t count, size_t* added,
+                     char* error, size_t size);
 #endif

@@ -301,16 +301,8 @@ int snx_settings_get(int argc, char** argv) {
     }
     o = snx_setting_row(a.word[0]);
     if (!o) return unknown_key("settings get", a.word[0]);
-    status = snx_cli_game_file(a.game, path, sizeof path, base, sizeof base);
-    if (status > 0) {
-        snx_command_error("settings get: %s is %s %s: name the game's program", a.game,
-                          status == SNX_ADDON_UPDATE ? "an update of" : "a DLC of", base);
-        return SNX_EXIT_USAGE;
-    }
-    if (status < 0) {
-        snx_command_error("settings get: %s: not a game's program: check --game", a.game);
-        return SNX_EXIT_GAME_FILES;
-    }
+    status = snx_cli_game_require("settings get", a.game, path, sizeof path, base, sizeof base);
+    if (status) return status;
     status = load_file("settings get", path);
     if (status) return status;
     text = snx_settings_value(o);
@@ -353,16 +345,8 @@ int snx_settings_set(int argc, char** argv) {
         snx_command_error("settings set: %s", why);
         return SNX_EXIT_SETTING;
     }
-    status = snx_cli_game_file(a.game, path, sizeof path, base, sizeof base);
-    if (status > 0) {
-        snx_command_error("settings set: %s is %s %s: name the game's program", a.game,
-                          status == SNX_ADDON_UPDATE ? "an update of" : "a DLC of", base);
-        return SNX_EXIT_USAGE;
-    }
-    if (status < 0) {
-        snx_command_error("settings set: %s: not a game's program: check --game", a.game);
-        return SNX_EXIT_GAME_FILES;
-    }
+    status = snx_cli_game_require("settings set", a.game, path, sizeof path, base, sizeof base);
+    if (status) return status;
     status = load_file("settings set", path);
     if (status) return status;
     status = snx_settings_save(a.word[0], a.word[1], why, sizeof why);

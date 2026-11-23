@@ -102,6 +102,10 @@ unsigned char* snx_read_file(const char* path, size_t* size);
 int snx_file_has_record(const char* path, const void* magic, size_t magic_size, size_t size,
                         int (*accept)(const unsigned char* record, const void* context), const void* context);
 int snx_write_file(const char* path, const void* data, size_t size);
+/* Writes size bytes to a file that must not be there yet: the file is made exclusively, so two writers cannot take one
+   name. A failed write deletes the file, and when that delete also fails the file stays and the error says so. 0; 1
+   when path is there already; -1 otherwise, error with the path and the reason. The handle is closed on every path */
+int snx_write_new_file(const char* path, const void* data, size_t size, char* error, size_t error_size);
 int snx_write_changed(const char* path, const void* data, size_t size);
 char* snx_temp_dir(const char* parent);
 /* the system's folder for temporary files: TMPDIR, else /tmp; on Windows GetTempPath's */

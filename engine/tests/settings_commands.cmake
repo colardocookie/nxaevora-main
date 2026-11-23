@@ -36,6 +36,8 @@ else()
 endif()
 set(program "${data}/recompiled/Fake/Fake.exe")
 set(ini "${config}/recompiled/Fake/Fake.ini")
+file(MAKE_DIRECTORY "${data}/recompiled/Fake")
+file(WRITE "${program}" "")
 
 # ---- settings schema: one JSON document, its version, and the rows of the tables that settings.txt fully defines
 engine(schema settings schema)
@@ -246,6 +248,16 @@ endforeach()
 
 # ---- settings get and set: the game's .ini, <config>/recompiled/Fake/Fake.ini
 file(MAKE_DIRECTORY "${config}/recompiled/Fake")
+# ---- a --game that is not there: exit 3, the path in the message
+set(gone_program "${dir}/nowhere/Fake.exe")
+engine(get_gone settings get render_resolution "--game=${gone_program}")
+engine(set_gone settings set render_resolution 2 "--game=${gone_program}")
+foreach(prefix get_gone set_gone)
+    string(FIND "${${prefix}_err}" "${gone_program}" at)
+    if(NOT ${prefix}_code EQUAL 3 OR at LESS 0)
+        message(FATAL_ERROR "${prefix} ended with ${${prefix}_code}, not 3, or did not name the path: ${${prefix}_err}")
+    endif()
+endforeach()
 engine(get_missing settings get render_resolution "--game=${program}")
 string(FIND "${get_missing_err}" "Fake.ini" at)
 if(NOT get_missing_code EQUAL 3 OR at LESS 0)
@@ -393,6 +405,8 @@ endif()
 # base game's .ini: exit 2, and stderr names the path
 set(game_id "0100000000010000")
 set(update_program "${data}/recompiled/${game_id}/${game_id}_0100000000010800v65536")
+file(MAKE_DIRECTORY "${data}/recompiled/${game_id}")
+file(WRITE "${update_program}" "")
 engine(get_update settings get render_resolution "--game=${update_program}")
 string(FIND "${get_update_err}" "${update_program}" at)
 if(NOT get_update_code EQUAL 2 OR at LESS 0)
@@ -406,6 +420,7 @@ endif()
 # a DLC's program (<folder>/<folder>_<the DLC's title ID>, no version) is refused the same way: its run opens the
 # base game's .ini too
 set(dlc_program "${data}/recompiled/${game_id}/${game_id}_0100000000011000")
+file(WRITE "${dlc_program}" "")
 engine(get_dlc settings get render_resolution "--game=${dlc_program}")
 string(FIND "${get_dlc_err}" "${dlc_program}" at)
 if(NOT get_dlc_code EQUAL 2 OR at LESS 0)
