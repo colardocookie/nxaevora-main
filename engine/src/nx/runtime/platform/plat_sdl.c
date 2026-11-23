@@ -24,10 +24,14 @@ i64 plat_tz_offset(void) {
 }
 /* a thread's own high-resolution waitable timer on Windows, nanosleep elsewhere */
 void plat_sleep_ns(i64 ns) {
-    if (ns <= 0)
+    if (ns <= 0) {
         plat_yield();
-    else
-        SDL_DelayNS((Uint64)ns);
+        return;
+    }
+    const PmWaitHook* h = __atomic_load_n(&g_pm_hook, __ATOMIC_ACQUIRE); /* PERF-32 */
+    const u64 t0 = h ? h->now() : 0;
+    SDL_DelayNS((Uint64)ns);
+    if (h) h->note(PMW_SLEEP, __builtin_return_address(0), h->now() - t0);
 }
 
 /* ================================================================ libraries */

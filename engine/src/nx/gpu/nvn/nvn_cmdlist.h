@@ -210,7 +210,18 @@ typedef struct {
     uint8_t* data;
     size_t used, cap;
     uint32_t ops;
+    /* SNX_ARCEUS_PERF_SCAN=1 (PERF-33 part 2): the offsets of its FENCE_SYNC, WAIT_SYNC and CALL ops in list order,
+       taken at each append. marks_lost: some could not be kept, so the list is walked whole */
+    uint32_t* marks;
+    uint32_t nmarks, marks_cap;
+    int marks_lost;
 } NvnOpList;
+/* the marks are taken, set once at start before any list is recorded (main.c), and read by the submit's scan */
+extern int g_nvn_oplist_marks;
+/* SNX_ARCEUS_PERF_SMALL bit 3 (PERF-34): nvn_list_unref finds a freed list's CALLs at its marks when it has them all */
+extern int g_nvn_unref_marks;
+/* 1 when the list's marks hold every FENCE_SYNC, WAIT_SYNC and CALL op: with the marks on and none lost */
+static inline int nvn_oplist_marked(const NvnOpList* list) { return g_nvn_oplist_marks && !list->marks_lost; }
 
 /* Appends one op; the payload is padded with zero bytes to NVN_OP_ALIGN. 0 when bytes is over NVN_OP_MAX_PAYLOAD, the
    code is not an op code, or memory is out of. The list is unchanged then. */

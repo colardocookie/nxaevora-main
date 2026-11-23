@@ -20,19 +20,21 @@ bool snx_vk_has_instance_extension(const char* name);
 
 /* An instance of Vulkan 1.3, volk loaded for it. extensions are the window's (SDL's or a backend's). validation adds
    VK_LAYER_KHRONOS_validation with VK_EXT_debug_utils when it is installed, and a messenger of warnings and errors
-   to debug when that is given; portability enumerates portability drivers (MoltenVK) when the loader can */
+   to debug when that is given, sync_validation its synchronization validation too (VK_EXT_validation_features);
+   portability enumerates portability drivers (MoltenVK) when the loader can */
 typedef struct {
     const char* app_name;
     const char* const* extensions;
     uint32_t extension_count;
-    bool validation, portability;
+    bool validation, portability, sync_validation;
     PFN_vkDebugUtilsMessengerCallbackEXT debug;
 } SnxVkInstanceInfo;
 typedef struct {
     VkInstance instance;
     VkDebugUtilsMessengerEXT messenger;
-    bool validation;  /* the layer is on: false when it was asked for and is not installed */
-    bool portability; /* VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR */
+    bool validation;      /* the layer is on: false when it was asked for and is not installed */
+    bool sync_validation; /* its synchronization validation is on: false when the layer lacks the extension */
+    bool portability;     /* VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR */
 } SnxVkInstance;
 VkResult snx_vk_instance_create(const SnxVkInstanceInfo* info, SnxVkInstance* out);
 void snx_vk_instance_free(SnxVkInstance* instance);

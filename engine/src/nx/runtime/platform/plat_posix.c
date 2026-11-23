@@ -19,6 +19,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/utsname.h>
 #include <time.h>
@@ -76,8 +77,20 @@ void pc_init(PCond* c) {
     pthread_condattr_destroy(&a);
 #endif
 }
-void pc_signal(PCond* c) { pthread_cond_signal(&c->c); }
-void pc_broadcast(PCond* c) { pthread_cond_broadcast(&c->c); }
+/* the wait hook (PERF-32) times the call: a wake that finds a sleeper is a system call */
+#define PC_WAKE_TIMED(call)                                                                                            \
+    do {                                                                                                               \
+        const PmWaitHook* h = __atomic_load_n(&g_pm_hook, __ATOMIC_ACQUIRE);                                           \
+        if (!h) {                                                                                                      \
+            call;                                                                                                      \
+            break;                                                                                                     \
+        }                                                                                                              \
+        const u64 t0 = h->now();                                                                                       \
+        call;                                                                                                          \
+        h->note(PMW_WAKE, __builtin_return_address(0), h->now() - t0);                                                 \
+    } while (0)
+void pc_signal(PCond* c) { PC_WAKE_TIMED(pthread_cond_signal(&c->c)); }
+void pc_broadcast(PCond* c) { PC_WAKE_TIMED(pthread_cond_broadcast(&c->c)); }
 static int cond_wait(PCond* c, PMutex* m, i64 timeout_ns) {
     struct timespec ts;
     int r;
@@ -108,9 +121,12 @@ static int cond_wait(PCond* c, PMutex* m, i64 timeout_ns) {
 /* the wait noted while it lasts, for a hang report (pm_waits) */
 int pc_wait(PCond* c, PMutex* m, i64 timeout_ns) {
     int r;
+    const PmWaitHook* h = __atomic_load_n(&g_pm_hook, __ATOMIC_ACQUIRE);
+    const u64 t0 = h ? h->now() : 0;
     pm_wait_note(m, __builtin_return_address(0), 1);
     r = cond_wait(c, m, timeout_ns);
     pm_wait_note(NULL, NULL, 0);
+    if (h) h->note(PMW_COND, __builtin_return_address(0), h->now() - t0);
     return r;
 }
 
@@ -308,7 +324,12 @@ void plat_system_info(char* out, size_t cap) {
     snprintf(out, cap, "%s%s%s, %ld threads, %llu GB RAM", os, *c ? ", " : "", c, threads > 0 ? threads : 0,
              (ram + (512ull << 20)) >> 30);
 }
-void plat_yield(void) { sched_yield(); }
+void plat_yield(void) {
+    const PmWaitHook* h = __atomic_load_n(&g_pm_hook, __ATOMIC_ACQUIRE); /* PERF-32 */
+    const u64 t0 = h ? h->now() : 0;
+    sched_yield();
+    if (h) h->note(PMW_YIELD, __builtin_return_address(0), h->now() - t0);
+}
 void plat_exit_now(int code) {
     fflush(NULL);
     _exit(code);
@@ -400,6 +421,20 @@ static void ww_remapped(u8* p, u64 size) {
     if (__atomic_load_n(&g_pagemap, __ATOMIC_ACQUIRE) < 0 || !ww_register(p, size)) return;
     __atomic_store_n(&g_pagemap, -1, __ATOMIC_RELEASE);
     WARN("memory: could not watch remapped guest memory for writes (error %d): caches compare contents now\n", errno);
+}
+
+void plat_thread_cpu(u64* kernel_ns, u64* user_ns) {
+    *kernel_ns = *user_ns = 0;
+#ifdef RUSAGE_THREAD
+    struct rusage r;
+    if (getrusage(RUSAGE_THREAD, &r)) return;
+    *kernel_ns = (u64)r.ru_stime.tv_sec * 1000000000ull + (u64)r.ru_stime.tv_usec * 1000ull;
+    *user_ns = (u64)r.ru_utime.tv_sec * 1000000000ull + (u64)r.ru_utime.tv_usec * 1000ull;
+#endif
+}
+u64 plat_page_faults(void) {
+    struct rusage r;
+    return getrusage(RUSAGE_SELF, &r) ? 0 : (u64)r.ru_minflt + (u64)r.ru_majflt;
 }
 
 int plat_ww_scan(u8* p, u64 size, void (*cb)(u8* p, u64 size)) {
@@ -1166,3 +1201,4 @@ void plat_install_crash_handler(void) {
 }
 
 void plat_prof_start(void) {}
+void plat_prof_label_self(const char* name) { (void)name; }

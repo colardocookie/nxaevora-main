@@ -21,6 +21,7 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/perf_times.h"
 #include "nx/gpu/renderer.h"
 #include "nx/gpu/vk/backing.h"
 #include "nx/gpu/vk/pending_pages.h"
@@ -374,6 +375,7 @@ static void cs_land_oldest(void) {
     int was = g_landing;
     cs_wait(b->cval);
     g_landing = 1;
+    if (g_perf_probes) perf_handoff_compute(&g_perf_handoff, plat_ns()); /* PERF-33 */
 #if defined(SNX_TRACY)
     cs_times(b->qpool, b->q0, b->q1, b->ep);
 #endif
@@ -558,7 +560,10 @@ void vk_compute_land(void) {
 u64 vk_compute_put_aside(void) {
     u64 gate = 0;
     vk_lock();
-    if (g_nout) cs_put_aside();
+    if (g_nout) {
+        cs_put_aside();
+        if (g_perf_probes) vk_release_result(vk_submit_number(), PCY_COMPUTE); /* the release thread's (PERF-33) */
+    }
     if (g_ptail != g_phead) gate = g_pend[(g_phead - 1) % CS_PENDING].cval;
     vk_unlock();
     return gate;
@@ -607,6 +612,7 @@ static void cs_mem_need(u64 a, u64 n) {
                 }
     }
 }
+int vk_compute_pages_hit(u64 a, u64 n) { return n && pend_hit(&g_pages, a, n); } /* PERF-37, under vk_lock */
 void vk_compute_mem_need(u64 a, u64 n) {
     vk_lock();
     if (pend_hit(&g_pages, a, n)) cs_mem_need(a, n);
@@ -1151,9 +1157,11 @@ rebind:
         } else if (deferred) {
             /* written: a pending result of its own, from its original bytes; read: the bytes draws would read,
                which may be an earlier draw's or dispatch's result on the GPU */
+            perf_bind((p->si.gbuf_wmask >> i) & 1 ? PBK_DISPATCH : PBK_STORAGE, 0); /* SNX_ARCEUS_PERF_TIMES */
             int ok = (p->si.gbuf_wmask >> i) & 1 ? vk_buf_copy_writable(sa[i], ss[i], &sbuf, &o)
                      : sa[i]                     ? vk_buf_get_strict(sa[i], ss[i], &sbuf, &o)
                                                  : vk_buf_copy(0, ss[i], &sbuf, &o);
+            perf_bind(PBK_OTHER, 0);
             if (!ok) {
                 vk_buf_writable_abort();
                 g_cs_skips[CS_SKIP_STORAGE_BUFFER]++;
@@ -1309,7 +1317,10 @@ rebind:
                 bufimg_buf[i] = bufimg_buf[alias];
                 if (bimg[i].bytes > bimg[alias].bytes) bimg[i].bytes = bimg[alias].bytes;
             } else if (deferred) { /* a pending result, like a written storage buffer */
-                if (!vk_buf_copy_writable(bimg[i].gva, (u32)bimg[i].bytes, &bufimg_buf[i], &bufimg_off[i])) {
+                perf_bind(PBK_DISPATCH, 0);
+                const int got = vk_buf_copy_writable(bimg[i].gva, (u32)bimg[i].bytes, &bufimg_buf[i], &bufimg_off[i]);
+                perf_bind(PBK_OTHER, 0);
+                if (!got) {
                     for (k = 0; k < i; k++)
                         if (bufimg_view[k]) vk_defer_buffer_view(bufimg_view[k]);
                     g_cs_skips[CS_SKIP_BUFFER_IMAGE]++;
@@ -1477,7 +1488,12 @@ rebind:
             if (!vk_surf_publish(images[i])) vk_surf_flush(images[i], NULL);
         }
         g_vk_dispatches++;
-        vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
+        /* SNX_ARCEUS_PERF_COMPUTE_SUBMIT=0: not at once. Every reader of these results submits before it waits
+           (buffer.c's landing finishes, submit_through, image_flush_at, vk_finish), so only when they run changes */
+        if (g_perf_compute_submit) {
+            perf_submit_why(SW_COMPUTE);
+            vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
+        }
         return;
     }
     /* results visible to the host */

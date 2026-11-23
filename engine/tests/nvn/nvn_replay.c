@@ -1411,7 +1411,7 @@ static void test_unknown_op(void) {
     uint8_t raw[sizeof(NvnOpHeader)] = {0};
     NvnOpHeader header = {0xFFu, 0u};
     memcpy(raw, &header, sizeof header);
-    NvnOpList l = {raw, sizeof raw, sizeof raw, 1};
+    NvnOpList l = {.data = raw, .used = sizeof raw, .cap = sizeof raw, .ops = 1};
     nvn_replay_list(&env, &l, &st);
     CHECK(st.faults == 1 && k.last_fault_value == 0xFFu);
     CHECK(st.methods == 0 && st.replayed[NVN_OP_NONE] == 0);

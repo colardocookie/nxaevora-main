@@ -128,6 +128,7 @@ extern u32 g_vk_validation_messages;
    signals the event slots this thread's syncpoint releases under it reached (vk_release_events): that takes nvdrv's
    nvev_lk and the kernel's lock, so a hold that performs releases is never let go under either */
 void vk_lock(void);
+int vk_lock_depth(void); /* this thread's holds of vk_lock, 0 when it has none */
 void vk_unlock(void);
 int vk_trylock(void); /* vk_lock unless another thread holds it: 1 when taken */
 u32 vk_lock_owner(void); /* the thread (plat_tid) holding vk_lock, 0 when none */
@@ -212,12 +213,15 @@ void vk_defer_call(void (*fn)(void*), void* arg); /* fn(arg) then */
 /* the submission being recorded (a number that grows at every submit: what a submit may have changed, results landed,
    is checked against it), and the frame (grows at vk_frame_next: frame f's work is done once f + VK_FRAMES started) */
 u64 vk_submit_number(void);
+u64 vk_submit_done(void); /* the newest submission the GPU has finished, read without a wait */
 /* iOS takes the GPU from an app in the background: a submit then loses the device ("Insufficient Permission (to submit
    GPU work from background)"). Holds the caller until the app is shown again, or the game is leaving. Returns at once
    everywhere else */
 void vk_wait_foreground(void);
 u32 vk_cb_begun(void); /* command buffers begun so far: changes when a new one starts recording */
 u64 vk_frame_id(void);
+/* SNX_ARCEUS_PERF_TIMES (PERF-25): 1 when frame's staging rings were reused, at the submission in *submit */
+int vk_frame_freed(u64 frame, u64* submit);
 /* the submission being recorded reads buffers in frame frame_id's rings: that frame's slot isn't reused until it is
    done. Only the frame before the current one can be held: older slots were reused already */
 void vk_frame_hold(u64 frame_id);
@@ -531,6 +535,20 @@ void vk_gfx_image_put_aside(void);
 int vk_gfx_image_in_flight(int unsubmitted);
 /* the submissions up to sub are done: the write-backs recorded in them land (cmd.c's landing, vk_lock) */
 void vk_gfx_image_frame_done(u64 sub);
+int vk_gfx_image_due(u64 sub); /* PERF-36: an entry vk_gfx_image_frame_done(sub) would land */
+int vk_rt_pages_hit(u64 gva, u64 size); /* PERF-36: a render target pending over the range */
+/* PERF-37: a queued release, a graphics result, a compute result pending over the range's pages (vk_lock held) */
+int vk_release_pages_hit(u64 gva, u64 len);
+int vk_buf_pages_hit(u64 gva, u64 len);
+int vk_compute_pages_hit(u64 a, u64 n);
+/* PERF-36 (SNX_ARCEUS_PERF_BESIDE, buffer.c): A picks a batch under vk_lock (1 when in flight), B writes it with no
+   lock, C finishes it under the lock (its last submit, 0 when nothing was written). The wait is the renderer's */
+int vk_buf_fly_pick(u64 first, u64 last);
+void vk_buf_fly_write(void);
+u64 vk_buf_fly_finish(void);
+void vk_buf_fly_wait(const void* host, u64 n);
+void vk_buf_fly_today_caller(void);
+int vk_land_beside(u64 value); /* cmd.c: release_through's landing through value by A, B and C, 0 for today's */
 int vk_gfx_image_holds(const Surf* s); /* s has a storage result waiting to land in memory */
 u64 vk_surf_guest_size(const Surf* s);
 int vk_surf_can_writeback(const Surf* s);
@@ -806,6 +824,9 @@ void vk_renderdoc_present(u64 present);
 
 /* release.c: releases the game can observe, once the results before them land (renderer.h release_write) */
 void vk_release_write(u64 gva, const void* data, u32 len);
+/* the one place a result is queued for the release thread: kind (perf_times.h PCY_*) recorded in submission sub, under
+   vk_lock. Every producer calls it, with SNX_ARCEUS_PERF_PROBES for now (PERF-33) */
+void vk_release_result(u64 sub, int kind);
 void vk_release_incr(u32 id);
 /* a samples-passed report: len bytes at gva (4, or 16 with ticks after the count), the count of query.c's counter's
    segments [first, end), once the GPU has done the submit being recorded */
@@ -838,6 +859,8 @@ void vk_query_enable(u32 chan, int on);
 int vk_query_report(u32 chan, u64 gva, u32 len, u64 ticks);
 /* a report performed (release.c): the count of counter's segments [first, end) */
 u64 vk_query_value(u32 counter, u64 first, u64 end);
+/* SNX_ARCEUS_PERF_QUERY=1: the counts copied when half the query ring is not (query.c). 1 when it copied */
+int vk_query_room(void);
 #define VK_QUERY_COUNTERS 8 /* query.c's samples-passed counters, a channel's each */
 /* render enable predicates (release.c's vk_render_predicate): a queued report of counter's segments [first, end) gets
    a predicate slot, held once, that the next vk_query_pred_flush writes (2, *slot set), or its count is known now: 1
@@ -864,6 +887,14 @@ void vk_result_begin(void);
 void vk_result_end(void);
 int vk_result_landing(void);
 void vk_write_changed(u64 addr, const u8* res, const u8* org, u32 size);
+/* a run of a storage result's 8-byte words that differ from its original bytes, [from, to) (buffer.c) */
+typedef struct {
+    u32 from, to;
+} ChgRun;
+/* SNX_ARCEUS_PERF_COMPARE=2 (PERF-28 1b): vk_write_changed, and chg told the result's changed runs as
+   landing_masked_chg finds them. 1 when it was told them all (nothing changed, or the whole-size masked pass ran) */
+int vk_write_changed_found(u64 addr, const u8* res, const u8* org, u32 size, void (*chg)(void* ctx, u32 from, u32 n),
+                           void* ctx);
 /* 1 if [host, host+len) was written since the write-tracking clock read `since`, 0 if not, -1 when write tracking
    can't tell (no host pointer, or not available): then check the contents */
 int vk_written_since(const u8* host, u64 len, u32 since);
@@ -1059,6 +1090,32 @@ VkViewport vk_render_viewport(const u32* r);
 VkViewport vk_render_viewport_at(const u32* r, u32 index);
 int vk_render_depth_clamp(const u32* r);
 VkFrontFace vk_render_front_face(const u32* r);
+/* SNX_ARCEUS_PERF_TIMES (PERF-16, perf_times.h): a buffer copy at site (PK_*) about to end the pass, its bytes, and
+   what gfx_gpu_src did (PS_*) for a binding of kind (PB_*) */
+void vk_perf_copy(int site);
+void vk_perf_copy_bytes(u64 n);
+void vk_perf_src(int kind, int outcome);
+/* PERF-17: a composed input's class (PI_*), a composition with no byte copied, a PX_* count, a PR_* result made */
+void vk_perf_class(int cls);
+void vk_perf_empty(int site, u64 bytes);
+void vk_perf_extra(int which);
+void vk_perf_made(int producer);
+void vk_perf_writable(int path, const u64* ns, u64 bytes); /* PERF-20: a new writable result's steps */
+/* PERF-22: a buf_get slow path (PO_*, POW_*), and an own buffer dropped after uses draws */
+void vk_perf_own(int what, int why, u64 bytes, int landed, const u64* ns);
+void vk_perf_own_drop(u64 uses);
+/* PERF-23: a slow path by step, own_same after a GPU-side write (PSQ_*) and after a CPU write, a written check that
+   found nothing, a host page found written */
+void vk_perf_steps(int what, const u64* ns, const u8* ran);
+void vk_perf_gsame(int real, int q, unsigned kinds);
+void vk_perf_probe(u64 ns);
+void vk_perf_cleared(unsigned tests);
+void vk_perf_csame(int tracked, int big, u64 bytes, u64 written);
+void vk_perf_quiet(u64 ns);
+void vk_perf_sample_skip(void);
+void vk_perf_landed(int made, int kind, int age, int freed, int clear, unsigned wrote, u64 ns, u64 ends, int slot);
+void vk_perf_landed_kept(u64 bytes);
+void vk_perf_wpage(u64 page);
 void vk_render_draw_texture(GpuChannel* ch);
 void vk_render_draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 count, u32 base_vertex, u32 base_instance,
                     u32 instances);

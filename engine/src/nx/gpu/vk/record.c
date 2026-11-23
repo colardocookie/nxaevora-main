@@ -19,6 +19,8 @@
 #include "nx/gpu/vk/vk.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/tracy.h"
+#include "nx/gpu/perf_times.h"
+#include "nx/gpu/perf_sample.h"
 
 typedef void (*RecFn)(const void* args);
 typedef struct {
@@ -52,6 +54,7 @@ static void rec_thread(void* arg) {
     (void)g_pad0;
     (void)g_pad1;
     SNX_THREAD_NAME("vk record");
+    if (g_settings.profiler) plat_prof_label_self("Vulkan recorder");
     for (;;) {
         u64 head = __atomic_load_n(&g_head, __ATOMIC_ACQUIRE);
         /* nothing more yet: sleep until the producer publishes (REC_PUBLISH). It spun 4000 pauses first, which with
@@ -64,6 +67,7 @@ static void rec_thread(void* arg) {
             __atomic_store_n(&g_sleep, 0, __ATOMIC_RELAXED);
             pm_unlock(&g_m);
         }
+        perf_thread_sample(PTH_RECORDER); /* PERF-31, with SNX_ARCEUS_PERF_PROBES */
         u64 records __attribute__((unused)) = 0; /* the zone's value; only the profiler reads it */
         SNX_ZONE(z_rec, "vk record");
         while (tail != head) {
@@ -127,10 +131,11 @@ static void publish(void) {
 }
 /* room for a packet of size bytes of arguments, filled in and then made known by rec_commit */
 static void* rec_push(RecFn fn, u64 size) {
-    u64 need = (sizeof(RecHdr) + size + 15) & ~15ull, at = g_pending & (REC_CAP - 1);
+    u64 need = (sizeof(RecHdr) + size + 15) & ~15ull, at = g_pending & (REC_CAP - 1), full = 0;
     if (at + need > REC_CAP) { /* the packet doesn't fit before the end: the rest is skipped */
         u64 skip = REC_CAP - at;
         while (g_pending + skip - __atomic_load_n(&g_tail, __ATOMIC_ACQUIRE) > REC_CAP) {
+            if (!full && g_perf_times) full = plat_ns();
             publish();
             plat_yield();
         }
@@ -141,9 +146,11 @@ static void* rec_push(RecFn fn, u64 size) {
         at = 0;
     }
     while (g_pending + need - __atomic_load_n(&g_tail, __ATOMIC_ACQUIRE) > REC_CAP) {
+        if (!full && g_perf_times) full = plat_ns();
         publish();
         plat_yield();
     }
+    if (full && gpu_on_gpu_thread()) perf_time_add(&g_perf, PT_REC_FULL, plat_ns() - full);
     RecHdr* h = (RecHdr*)(g_ring + at);
     h->fn = fn;
     h->size = need;
@@ -158,7 +165,9 @@ void vk_rec_sync(void) {
     if (g_rec <= 0) return;
     vk_lock(); /* no command is added meanwhile */
     publish();
+    const u64 t0 = g_perf_times && gpu_on_gpu_thread() ? plat_ns() : 0;
     while (__atomic_load_n(&g_tail, __ATOMIC_ACQUIRE) != g_pending) plat_yield();
+    if (t0) perf_time_add(&g_perf, PT_REC_SYNC, plat_ns() - t0);
     vk_unlock();
 }
 
@@ -190,7 +199,9 @@ typedef struct {
 } Submit;
 static void submit_run(const void* p) {
     const Submit* x = p;
+    const u64 e0 = g_perf_probes ? plat_ns() : 0; /* PERF-32 */
     VK_OK(vkEndCommandBuffer(x->cb));
+    if (e0) perf_wait_note(PW_ENDCB, NULL, plat_ns() - e0);
     VkCommandBufferSubmitInfo c = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = x->cb};
     VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
                         .waitSemaphoreInfoCount = x->nw,
@@ -200,7 +211,14 @@ static void submit_run(const void* p) {
                         .signalSemaphoreInfoCount = x->ns,
                         .pSignalSemaphoreInfos = x->s};
     vk_wait_foreground();
+    const u64 q0 = g_perf_probes ? plat_ns() : 0;
     VkResult r = vkQueueSubmit2(g_vk.gfx, 1, &si, VK_NULL_HANDLE);
+    if (q0) perf_wait_note(PW_SUBMIT, NULL, plat_ns() - q0);
+    if (g_perf_times) { /* the graphics timeline's value */
+        const u64 now = plat_ns();
+        perf_tail_handed(&g_perf, x->value, now);
+        perf_sub_handed(&g_perf, x->value, now);
+    }
     if (r == VK_ERROR_DEVICE_LOST) fatal("vulkan: the GPU device was lost (driver reset or crash)");
     VK_OK(r);
     /* a timeline of FFmpeg's never reaching its value would hang its decoder for good */

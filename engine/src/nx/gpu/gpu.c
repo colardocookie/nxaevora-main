@@ -41,6 +41,7 @@
 #include "nx/gpu/maxwell/fermi2d_regs.h"
 #include "nx/gpu/texture/blocklinear.h"
 #include "nx/gpu/renderer.h"
+#include "nx/gpu/perf_times.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/platform/log.h"
@@ -52,6 +53,7 @@ volatile u64 g_gpu_submits;
 void (*g_gpu_mem_changed)(u64 cpu_addr, u64 len);
 void (*g_gpu_before_write)(u64 gva, u64 size);
 int g_gpu_releases;
+int g_vk_sync_validation;
 void (*g_gpu_mapping_begin)(u64 gva, u64 size, int full);
 void (*g_gpu_mapping_end)(void);
 
@@ -74,6 +76,7 @@ static int copy_runs(u64 gva, u8* in, const u8* out, u64 size) {
             goto next;
         }
         if (__atomic_load_n(&g_own_any, __ATOMIC_ACQUIRE)) own_acquire(cpu, n);
+        gpu_fly_wait(GP(cpu), n); /* PERF-36 */
         if (in)
             memcpy(in, GP(cpu), (size_t)n);
         else
@@ -136,11 +139,21 @@ int gmem_write(u64 gva, const void* src, u64 size) {
 }
 /* the host pointer of [gva, gva + size) when contiguous, what the GPU holds of it landed (memory/own.c): the caller
    reads or writes it on the CPU, maybe with the renderer's lock held */
+void gpu_fly_wait_slow(const void* host, u64 n) {
+    if (g_renderer && g_renderer->fly_wait) g_renderer->fly_wait(host, n);
+}
+_Alignas(64) int g_gfx_fly; /* PERF-36: a graphics landing is written without vk_lock (gpu.h) */
+int g_gpu_fly_hold;
+void gpu_fly_hold(int delta) {
+    if (delta > 0) gpu_fly_wait_all(GPU_FLY_LOAD);
+    __atomic_add_fetch(&g_gpu_fly_hold, delta, __ATOMIC_ACQ_REL);
+}
 u8* gmem_ptr_untracked(u64 gva, u64 size) {
     u64 cpu = 0;
     if (!size) size = 1;
     if (gmmu_run(gva, size, &cpu) != size) return NULL;
     if (__atomic_load_n(&g_own_any, __ATOMIC_ACQUIRE)) own_acquire(cpu, size);
+    gpu_fly_wait(GP(cpu), size); /* PERF-36 */
     return GP(cpu);
 }
 u8* gmem_host(u64 gva, u64 size) {
@@ -936,8 +949,17 @@ static int run_pass(i64* wake) {
     }
     return 0;
 }
+/* SNX_ARCEUS_PERF_TIMES: the GPU thread's wait that gpu_wait_note named, and since when */
+static _Thread_local const char* t_perf_what;
+static _Thread_local u64 t_perf_since;
 void gpu_wait_note(const char* what, u64 value) {
     if (!t_gpu) return;
+    if (g_perf_times) {
+        const u64 now = plat_ns();
+        if (t_perf_what) perf_time_named(&g_perf, t_perf_what, now - t_perf_since);
+        t_perf_what = what;
+        t_perf_since = now;
+    }
     if (what) {
         __atomic_store_n(&g_wait_value, value, __ATOMIC_RELAXED);
         __atomic_store_n(&g_wait_since, plat_ns(), __ATOMIC_RELAXED);
@@ -998,6 +1020,7 @@ static void gpu_thread(void* arg) {
     (void)arg;
     t_gpu = 1;
     SNX_THREAD_NAME("GPU");
+    if (g_settings.profiler) plat_prof_label_self("GPU");
     pm_lock(&g_qlk);
     for (;;) {
         u64 gen = g_qgen;
@@ -1006,7 +1029,11 @@ static void gpu_thread(void* arg) {
         /* A whole pass ran nothing: sleep until a new item, a kick, or the next look at a wait. A plot, not a zone:
            this wait can last the rest of the run. */
         SNX_PLOT("gpu idle", 1);
-        if (gen == g_qgen) pc_wait(&g_qcv, &g_qlk, wake);
+        if (gen == g_qgen) {
+            const u64 idle = g_perf_times ? plat_ns() : 0;
+            pc_wait(&g_qcv, &g_qlk, wake);
+            if (idle) perf_time_add(&g_perf, PT_IDLE, plat_ns() - idle);
+        }
         SNX_PLOT("gpu idle", 0);
     }
 }

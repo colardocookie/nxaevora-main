@@ -82,7 +82,12 @@ typedef struct {
     uint64_t tid[PM_TRACY_THREADS];
 } PmNamed;
 static const PmTracy* g_pm_tracy;
-static int g_pm_tracy_on; /* the one flag pm_lock reads; set once, never cleared */
+static int g_pm_tracy_on; /* the one flag pm_lock reads, a reporter's or the wait hook's; set once, never cleared */
+const PmWaitHook* g_pm_hook;
+void pm_wait_hook_set(const PmWaitHook* h) {
+    __atomic_store_n(&g_pm_hook, h, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_pm_tracy_on, 1, __ATOMIC_RELEASE); /* pm_lock's slow path, where it times a contended take */
+}
 /* locks named before a reporter registered (a client started later, F10's): attached when one registers */
 #define PM_PENDING 16
 static struct {
@@ -186,7 +191,10 @@ void pm_lock(PMutex* m) {
     }
     if (c && pm_named_admit(c)) g_pm_tracy->wait(c->l);
     pm_wait_note(m, __builtin_return_address(0), 0);
+    const PmWaitHook* h = __atomic_load_n(&g_pm_hook, __ATOMIC_ACQUIRE);
+    const uint64_t t0 = h ? h->now() : 0;
     AcquireSRWLockExclusive(&m->l);
+    if (h) h->note(PMW_LOCK, __builtin_return_address(0), h->now() - t0);
     if (c && pm_named_admit(c)) g_pm_tracy->lock(c->l);
     pm_wait_note(NULL, NULL, 0);
 }
@@ -207,7 +215,10 @@ int pm_trylock(PMutex* m) {
 void pm_lock_shared(PMutex* m) {
     if (TryAcquireSRWLockShared(&m->l)) return;
     pm_wait_note(m, __builtin_return_address(0), 0);
+    const PmWaitHook* h = __atomic_load_n(&g_pm_hook, __ATOMIC_ACQUIRE);
+    const uint64_t t0 = h ? h->now() : 0;
     AcquireSRWLockShared(&m->l);
+    if (h) h->note(PMW_LOCK, __builtin_return_address(0), h->now() - t0);
     pm_wait_note(NULL, NULL, 0);
 }
 void pm_unlock_shared(PMutex* m) { ReleaseSRWLockShared(&m->l); }
@@ -319,7 +330,10 @@ void pm_lock(PMutex* m) {
     }
     if (c && pm_named_admit(c)) g_pm_tracy->wait(c->l);
     pm_wait_note(m, __builtin_return_address(0), 0);
+    const PmWaitHook* h = __atomic_load_n(&g_pm_hook, __ATOMIC_ACQUIRE);
+    const uint64_t t0 = h ? h->now() : 0;
     pthread_mutex_lock(&m->l);
+    if (h) h->note(PMW_LOCK, __builtin_return_address(0), h->now() - t0);
     if (c && pm_named_admit(c)) g_pm_tracy->lock(c->l);
     pm_wait_note(NULL, NULL, 0);
 }
@@ -341,7 +355,10 @@ int pm_trylock(PMutex* m) {
 void pm_lock_shared(PMutex* m) {
     if (pthread_mutex_trylock(&m->l) == 0) return;
     pm_wait_note(m, __builtin_return_address(0), 0);
+    const PmWaitHook* h = __atomic_load_n(&g_pm_hook, __ATOMIC_ACQUIRE);
+    const uint64_t t0 = h ? h->now() : 0;
     pthread_mutex_lock(&m->l);
+    if (h) h->note(PMW_LOCK, __builtin_return_address(0), h->now() - t0);
     pm_wait_note(NULL, NULL, 0);
 }
 void pm_unlock_shared(PMutex* m) { pthread_mutex_unlock(&m->l); }

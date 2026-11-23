@@ -44,6 +44,8 @@ int gmem_read(u64 gva, void* dst, u64 size) {
 }
 /* nothing is GPU-owned here: vk_guest_read reads guest memory as gmem_read does, into staging */
 int g_own_any;
+/* perf_times.h's switches, which texture.c's pass-end sites read (SNX_ARCEUS_PERF_TIMES): off */
+int g_perf_times, g_perf_pass_why;
 void vk_guest_read(u64 gva, u64 size, u8* host, VkBuffer buf, u64 at) {
     (void)buf, (void)at;
     gmem_read(gva, host, size);

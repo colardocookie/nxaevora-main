@@ -319,6 +319,13 @@ void dma_snap_staged_free(DmaStaged* d);
 /* maxwell3d.c: the record of GPU-side writes. Each write stamps a new generation on the pages it covers, by GPU
    address and by the guest pages behind them */
 void gpu_mem_written(u64 gva, u64 size);
+/* SNX_ARCEUS_PERF_SMALL bit 4 (PERF-34): a release hold's payload writes, one notice for all. notice_begin raises
+   the pending count before the first write (gpu_mem_dirty_since answers 1 while it is up), written_many stamps the
+   ranges with one generation, and notice_end lowers the count after it is published */
+void gpu_mem_notice_begin(void);
+void gpu_mem_written_many(const u64* gva, const u64* size, u32 n);
+void gpu_mem_notice_end(void);
+extern int (*gpu_lock_mine)(void); /* the renderer's: whether this thread holds its lock (PERF-34's probe) */
 void gpu_mem_written_shader(u64 gva, u64 size); /* a shader's result landing in guest memory */
 /* guest CPU bytes [cpu, cpu + size) written by an engine that doesn't go through the GPU's address space (VIC's
    picture, published over them, memory/own.c): what is built from them checks them again */
@@ -326,6 +333,10 @@ void gpu_mem_written_cpu(u64 cpu, u64 size);
 u64 gpu_mem_generation(void);                   /* the last generation fully published */
 void gpu_mem_written_all(void); /* a save state's load: every page written, after anything asked before */
 int gpu_mem_dirty_since(u64 since, u64 a, u64 sz); /* a GPU-side write after since touched [a, a + sz) */
+/* SNX_ARCEUS_PERF_TIMES (PERF-23): whether a byte of [a, a + sz) was written after since (perf_times.h's PSA_*), as
+   stamped or (real) as written, and a run of a result's bytes that changed, for the record as written only */
+int gpu_mem_written_ask(u64 since, int real, u64 a, u64 sz, int* outside, unsigned* kinds);
+void gpu_mem_landed(u64 gva, u64 size);
 
 /* ---- gpu.c: GPFIFO submission and the GPU thread's queue */
 void gpu_init(void);
@@ -374,6 +385,8 @@ extern void (*g_gpu_mem_changed)(u64 cpu_addr, u64 len); /* the renderer's side 
 /* the renderer lands pending shader results before the stream goes on past them: before a write of memory those
    results overlap (size > 0), and before anything the game can observe (gpu_signal_point, size 0) */
 extern void (*g_gpu_before_write)(u64 gva, u64 size);
+/* SNX_ARCEUS_VK_VALIDATION=2: the validation layer's synchronization checks too (gpu/vk/device.c), read once */
+extern int g_vk_sync_validation;
 extern int g_gpu_releases; /* the renderer holds releases waiting to happen (renderer.h release_need) */
 /* the renderer's memory lock held across a change of backing. full is for CPU guest pages, whose GPU aliases are
    unknown; GPU address space changes give the range. Begin is taken before the memory manager's own lock */
@@ -403,4 +416,22 @@ void r3d_const_upload(GpuChannel* ch, u32 v, int last);
 void r3d_const_flush(GpuChannel* ch); /* writes the constant buffer data r3d_const_upload is holding */
 int r3d_blit(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, double sx, double sy, double sdx,
              double sdy);
+/* PERF-36 (SNX_ARCEUS_PERF_BESIDE): a graphics landing writes guest bytes without vk_lock between its pick and its
+   end. An access that can run with vk_lock held waits here for the host bytes it reaches, [host, host + n), or for
+   the whole batch (gpu_fly_wait_all). g_gfx_fly is never set without the switch, so then this reads one int */
+extern int g_gfx_fly; /* atomic */
+/* the renderer's fly_wait: host NULL waits for the whole batch, n then the kind of wait, for the counts */
+void gpu_fly_wait_slow(const void* host, u64 n);
+enum { GPU_FLY_RANGE, GPU_FLY_TARGET, GPU_FLY_OWN, GPU_FLY_LOAD, GPU_FLY_MUST, GPU_FLY_KINDS };
+static inline void gpu_fly_wait(const void* host, u64 n) {
+    if (__atomic_load_n(&g_gfx_fly, __ATOMIC_ACQUIRE)) gpu_fly_wait_slow(host, n ? n : 1);
+}
+static inline void gpu_fly_wait_all(int kind) {
+    if (__atomic_load_n(&g_gfx_fly, __ATOMIC_ACQUIRE)) gpu_fly_wait_slow(NULL, (u64)kind);
+}
+/* the state load's hold (state.c, from after mem_restore_begin to mem_restore_end): no batch starts while it is not
+   0. Raising it waits for one in flight first */
+extern int g_gpu_fly_hold; /* atomic */
+void gpu_fly_hold(int delta);
+
 #endif

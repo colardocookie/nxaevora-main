@@ -17,10 +17,12 @@
 #include "nx/hle/services/nvdrv.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/nvn/diag/perf_reuse.h"
 #include "nx/gpu/vk/scale.h"
 #include "nx/gpu/vk/pending_pages.h"
 #include "nx/gpu/vk/internal_spv.h"
 #include "nx/runtime/platform/tracy.h"
+#include "nx/gpu/perf_times.h"
 
 static struct {
     Surf* rt[8];
@@ -36,13 +38,118 @@ static struct {
 } g_rp;
 u64 g_vk_fb_draws, g_vk_fb_barriers, g_vk_fb_restarts, g_vk_rt_copies;
 
+/* SNX_ARCEUS_PERF_TIMES (PERF-16): the copies, passes and draws by a pass's first target, as gpuprof names it. The
+   table is the GPU thread's: a call on another thread is only counted as elsewhere */
+static PerfTarget perf_target(const Surf* rt, const Surf* zt) {
+    const Surf* s = rt ? rt : zt;
+    return s ? (PerfTarget){s->gva, s->w, s->h, (u32)s->f.vk} : (PerfTarget){0};
+}
+static int perf_here(void) {
+    if (gpu_on_gpu_thread()) return 1;
+    __atomic_fetch_add(&g_perf_cp.elsewhere, 1, __ATOMIC_RELAXED);
+    return 0;
+}
+void vk_perf_copy(int site) {
+    perf_pass_why(PE_COPY);
+    if (g_perf_times && perf_here()) perf_copy_begin(&g_perf_cp, site);
+}
+void vk_perf_copy_bytes(u64 n) {
+    if (g_perf_times && perf_here()) perf_copy_bytes(&g_perf_cp, n);
+}
+void vk_perf_src(int kind, int outcome) {
+    if (g_perf_times && perf_here()) perf_copy_src(&g_perf_cp, kind, outcome);
+}
+void vk_perf_class(int cls) {
+    if (g_perf_times && perf_here()) perf_copy_class(&g_perf_cp, cls);
+}
+void vk_perf_empty(int site, u64 bytes) {
+    if (g_perf_times && perf_here()) perf_copy_empty(&g_perf_cp, site, bytes);
+}
+void vk_perf_extra(int which) {
+    if (g_perf_times && perf_here()) perf_copy_extra(&g_perf_cp, which, 1);
+}
+void vk_perf_made(int producer) {
+    if (g_perf_times && perf_here()) perf_copy_made(&g_perf_cp, producer);
+}
+void vk_perf_own(int what, int why, u64 bytes, int landed, const u64* ns) {
+    if (g_perf_times && perf_here()) perf_copy_own(&g_perf_cp, what, why, bytes, landed, ns);
+}
+void vk_perf_own_drop(u64 uses) {
+    if (g_perf_times && perf_here()) perf_copy_own_drop(&g_perf_cp, uses);
+}
+void vk_perf_steps(int what, const u64* ns, const u8* ran) {
+    if (g_perf_times && perf_here()) perf_copy_steps(&g_perf_cp, what, ns, ran);
+}
+void vk_perf_gsame(int real, int q, unsigned kinds) {
+    if (g_perf_times && perf_here()) perf_copy_gsame(&g_perf_cp, real, q, kinds);
+}
+void vk_perf_cleared(unsigned tests) {
+    if (g_perf_times && perf_here()) perf_copy_cleared(&g_perf_cp, tests);
+}
+void vk_perf_probe(u64 ns) {
+    if (g_perf_times && perf_here()) perf_copy_probe(&g_perf_cp, ns);
+}
+void vk_perf_csame(int tracked, int big, u64 bytes, u64 written) {
+    if (g_perf_times && perf_here()) perf_copy_csame(&g_perf_cp, tracked, big, bytes, written);
+}
+void vk_perf_landed(int made, int kind, int age, int freed, int clear, unsigned wrote, u64 ns, u64 ends, int slot) {
+    if (g_perf_times && perf_here()) perf_copy_landed(&g_perf_cp, made, kind, age, freed, clear, wrote, ns, ends, slot);
+}
+void vk_perf_landed_kept(u64 bytes) {
+    if (g_perf_times && perf_here()) perf_copy_landed_kept(&g_perf_cp, bytes);
+}
+void vk_perf_sample_skip(void) {
+    if (g_perf_times && perf_here()) perf_copy_sample_skip(&g_perf_cp);
+}
+void vk_perf_quiet(u64 ns) {
+    if (g_perf_times && perf_here()) perf_copy_quiet(&g_perf_cp, ns);
+}
+void vk_perf_wpage(u64 page) {
+    if (g_perf_times && perf_here()) perf_copy_wpage(&g_perf_cp, page, vk_frame_id());
+}
+void vk_perf_writable(int path, const u64* ns, u64 bytes) {
+    if (g_perf_times && perf_here()) perf_copy_writable(&g_perf_cp, path, ns, bytes);
+}
+/* PERF-20: whether a transform feedback binding of size bytes at stride, from its start, is all written by this
+   draw's capture: none of a geometry or tessellation stage, a buffer not resumed from its counter, and a guest
+   topology drawn as itself (not line loops, quads, quad strips or polygons) with no restart in an indexed strip */
+static void perf_xfb(int staged, int resumed, u32 topology, int restart, u64 count, u64 instances, u64 stride,
+                     u64 size) {
+    int prim = PXP_OTHER;
+    switch (topology) {
+        case 0: prim = PXP_POINTS; break;
+        case 1: prim = PXP_LINES; break;
+        case 3: prim = restart ? PXP_OTHER : PXP_LINE_STRIP; break;
+        case 4: prim = PXP_TRIANGLES; break;
+        case 5: prim = restart ? PXP_OTHER : PXP_TRIANGLE_STRIP; break;
+        case 6: prim = restart ? PXP_OTHER : PXP_TRIANGLE_FAN; break;
+        default: break;
+    }
+    const u64 v = perf_xfb_vertices(prim, count, instances);
+    const u64 captured = v == ~0ull || !stride ? 0 : v * stride;
+    const int cls = staged ? PXF_STAGE : resumed ? PXF_RESUME : v == ~0ull || !stride ? PXF_TOPOLOGY
+                    : captured >= size ? PXF_WHOLE : PXF_SHORT;
+    perf_copy_xfb(&g_perf_cp, cls, size, cls == PXF_WHOLE ? size : cls == PXF_SHORT ? captured : 0);
+}
+
 void vk_render_end(void) {
+    const int why = g_perf_pass_why; /* SNX_ARCEUS_PERF_TIMES: the caller's reason, used once */
+    g_perf_pass_why = PE_OTHER;
     if (!g_rp.open) return;
+    const u64 t0 = g_perf_times ? plat_ns() : 0;
     g_rp.open = 0;
     VkCommandBuffer cb = vk_cmd();
     vk_query_pass_end(cb); /* a query begun in the pass ends in it */
     rec_CmdEndRendering(cb);
     vk_gpuprof_pass_end(cb);
+    if (t0) {
+        perf_count(&g_perf, PC_END_OTHER + why, 1);
+        perf_time_add(&g_perf, PT_PASS_END, plat_ns() - t0);
+        if (perf_here()) {
+            const PerfTarget t = perf_target(g_rp.n ? g_rp.rt[0] : NULL, g_rp.zt);
+            perf_copy_pass_end(&g_perf_cp, &t, why);
+        }
+    }
 }
 
 /* the targets the registers name, without opening anything */
@@ -95,7 +202,9 @@ static int render_begin(Surf** rt, Surf* zt, u32 n, int zt_ro, int srgb_write, u
                !memcmp(g_rp.rt, rt, sizeof g_rp.rt);
     if (same && !(fb & ~g_rp.fb)) return 1;
     if (same) g_vk_fb_restarts++; /* only a target's layout changes */
+    perf_pass_why(PE_TARGET);
     vk_render_end();
+    const u64 perf_t0 = g_perf_times ? plat_ns() : 0;
     VkCommandBuffer cb = vk_cmd();
     u32 loops = 0;
     VkRenderingAttachmentInfo ca[8];
@@ -171,6 +280,14 @@ static int render_begin(Surf** rt, Surf* zt, u32 n, int zt_ro, int srgb_write, u
     g_rp.fb = loops;
     g_rp.fb_written = g_rp.fb_read = 0;
     g_rp.open = 1;
+    if (perf_t0) {
+        perf_count(&g_perf, PC_PASS_BEGINS, 1);
+        perf_time_add(&g_perf, PT_PASS_BEGIN, plat_ns() - perf_t0);
+        if (perf_here()) {
+            const PerfTarget t = perf_target(n ? rt[0] : NULL, zt);
+            perf_copy_pass_begin(&g_perf_cp, &t);
+        }
+    }
     return 1;
 }
 static void target_written(Surf* s) {
@@ -194,7 +311,9 @@ static int zt_written(Surf* zt, u32 pred, int undefined) {
    area is as large as a framebuffer may be, so the draw's viewport and scissor fit in it */
 static int render_begin_empty(void) {
     if (g_rp.open && !g_rp.n && !g_rp.zt) return 1;
+    perf_pass_why(PE_TARGET);
     vk_render_end();
+    const u64 perf_t0 = g_perf_times ? plat_ns() : 0;
     VkExtent2D ext = {g_vk.props.limits.maxFramebufferWidth, g_vk.props.limits.maxFramebufferHeight};
     VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, ext}, .layerCount = 1};
     vk_gpuprof_pass_begin(vk_cmd(), NULL, NULL);
@@ -207,6 +326,10 @@ static int render_begin_empty(void) {
     g_rp.srgb_write = 0;
     g_rp.fb = g_rp.fb_written = g_rp.fb_read = 0;
     g_rp.open = 1;
+    if (perf_t0) {
+        perf_count(&g_perf, PC_PASS_BEGINS, 1);
+        perf_time_add(&g_perf, PT_PASS_BEGIN, plat_ns() - perf_t0);
+    }
     return 1;
 }
 
@@ -1092,7 +1215,10 @@ static int cb_get(const GpuChannel* ch, int stage, int i, u32 sz, VkBuffer* buf,
         *off = c[stage][i].off;
         return 1;
     }
-    if (!(a ? vk_buf_get_strict(a, sz, buf, off) : vk_buf_copy(a, sz, buf, off))) return 0;
+    perf_bind(PBK_CONST, 0);
+    const int got = a ? vk_buf_get_strict(a, sz, buf, off) : vk_buf_copy(a, sz, buf, off);
+    perf_bind(PBK_OTHER, 0);
+    if (!got) return 0;
     if (pending) {
         c[stage][i].a = 0;
         return 1;
@@ -1192,6 +1318,7 @@ static int image_pending(Surf* surf) {
     return 0;
 }
 static void image_record(Surf* surf, u8* original, u32 size) {
+    if (g_perf_probes) perf_handoff_image(&g_perf_handoff, g_vk_drawn, surf->gva, surf->w, surf->h, surf->fkey);
     if (image_pending(surf)) {
         free(original);
         return;
@@ -1241,6 +1368,7 @@ static void image_land(size_t index) {
     GfxImageOut* o = &g_img_out[index];
     vmaInvalidateAllocation(g_vk.vma, o->back_mem, o->back_off, o->back_size);
     vk_surf_flush_land(o->surf, o->back, o->original, o->wgen);
+    if (g_perf_probes) perf_sub_landed(&g_perf, o->sub, plat_ns()); /* PERF-33 */
     image_remove(index);
 }
 /* the entry whose bytes from before the draw are original (each its own allocation): waiting for the GPU can land
@@ -1254,7 +1382,10 @@ static void image_flush_at(size_t index) {
     GfxImageOut out = g_img_out[index];
     SNX_ZONE(z, "vk image flush");
     if (out.sub) { /* its copy is recorded: once its submit is done, from there */
-        if (out.sub > vk_last_submit()) vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
+        if (out.sub > vk_last_submit()) {
+            perf_submit_why(SW_IMAGE);
+            vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
+        }
         vk_wait_submit(out.sub);
         index = image_find(out.original);
         if (index < g_img_count) image_land(index); /* not landed by a frame's landing meanwhile */
@@ -1325,6 +1456,7 @@ void vk_gfx_image_put_aside(void) {
         }
         vk_surf_flush_record(o->surf, buf, off);
         o->sub = vk_submit_number();
+        if (g_perf_probes) vk_release_result(o->sub, PCY_IMAGE); /* the release thread lands it (PERF-33) */
         o->back = p;
         o->back_mem = mem;
         o->back_off = off;
@@ -1338,6 +1470,12 @@ void vk_gfx_image_put_aside(void) {
 int vk_gfx_image_in_flight(int unsubmitted) {
     for (size_t i = 0; i < g_img_count; i++)
         if (g_img_out[i].sub && (!unsubmitted || g_img_out[i].sub > vk_last_submit())) return 1;
+    return 0;
+}
+/* PERF-36: whether vk_gfx_image_frame_done(sub) would land an entry */
+int vk_gfx_image_due(u64 sub) {
+    for (size_t i = 0; i < g_img_count; i++)
+        if (g_img_out[i].sub && g_img_out[i].sub <= sub) return 1;
     return 0;
 }
 void vk_gfx_image_frame_done(u64 sub) {
@@ -1649,6 +1787,7 @@ static VkDescriptorSet stage_set_(GpuChannel* ch, int stage, VkSh* s, Surf** rt,
         u32 sz = cb_range(ch, stage, s, i);
         VkBuffer b;
         u64 o;
+        PERF_REUSE_NOTE(ch->cbind[stage][i], sz, PERF_REUSE_CB);
         if (!cb_get(ch, stage, i, sz, &b, &o)) return VK_NULL_HANDLE;
         dw_buffer(&d, set, SNX_VKB_CB + i, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, b, o, sz);
     }
@@ -1658,11 +1797,13 @@ static VkDescriptorSet stage_set_(GpuChannel* ch, int stage, VkSh* s, Surf** rt,
         u32 size = gb->size;
         VkBuffer b;
         u64 o;
+        perf_bind(PBK_STORAGE, 0);
         int ok = gb->aliased            ? (b = gb->buf, o = gb->off, 1)
                  : addr && gb->writable ? vk_buf_copy_writable(addr, size, &b, &o)
                  : addr && gb->bare     ? vk_buf_get_window(addr, size, &b, &o)
                  : addr                 ? vk_buf_get(addr, size, &b, &o)
                                         : vk_buf_copy(0, size, &b, &o);
+        perf_bind(PBK_OTHER, 0);
         if (!ok) return VK_NULL_HANDLE;
         dw_buffer(&d, set, SNX_VKB_SSBO + i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, b, o, gb->aliased ? gb->range : size);
     }
@@ -2434,9 +2575,11 @@ static int copy_restrided(u64 gva, u64 len, u32 gstride, u32 stride, VkBuffer* b
    memory, or under results the GPU hasn't landed. A stream's limit is often the end of a ring the game streams
    vertices through, so its range from the draw's start to the limit was megabytes for a few hundred vertices: one
    game copied 100 to 360 MB a frame that way */
+static int g_last_pending; /* SNX_ARCEUS_PERF_TIMES: draw_last_vertex's unknown came from a pending result */
 static u64 draw_last_vertex(GpuChannel* ch, int indexed, u32 first, u32 count, u32 base_vertex) {
     const u32* r = ch->r3d;
     u64 top = 0;
+    g_last_pending = 0;
     if (!indexed) return (u64)first + count - 1;
     if (indexed == 3) { /* inline indices, 32-bit */
         for (u32 j = 0; j < count; j++)
@@ -2449,7 +2592,11 @@ static u64 draw_last_vertex(GpuChannel* ch, int indexed, u32 first, u32 count, u
         VkBuffer tb;
         u64 to;
         if (n > count) n = count;
-        if (vk_buf_pending(a, n * isz) || vk_compute_gpu_src(a, n * isz, &tb, &to)) return ~0ull;
+        if (vk_buf_pending(a, n * isz)) {
+            g_last_pending = 1;
+            return ~0ull;
+        }
+        if (vk_compute_gpu_src(a, n * isz, &tb, &to)) return ~0ull;
         vk_compute_mem_need(a, n * isz);
         /* the restart index, and all ones where Vulkan restarts instead, mark no vertex */
         u32 ones = isz == 1 ? 0xFFu : isz == 2 ? 0xFFFFu : 0xFFFFFFFFu, ri = r[0x591] ? r[0x592] & ones : ones;
@@ -2510,6 +2657,7 @@ void vk_render_draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 co
                     u32 instances) {
     SNX_ZONE(z, "draw");
     render_draw(ch, indexed, topology, first, count, base_vertex, base_instance, instances);
+    if (g_perf_times && perf_here()) perf_copy_draw(&g_perf_cp, NULL); /* the reads after it are no draw's */
     SNX_ZONE_END(z);
 }
 static void render_draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 count, u32 base_vertex,
@@ -2521,6 +2669,7 @@ static void render_draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u3
     VkDescriptorSet bset[3];
     if (!count || !instances) return;
     vk_frame_check();
+    vk_query_room(); /* SNX_ARCEUS_PERF_QUERY=1: before the draw's setup, as its query segment may begin a new one */
     if (g_draw.check < 0) {
         const char* e = getenv("SNX_DIRTY_CHECK");
         g_draw.check = e && *e && *e != '0';
@@ -2604,6 +2753,10 @@ retry:
     Surf* zt;
     u32 n;
     read_targets(ch, rt, &zt, &n);
+    if (g_perf_times && perf_here()) { /* a draw set up again (retry) counts again */
+        const PerfTarget t = perf_target(n ? rt[0] : NULL, zt);
+        perf_copy_draw(&g_perf_cp, &t);
+    }
     for (u32 i = 0; i < n; i++)
         if (trace_target(rt[i]))
             LOG_LIMIT(64,
@@ -2690,7 +2843,7 @@ retry:
     VkBuffer vbuf[33];
     VkDeviceSize voff[33], vsize[33];
     struct {
-        u64 gva, len;
+        u64 gva, len, exact; /* exact: the bytes it reads, when shorter than len (else 0) */
         u32 b, base;
     } vq[33];
     u32 nvq = 0;
@@ -2712,18 +2865,20 @@ retry:
         u32 sbuf = pl->key[v] & 31;
         /* up to a power of two of the bytes it reads: the cache keeps a range by its length, and draws of a mesh's parts
            that end at different vertices then share a few ranges, not one each */
-        u64 limit = stream_len(r, sbuf), len = limit;
+        u64 limit = stream_len(r, sbuf), len = limit, exact = 0;
         u64 last = k->bind[v].divisor ? last_instance : last_vertex;
         u64 gstride = pl->guest_stride[v] ? pl->guest_stride[v] : pl->stride[v];
         if (gstride && last < len / gstride) {
             u64 need = (last + 1) * gstride, up = 4096;
             while (up < need) up <<= 1;
             if (up < len) len = up;
+            exact = need + (pl->pad[v] < limit - need ? pl->pad[v] : limit - need); /* as len gets its pad below */
         }
         if (len > (64u << 20)) len = 64u << 20;
         /* Overlapping records can need the attribute's tail beyond a stride,
            but never beyond the guest binding's inclusive limit. */
         len += pl->pad[v] < limit - len ? pl->pad[v] : limit - len;
+        if (g_perf_times && !k->bind[v].divisor && last == ~0ull && g_last_pending) vk_perf_extra(PX_LAST_PENDING);
         u32 base = pl->key[v] >> 5;
         if (base >= len) {
             if (!frame_consts(&vbuf[v], &voff[v])) {
@@ -2736,10 +2891,12 @@ retry:
         }
         vq[nvq].gva = stream_start(r, sbuf);
         vq[nvq].len = len;
+        vq[nvq].exact = exact < len && exact > base ? exact : 0;
         vq[nvq].b = v;
         vq[nvq].base = base;
         nvq++;
     }
+    for (u32 q = 0; q < nvq; q++) PERF_REUSE_NOTE(vq[q].gva, vq[q].len, PERF_REUSE_VERTEX);
     for (u32 q = 0; q < nvq; q++) vk_buf_prefetch(vq[q].gva, vq[q].len, 0);
     for (u32 q = 0; q < nvq; q++) vk_buf_prefetch(vq[q].gva, vq[q].len, 1);
     for (u32 q = 0; q < nvq; q++) {
@@ -2752,13 +2909,23 @@ retry:
             }
             continue;
         }
+        /* SNX_ARCEUS_PERF_INPLACE >= 2 (research 02:42): a stream with pending results on its pages is looked up at
+           the bytes it reads, so one result covering them can be bound in place. The vertices read are the same */
+        u64 qlen = vq[q].len;
+        if (vq[q].exact && g_perf_inplace >= 2 && vk_buf_pending(vq[q].gva, vq[q].len)) {
+            qlen = vq[q].exact;
+            if (g_perf_times) vk_perf_extra(PX_EXACT);
+        }
+        perf_bind(PBK_VERTEX, qlen == vq[q].len ? vq[q].exact : 0);
         /* vertex formats have components of up to 4 bytes, which each attribute's address must be a multiple of */
-        if (!vk_buf_get_input(vq[q].gva, vq[q].len, 4, &vbuf[vq[q].b], &voff[vq[q].b])) {
+        const int got = vk_buf_get_input(vq[q].gva, qlen, 4, &vbuf[vq[q].b], &voff[vq[q].b]);
+        perf_bind(PBK_OTHER, 0);
+        if (!got) {
             g_vk_skipped++;
             return;
         }
         voff[vq[q].b] += vq[q].base;
-        vsize[vq[q].b] = vq[q].len - vq[q].base;
+        vsize[vq[q].b] = qlen - vq[q].base;
     }
     VkPrimitiveTopology topo = topology_vk(topology);
 
@@ -2827,6 +2994,7 @@ retry:
         LOG_LIMIT(1, "vulkan: a draw of %u vertices converted on the CPU (cut to %u)\n", count, 1u << 24);
         count = 1u << 24;
     }
+    if (indexed == 1) PERF_REUSE_NOTE(ia + (u64)first * isz, (u64)count * isz, PERF_REUSE_INDEX);
     /* Vulkan restarts at all ones of the index type, in strips and fans; the guest's restart index is 0x592 */
     int restart =
         r[0x591] && topo != VK_PRIMITIVE_TOPOLOGY_POINT_LIST && topo != VK_PRIMITIVE_TOPOLOGY_LINE_LIST &&
@@ -2916,9 +3084,14 @@ retry:
                         memset(o + (u64)j * 2, 0xFF, 2);
                     else if (isz == 4 && snx_ld_le32(o + (u64)j * 4) == ri)
                         memset(o + (u64)j * 4, 0xFF, 4);
-            } else if (!vk_buf_get_input(ia + (u64)first * isz, bytes, isz, &ibuf, &ioff)) {
-                draw_images_discard(&images);
-                return;
+            } else {
+                perf_bind(PBK_INDEX, 0);
+                const int got = vk_buf_get_input(ia + (u64)first * isz, bytes, isz, &ibuf, &ioff);
+                perf_bind(PBK_OTHER, 0);
+                if (!got) {
+                    draw_images_discard(&images);
+                    return;
+                }
             }
             itype = isz == 2 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32;
         }
@@ -2935,7 +3108,13 @@ retry:
         i32 size = (i32)t[3];
         u64 a = (((u64)(t[1] & 0xFF) << 32) | t[2]) + t[4];
         if (!t[0] || size <= 0 || (!r[0x1C1 + 4 * i] && !r[0x1C2 + 4 * i])) continue;
-        if (!vk_buf_copy_writable(a, (u32)size, &xbuf[i], &xoff[i])) {
+        if (g_perf_times && perf_here()) /* PERF-20: TRANSFORM_FEEDBACK_CONTROL's stride (0x1C2 + 4 * i) */
+            perf_xfb(gs || tes, (ch->xfb_started & ~ch->xfb_reload) >> i & 1, topology, indexed && r[0x591], count,
+                     instances, r[0x1C2 + 4 * i], (u64)size);
+        perf_bind(PBK_XFB, 0);
+        const int got = vk_buf_copy_writable(a, (u32)size, &xbuf[i], &xoff[i]);
+        perf_bind(PBK_OTHER, 0);
+        if (!got) {
             draw_images_discard(&images);
             g_vk_skipped++;
             return;

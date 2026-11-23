@@ -36,6 +36,7 @@ typedef struct {
    screenshot_every, press_length, script */
 static Script g_script;
 static u64 g_t0;           /* unattended_start's plat_ns() */
+static u64 g_held;         /* what unattended_buttons returned last */
 static int g_shot_bucket;  /* frames / shot_every at the last periodic shot */
 static int g_shot_count;
 
@@ -140,8 +141,10 @@ u64 unattended_buttons(void) {
         else
             p->done = 1;
     }
+    g_held = held;
     return held;
 }
+u64 unattended_last_buttons(void) { return g_held; }
 
 const char* unattended_shot(void) { return g_settings.screenshot[0] ? g_settings.screenshot : NULL; }
 

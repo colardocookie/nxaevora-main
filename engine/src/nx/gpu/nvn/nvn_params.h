@@ -56,6 +56,42 @@ NvnSyncAction nvn_sync_wait_action(NvnSyncState state, int reached);
 /* The value of a fence on an empty pending frame: the last posted value, or the syncpoint value when the queue never
    posted. Pure. */
 uint32_t nvn_sync_fence_value(int has_posted, uint32_t last_posted, uint32_t syncpoint_now);
+/* SNX_ARCEUS_PERF_OVERLAP: the syncpoint values of a queue's last two present jobs. A wait on the last present's
+   fence may settle for the one before it, so the game builds the next frame while the last one is replayed. Pure. */
+typedef struct {
+    uint32_t last, previous;
+    uint8_t has_last, has_previous;
+} NvnPresentValues;
+/* A present job was posted and reaches value. Returns 1 and sets *early to the present before it, 0 when it is the
+   queue's first. */
+int nvn_present_values_post(NvnPresentValues* p, uint32_t value, uint32_t* early);
+/* For a fence at fence_value: 1 and *early when it is the last present's value and a present came before it. */
+int nvn_present_values_early(const NvnPresentValues* p, uint32_t fence_value, uint32_t* early);
+/* Where the experiment keeps those values: beside the queue and sync records, so the records are the same with the
+   switch unset. A queue's entry is made at its first present. A sync's entry says that its fence with that serial
+   may settle for early. One sync a slot: a sync that loses its slot to another waits for its own fence. Pure. */
+#define NVN_OVERLAP_QUEUES 4u
+#define NVN_OVERLAP_SYNCS 64u /* a power of two */
+typedef struct {
+    struct {
+        uint64_t queue; /* 0: free */
+        NvnPresentValues presents;
+    } queues[NVN_OVERLAP_QUEUES];
+    struct {
+        uint64_t sync; /* 0: free */
+        uint32_t serial, early;
+    } syncs[NVN_OVERLAP_SYNCS];
+} NvnOverlapTable;
+/* The present values of a queue, made empty when make is set and it has none. NULL without one, or when the table
+   is full. */
+NvnPresentValues* nvn_overlap_queue(NvnOverlapTable* t, uint64_t queue, int make);
+void nvn_overlap_queue_drop(NvnOverlapTable* t, uint64_t queue);
+uint32_t nvn_overlap_sync_slot(uint64_t sync);
+/* has 0 clears the sync's own entry and leaves another sync's in its slot. */
+void nvn_overlap_sync_set(NvnOverlapTable* t, uint64_t sync, uint32_t serial, int has, uint32_t early);
+void nvn_overlap_sync_drop(NvnOverlapTable* t, uint64_t sync);
+/* 1 and *early for the sync's fence with this serial. *early is not written otherwise. */
+int nvn_overlap_sync_get(const NvnOverlapTable* t, uint64_t sync, uint32_t serial, uint32_t* early);
 /* The limit of a wait in host nanoseconds. */
 typedef struct {
     uint64_t deadline_ns;
@@ -942,6 +978,22 @@ typedef struct { uint32_t mode, method, remaining, subchannel; } NvnWordStream;
 int nvn_word_stream_next(NvnWordStream* s, uint32_t word, uint32_t* method, uint32_t* value, int* last);
 /* 1 when no run is left open (remaining 0), so the array ended on a method call. */
 int nvn_word_stream_complete(const NvnWordStream* s);
+/* SNX_ARCEUS_PERF_REPLAY=2 (PERF-30): while a sink is set on this thread, the bind and draw builders hand each word
+   to it as they write it, and it decodes it as nvn_word_stream_next does and calls method for each method word, in
+   place of storing it (the builders still return their word counts). A word that does not decode latches failed,
+   and no later word is decoded. nvn_word_sink_take gives a group's result, as replay_bind_send's (1 when nothing
+   failed and the stream ended), and readies the sink for the next group. direct (SNX_ARCEUS_PERF_REPLAY=3): the
+   header helpers set the stream as decoding their header would and bind_value makes its call, when the stream is
+   idle and the header's fields hold their arguments, and a run's data words take the decoder's open-run branch
+   inline (nvn_params.c bind_word) */
+typedef struct {
+    void (*method)(void* ctx, uint32_t subchannel, uint32_t method, uint32_t value, int last);
+    void* ctx;
+    NvnWordStream s;
+    int failed, direct;
+} NvnWordSink;
+extern _Thread_local NvnWordSink* nvn_word_sink;
+int nvn_word_sink_take(NvnWordSink* k);
 
 /* The words that nvnCommandBufferBarrier writes, in order (nvn-design.md, decision 6, item "Barrier"). The bit 3
    range records are not words: they split the library's command memory, not this stream. Bits 9 to 31 are ignored. */

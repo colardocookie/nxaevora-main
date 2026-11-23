@@ -16,6 +16,7 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/perf_times.h"
 #include "nx/gpu/vk/pending_pages.h"
 #include "nx/gpu/texture/blocklinear.h"
 #include "nx/memory/own.h"
@@ -162,6 +163,7 @@ void vk_surf_use(VkCommandBuffer cb, Surf* s, VkImageLayout layout, VkPipelineSt
            the last write visible didn't name (a copy after a blit read it): a barrier from the earlier readers
            extends that visibility to it */
         if (stage & ~s->stage) {
+            perf_pass_why(PE_IMAGE);
             vk_render_end();
             vk_barrier_layers(cb, s->img, vk_aspect(&s->f), s->base_layer, surf_layer_count(s),
                               s->stage ? s->stage : VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0, layout, stage, access,
@@ -171,6 +173,7 @@ void vk_surf_use(VkCommandBuffer cb, Surf* s, VkImageLayout layout, VkPipelineSt
         s->access |= access;
         return;
     }
+    perf_pass_why(PE_IMAGE);
     vk_render_end(); /* no barriers on images inside a rendering pass */
     vk_barrier_layers(cb, s->img, vk_aspect(&s->f), s->base_layer, surf_layer_count(s),
                       s->stage ? s->stage : VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, s->access, s->layout, stage, access,
@@ -333,6 +336,7 @@ static const char* group_refuse(Surf* const* members, u32 n) {
 /* member m into layer i of group g: its pixels copied into that layer, then the old image and views released */
 static void group_move(Surf* g, Surf* m, u32 i) {
     int was_member = m->group != NULL;
+    perf_pass_why(PE_IMAGE);
     vk_render_end();
     VkCommandBuffer cb = vk_cmd();
     if (m->layout != VK_IMAGE_LAYOUT_UNDEFINED) {
@@ -621,7 +625,11 @@ void vk_surf_wrote(Surf* s) {
    target in vk_rt_before_write: a target adds its pages when it is made or taken out of parking, and removes them when it
    is parked or freed */
 static PendPages g_rt_pages;
+/* PERF-36: whether a render target is pending over [gva, gva + size), as vk_rt_before_write would flush */
+int vk_rt_pages_hit(u64 gva, u64 size) { return size && pend_hit_va(&g_rt_pages, gva, size); }
 static void rt_pages(const Surf* s, int delta) {
+    if (delta > 0) gpu_fly_wait_all(GPU_FLY_TARGET); /* PERF-36: no target becomes pending over a batch in B */
+    if (g_perf_probes && delta > 0) __atomic_fetch_add(&g_perf_vkx.rt_add, 1, __ATOMIC_RELAXED); /* PERF-36G */
     if (!(s->gva >> 63)) pend_add_va(&g_rt_pages, s->gva, s->rt_size, delta);
 }
 int vk_surf_can_writeback(const Surf* s) { return s && s->f.raw && !s->f.depth && moves_scaled(s); }
@@ -678,6 +686,7 @@ static void rt_reload_bl(Surf* s) {
     u64 lin = (u64)pitch * s->h * s->layers, cap;
     VkBuffer staged, scratch;
     u64 off;
+    perf_pass_why(PE_IMAGE);
     vk_render_end();
     u8* p = vk_stage(sz, vk_stage_align(), &staged, &off);
     if (!p || !(scratch = vk_bl_scratch(lin, &cap))) return;
@@ -699,6 +708,7 @@ void vk_rt_reload(u64 gva) {
         /* new memory over a target we can't load as is: memory is the truth. Its contents are undefined until it is
            drawn to again (textures over it are loaded from memory meanwhile, and it isn't presented); the stage and
            access stay for the next barrier to wait on */
+        perf_pass_why(PE_IMAGE);
         vk_render_end();
         s->layout = VK_IMAGE_LAYOUT_UNDEFINED;
         s->draw_wseen = 0;
@@ -716,6 +726,7 @@ void vk_rt_reload(u64 gva) {
     int as_is = s->pitch % s->f.bpp == 0;
     VkBuffer buf;
     u64 off;
+    perf_pass_why(PE_IMAGE);
     vk_render_end();
     u8* p = vk_stage(as_is ? sz : row * s->h * s->layers, vk_stage_align(), &buf, &off);
     if (!p) return;
@@ -914,6 +925,7 @@ static void surf_flush(Surf* s, const u8* original) {
     VkBuffer buf;
     if (!size) return;
     rt_flush_older(s);
+    perf_pass_why(PE_IMAGE);
     vk_render_end();
     const u8* p = vk_readback_buffer(size, &buf);
     if (!p) return;
@@ -926,6 +938,7 @@ u64 vk_surf_flush_size(const Surf* s) { return flush_bytes(s); }
 void vk_surf_flush_record(Surf* s, VkBuffer buf, u64 at) {
     VkCommandBuffer cb;
     rt_flush_older(s);
+    perf_pass_why(PE_IMAGE);
     vk_render_end();
     cb = vk_cmd();
     flush_record(cb, s, buf, at);
@@ -969,6 +982,7 @@ int vk_surf_publish(Surf* s) {
             return 0;
         size = rt_bytes(s);
     }
+    perf_pass_why(PE_IMAGE);
     vk_render_end();
     r = vk_own_res_new(size);
     if (!r) return 0;
@@ -1025,6 +1039,7 @@ int vk_rt_overlay(u64 gva, u64 size, VkBuffer buf, u64 at) {
     for (i = 0; i < count; i++) {
         Surf* s = list[i];
         if (s->gva >= gva && s->gva + rt_bytes(s) <= gva + size) {
+            perf_pass_why(PE_IMAGE);
             vk_render_end();
             if (flush_record(vk_cmd(), s, buf, at + (s->gva - gva))) {
                 n++;
@@ -1121,6 +1136,7 @@ static int rt_take_pixels(Surf* to, Surf* from, int fresh) {
         from->bd != to->bd || from->pitch != to->pitch || from->layers != to->layers ||
         from->layer_size != to->layer_size || from->volume || to->volume)
         return 0;
+    perf_pass_why(PE_IMAGE);
     vk_render_end();
     VkCommandBuffer cb = vk_cmd();
     vk_surf_use(cb, from, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
@@ -1349,7 +1365,7 @@ static u64 rt_mem_hash(const Surf* s) {
             n += size - o - n < 0x1000 ? size - o - n : 0x1000;
         /* an unmapped page counts as its length, pages the GPU holds as their owners (they are trapped) */
         if (!cpu || !own_hash(cpu, n, &h))
-            h = snx_fnv_step(h, cpu ? vk_hash(GP(cpu), n) : n);
+            h = snx_fnv_step(h, cpu ? (gpu_fly_wait(GP(cpu), n), vk_hash(GP(cpu), n)) : n); /* PERF-36's line */
         o += n;
     }
     return h;
@@ -1924,6 +1940,7 @@ int vk_zt_save(StateIo* io) {
         free(all);
         return -1;
     }
+    perf_pass_why(PE_IMAGE);
     vk_render_end(); /* the copies can't be recorded inside a rendering pass */
     {
         VkCommandBuffer cb = vk_cmd();
@@ -1993,6 +2010,7 @@ static void zt_restore(Surf* s) {
             continue;
         if ((to = vk_stage(z->dsize + z->ssize, 4, &buf, &off)) != NULL) {
             memcpy(to, z->bytes, (size_t)(z->dsize + z->ssize));
+            perf_pass_why(PE_IMAGE);
             vk_render_end();
             cb = vk_cmd();
             vk_surf_use(cb, s, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,

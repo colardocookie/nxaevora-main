@@ -10,6 +10,7 @@
 #include "nx/runtime/platform/plat.h"
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/perf_times.h"
 #include "common/gpu/vk/swapchain.h"
 #include "common/gpu/vk/vk_common.h"
 
@@ -23,13 +24,17 @@ VkState g_vk;
 static PMutex g_vklock;
 static _Thread_local int t_vkdepth;
 static u32 g_vk_owner; /* the thread holding it (plat_tid), 0 when none: a trap's fault on it can't be answered */
+int vk_lock_depth(void) { return t_vkdepth; }
 void vk_lock(void) {
     if (!t_vkdepth++) {
         if (!pm_trylock(&g_vklock)) { /* held: the GPU thread says so for the stall report */
             /* Only a contended acquisition gets a zone. */
             SNX_ZONE(z_wait, "vk lock wait");
             gpu_wait_note("vk_lock, which another thread holds", 0);
+            const int phase = g_perf_probes ? __atomic_load_n(&g_vk_hold_phase, __ATOMIC_RELAXED) : 0;
+            const u64 w0 = g_perf_probes ? plat_ns() : 0; /* PERF-36G: the wait by caller and holder */
             pm_lock(&g_vklock);
+            if (w0) perf_vklock_note(phase, __builtin_return_address(0), plat_ns() - w0);
             gpu_wait_note(NULL, 0);
         }
         __atomic_store_n(&g_vk_owner, plat_tid(), __ATOMIC_RELAXED);
@@ -44,6 +49,7 @@ static void vk_let_go(void) {
 void vk_unlock(void) {
     if (!--t_vkdepth) vk_let_go();
 }
+static int vk_lock_mine(void) { return t_vkdepth > 0; } /* gpu_lock_mine (PERF-34's probe) */
 int vk_trylock(void) {
     if (!t_vkdepth && !pm_trylock(&g_vklock)) return 0;
     if (!t_vkdepth++) __atomic_store_n(&g_vk_owner, plat_tid(), __ATOMIC_RELAXED);
@@ -89,6 +95,7 @@ static int create_instance(void) {
                               .extensions = be,
                               .extension_count = be ? nbe : 0,
                               .validation = g_settings.vulkan_validation_layer != 0,
+                              .sync_validation = g_vk_sync_validation != 0,
                               .portability = true,
                               .debug = debug_cb};
     SnxVkInstance made;
@@ -96,6 +103,9 @@ static int create_instance(void) {
     if (info.validation && !made.validation)
         WARN("vulkan: validation was asked for (vk_validation), but "
              "VK_LAYER_KHRONOS_validation is not installed\n");
+    if (info.sync_validation && made.validation)
+        LOG("vulkan: synchronization validation %s\n",
+            made.sync_validation ? "on" : "asked for, but the layer has no VK_EXT_validation_features: off");
     g_vk.instance = made.instance;
     g_vk.debug = made.messenger;
     return 1;
@@ -758,6 +768,7 @@ int vk_swapchain_create(int srgb) {
 }
 
 int vk_init(void) {
+    gpu_lock_mine = vk_lock_mine;
     pm_init(&g_vklock);
     if (g_opt_headless) {
         /* Load libvulkan/vulkan-1 directly, or the driver the program's folders carry (an Apple app's MoltenVK): no SDL

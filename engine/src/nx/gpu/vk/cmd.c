@@ -10,6 +10,7 @@
 #include <string.h>
 #include "nx/runtime/platform/log.h"
 #include "nx/gpu/gpu.h"
+#include "nx/gpu/perf_times.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/runtime/platform/plat.h"
 #include "common/utilities/common.h"
@@ -71,6 +72,10 @@ static u64 g_dead_bytes; /* every frame's dead_bytes */
 static u32 g_cur;
 static u32 g_cb_begun = 1; /* command buffers begun, so a command buffer's state is told from an earlier one's */
 static u64 g_frame_id;
+/* SNX_ARCEUS_PERF_TIMES (PERF-25): the submission at which each recent frame's slot was reused, its rings with it */
+static struct {
+    u64 frame, submit;
+} g_freed[8];
 static VkSemaphore g_gsem; /* graphics timeline: submission n signals n */
 static u64 g_gval;         /* the last submission */
 static u64 g_landed;       /* submissions whose storage results vk_buf_frame_done has landed */
@@ -89,11 +94,21 @@ u32 g_vk_epoch, g_vk_present;
 #include "xxhash.h"
 #define SNX_XXH3(p, n) XXH3_64bits(p, n)
 #endif
-u64 vk_hash(const void* p, u64 size) { return (u64)SNX_XXH3(p, (size_t)size); }
+/* SNX_ARCEUS_PERF_PROBES (PERF-29): a hash by its caller, timed when it is of 1 KB or more */
+__attribute__((noinline)) static u64 hash_noted(const void* p, u64 size, void* ra) {
+    const u64 t0 = size >= 1024 ? plat_ns() : 0;
+    const u64 h = (u64)SNX_XXH3(p, (size_t)size);
+    perf_hash_note(&g_perf_p29, (u64)(uintptr_t)ra, (u64)(uintptr_t)&vk_hash, size, t0 ? plat_ns() - t0 : 0);
+    return h;
+}
+u64 vk_hash(const void* p, u64 size) {
+    if (g_perf_probes) return hash_noted(p, size, __builtin_return_address(0));
+    return (u64)SNX_XXH3(p, (size_t)size);
+}
 /* the same hash as vk_hash, which an entry's next check may compute instead, with src copied to dst: the bytes are
    hashed where they are (dst may be write-combined staging, slow to read back) and then copied, from cache */
 u64 vk_hash_copy(void* dst, const void* src, u64 size) {
-    u64 h = (u64)SNX_XXH3(src, (size_t)size);
+    u64 h = g_perf_probes ? hash_noted(src, size, __builtin_return_address(0)) : (u64)SNX_XXH3(src, (size_t)size);
     memcpy(dst, src, (size_t)size);
     return h;
 }
@@ -246,18 +261,42 @@ static void ring_reset(Ring* r, const VmaBudget* budget) {
     r->used = 0;
 }
 
-static void timeline_wait(u64 value) {
+/* site: the perf_times.h site the wait counts for on the GPU thread (SNX_ARCEUS_PERF_TIMES) */
+static void timeline_wait(u64 value, int site) {
+    const u64 t0 = g_perf_times && gpu_on_gpu_thread() ? plat_ns() : 0;
     VkSemaphoreWaitInfo wi = {
         .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, .semaphoreCount = 1, .pSemaphores = &g_gsem, .pValues = &value};
     SNX_ZONE_C(z_wait, "vk timeline wait", 0xb05252);
     gpu_wait_note("a graphics submission", value);
     SNX_ZONE_V(z, "timeline wait", value);
+    const u64 w0 = g_perf_probes ? plat_ns() : 0; /* PERF-32 */
     VK_OK(vkWaitSemaphores(g_vk.dev, &wi, UINT64_MAX));
+    if (w0) perf_wait_note(PW_VKWAIT, __builtin_return_address(0), plat_ns() - w0);
+    if (g_perf_times) perf_sub_seen(&g_perf, value, plat_ns());
     SNX_ZONE_END(z);
     gpu_wait_note(NULL, 0);
+    if (t0) perf_time_add(&g_perf, site, plat_ns() - t0);
 }
-/* the storage results of every submission up to value, which has finished, land in guest memory, in order */
-static void land_through(u64 value) {
+/* PERF-36: the batch written beside the GPU thread finished (C), once, under vk_lock: g_landed moves past it */
+static void fly_c(void) {
+    const u64 last = vk_buf_fly_finish();
+    if (!last) return;
+    for (u64 f = g_landed + 1; f <= last; f++) vk_gfx_image_frame_done(f); /* nothing due, by A's test */
+    g_landed = last;
+}
+/* the storage results of every submission up to value, which has finished, land in guest memory, in order. With a
+   PERF-36 batch in flight, must waits for it and finishes it first, and the submit's own landing (may) lands nothing */
+static void land_through(u64 value, int must) {
+    if (__atomic_load_n(&g_gfx_fly, __ATOMIC_ACQUIRE)) {
+        if (!must) {
+            if (g_perf_probes) __atomic_fetch_add(&g_perf_bs.skipped, 1, __ATOMIC_RELAXED);
+            return;
+        }
+        gpu_fly_wait_all(GPU_FLY_MUST);
+        const u64 before = g_landed;
+        fly_c();
+        if (g_landed != before && g_perf_probes) __atomic_fetch_add(&g_perf_bs.joins, 1, __ATOMIC_RELAXED);
+    }
     while (g_landed < value) {
         vk_buf_frame_done(++g_landed);
         vk_gfx_image_frame_done(g_landed);
@@ -269,8 +308,8 @@ static void frame_recycle(Frame* f) {
     u64 done = f->last > f->hold ? f->last : f->hold;
     SNX_ZONE(z, "vk frame recycle");
     if (done) {
-        timeline_wait(done);
-        land_through(done);
+        timeline_wait(done, PT_TL_RECYCLE);
+        land_through(done, 1);
         f->last = 0;
         f->hold = 0;
     }
@@ -293,6 +332,11 @@ static void frame_recycle(Frame* f) {
         f->istage = 0;
     }
     ring_reset(&f->back, NULL);
+    if (g_perf_times && g_frame_id >= VK_FRAMES) { /* the frame this slot held, two before the one it now records */
+        const u64 old = g_frame_id - VK_FRAMES;
+        g_freed[old % 8].frame = old;
+        g_freed[old % 8].submit = vk_submit_number();
+    }
     vk_rec_frame_reset((u32)(f - g_fr)); /* the slot's sets made on the recording thread too */
     f->icb = 0;
     f->fresh = 0;
@@ -448,6 +492,7 @@ u8* vk_stage_back(u64 size, VkBuffer* buf, u64* off, VmaAllocation* mem) {
 /* the frame's commands submitted, waiting for xw and signaling xs besides the graphics timeline (one each at most) */
 static void submit(const VkSemaphoreSubmitInfo* xw, const VkSemaphoreSubmitInfo* xs, int land) {
     SNX_ZONE(z_submit, "vk submit");
+    const int why = __atomic_exchange_n(&g_perf_submit_why, SW_OTHER, __ATOMIC_RELAXED); /* PERF_TIMES: the site */
     vk_render_end();
     Frame* f = &g_fr[g_cur];
     VkCommandBuffer cb = vk_cmd(); /* a submit with nothing recorded still has to wait and signal */
@@ -475,6 +520,7 @@ static void submit(const VkSemaphoreSubmitInfo* xw, const VkSemaphoreSubmitInfo*
                                    .value = g_gval + 1,
                                    .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT}};
     if (xs) s[1] = *xs;
+    if (g_perf_times) perf_sub_queued(&g_perf, g_gval + 1, why, plat_ns()); /* before the recorder can hand it over */
     /* ended and submitted after its commands, on the recording thread (a submission that fails signals the timeline
        from the host there, so waits for it end) */
     vk_rec_submit(cb, w, nw, s, xs ? 2u : 1u);
@@ -487,8 +533,10 @@ static void submit(const VkSemaphoreSubmitInfo* xw, const VkSemaphoreSubmitInfo*
     f->last = g_gval;
     /* results of submissions the GPU has finished land now, so a later release doesn't find them pending */
     u64 done = 0;
-    if (land && VK_OK(vkGetSemaphoreCounterValue(g_vk.dev, g_gsem, &done)))
-        land_through(done < g_gval ? done : g_gval);
+    if (land && VK_OK(vkGetSemaphoreCounterValue(g_vk.dev, g_gsem, &done))) {
+        if (g_perf_times) perf_sub_seen(&g_perf, done, plat_ns());
+        land_through(done < g_gval ? done : g_gval, 0);
+    }
     SNX_ZONE_END(z_submit);
 }
 
@@ -503,7 +551,10 @@ void vk_submit(VkSemaphore wait, VkPipelineStageFlags2 wait_stage, VkSemaphore s
    open command buffer: starting/recycling a frame or landing completed results
    here could acquire those same ranges and wait for this thread itself. */
 void vk_submit_for_readback(void) {
-    if (g_fr[g_cur].recording) submit(NULL, NULL, 0);
+    if (g_fr[g_cur].recording)
+        submit(NULL, NULL, 0);
+    else
+        __atomic_store_n(&g_perf_submit_why, SW_OTHER, __ATOMIC_RELAXED); /* no submission: no site left over */
     vk_rec_sync(); /* the immediate copy must follow the recorder's queue calls */
 }
 void vk_submit_after(VkSemaphore sem, u64 wait, u64 signal) {
@@ -517,22 +568,26 @@ u64 g_vk_finishes, g_vk_finish_ns;
 void vk_finish(void) {
     u64 t0 = plat_ns();
     SNX_ZONE(z_finish, "vk finish");
+    perf_submit_why(SW_FINISH);
     vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
-    timeline_wait(g_gval);
-    land_through(g_gval);
+    timeline_wait(g_gval, PT_TL_FINISH);
+    land_through(g_gval, 1);
     g_vk_finishes++;
     g_vk_finish_ns += plat_ns() - t0;
 }
 
 /* A present ends the frame: the next one records in the other slot, once that slot's previous use is done */
 void vk_frame_next(void) {
-    if (g_fr[g_cur].recording) vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
+    if (g_fr[g_cur].recording) {
+        perf_submit_why(SW_FRAME);
+        vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
+    }
     g_cur = (g_cur + 1) % VK_FRAMES;
     g_fr[g_cur].fresh = 1;
     g_frame_id++;
 }
-/* the GPU thread's recording time a submission holds at most */
-#define SUBMIT_EVERY_NS 1000000
+/* the GPU thread's recording time a submission holds at most: g_perf_submit_every_ns, 1 ms unless
+   SNX_ARCEUS_PERF_SUBMIT_US sets it (perf_times.h) */
 /* A frame that goes long without a present (a loading screen) still has to hand its pools and rings back: one with
    many submissions or descriptor pools ends here, at the start of a draw or dispatch, before anything is set up.
    Otherwise what was recorded goes to the GPU once it holds a millisecond of the GPU thread's work. Submissions came
@@ -546,26 +601,48 @@ void vk_frame_check(void) {
     const Frame* f = &g_fr[g_cur];
     if (f->icb >= 128 || f->ipool >= 32 || vk_rec_frame_sets(g_cur) >= 32 * 1024)
         vk_frame_next();
-    else if (f->recording && plat_ns() - g_sub_ns >= SUBMIT_EVERY_NS)
+    else if (f->recording && plat_ns() - g_sub_ns >= g_perf_submit_every_ns) {
+        perf_submit_why(SW_SLICE);
         submit(NULL, NULL, 1);
+    }
 }
 
 u64 vk_submit_number(void) { return g_gval + 1; }
+u64 vk_submit_done(void) {
+    u64 done = 0;
+    if (g_gsem) VK_OK(vkGetSemaphoreCounterValue(g_vk.dev, g_gsem, &done));
+    return done;
+}
 u32 vk_cb_begun(void) { return g_cb_begun; }
 u64 vk_last_submit(void) { return g_gval; }
 void vk_submit_progress(u64* submitted, u64* done) {
     *submitted = __atomic_load_n(&g_gval, __ATOMIC_RELAXED);
     *done = 0;
     if (g_gsem) VK_OK(vkGetSemaphoreCounterValue(g_vk.dev, g_gsem, done));
+    if (g_perf_times && *done) perf_sub_seen(&g_perf, *done, plat_ns());
 }
-void vk_wait_submit(u64 value) { timeline_wait(value); }
-void vk_land_through(u64 value) { land_through(value < g_gval ? value : g_gval); }
+void vk_wait_submit(u64 value) { timeline_wait(value, PT_TL_SUBMIT); }
+void vk_land_through(u64 value) { land_through(value < g_gval ? value : g_gval, 1); }
+int vk_land_beside(u64 value) {
+    const u64 last = value < g_gval ? value : g_gval;
+    if (last <= g_landed || !vk_buf_fly_pick(g_landed + 1, last)) return 0;
+    vk_unlock(); /* the release thread's only hold: B writes with no lock */
+    vk_buf_fly_write();
+    vk_lock();
+    fly_c(); /* unless a land_through joined and ran it meanwhile */
+    return 1;
+}
 u64 vk_frame_id(void) { return g_frame_id; }
 void vk_frame_hold(u64 frame_id) {
     if (frame_id + 1 != g_frame_id) return; /* this frame's own rings, or an older frame's, landed when reused */
     g_fr[(g_cur + VK_FRAMES - 1) % VK_FRAMES].hold = vk_submit_number();
 }
 u32 vk_frame_slot(void) { return g_cur; }
+int vk_frame_freed(u64 frame, u64* submit) {
+    if (g_freed[frame % 8].frame != frame || !g_freed[frame % 8].submit) return 0;
+    *submit = g_freed[frame % 8].submit;
+    return 1;
+}
 
 VkDescriptorPool vk_desc_pool_new(void) {
     /* a thousand sets of the stage layout (gpu/vk/pipeline.c), each with all its descriptors: a frame chains more
