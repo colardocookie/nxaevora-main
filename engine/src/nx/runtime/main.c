@@ -868,9 +868,9 @@ int snx_main(int argc, char** argv) {
 #if defined(SNX_TRACY)
     if (g_settings.tracy_profiler) g_opt_tracy_client = 1; /* the .ini's Debug section asks for the client */
 #endif
-    { /* SNX_ARCEUS_WSI_LOCK (gpu/vk/record.c): before any thread acquires or presents */
+    { /* SNX_ARCEUS_WSI_LOCK (gpu/vk/record.c), on unless set but not to 1: before any thread acquires or presents */
         const char* wsi_lock = getenv("SNX_ARCEUS_WSI_LOCK");
-        g_vk_wsi_lock = wsi_lock && !strcmp(wsi_lock, "1");
+        g_vk_wsi_lock = !wsi_lock || !strcmp(wsi_lock, "1");
         if (g_vk_wsi_lock) LOG("wsi-lock: serializing swapchain acquire and present\n");
     }
     /* the header the log summary reads (common/utilities/logscan.c): no folder in it, since players attach the log to

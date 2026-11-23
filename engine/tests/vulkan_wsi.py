@@ -270,7 +270,7 @@ if __name__ == "__main__":
         subprocess.run(cc + ["-std=gnu11", "-Wall", "-Wextra", "-Werror", "-pthread",
                              "-I", str(SRC.parent), "-x", "c", "-", "-o", str(exe)],
                        input=fixture(), text=True, check=True)
-        for value in ("unset", "0", "1", "01", "2"):
+        for value in ("unset", "0", "1", "01", "2", "10"):
             for threaded in ("0", "1"):
-                subprocess.run([exe, str(int(value == "1")), threaded, value], check=True, timeout=12)
-    print("WSI acquire/present: 10 configurations passed")
+                subprocess.run([exe, str(int(value in ("unset", "1"))), threaded, value], check=True, timeout=12)
+    print("WSI acquire/present: 12 configurations passed")
