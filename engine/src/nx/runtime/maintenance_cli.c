@@ -64,21 +64,29 @@ static void zip_list_free(ZipList* list) {
 }
 
 /* The log, the kept older runs in logs/, threads.txt, the .ini and the early error file, each with its name in the zip.
-   A missing file stays in the list: the zip writer leaves it out and names it in summary.txt */
-static void collect_logs(ZipList* list) {
+   A missing file stays in the list: the zip writer leaves it out and names it in summary.txt. The returned text, owned,
+   names a logs/ folder that could not be listed, or is NULL */
+static char* collect_logs(ZipList* list) {
     char* dir = snx_format("%slogs", g_statedir);
     char** names = NULL;
+    char* summary = NULL;
     size_t count = 0, i;
     zip_list_add(list, snx_format("%s%s.log", g_statedir, g_exename), snx_format("%s.log", g_exename));
-    if (snx_is_dir(dir) && !snx_list_dir(dir, &names, &count)) {
-        for (i = 0; i < count; ++i) {
-            char* path = snx_path_join(dir, names[i]);
-            if (snx_is_file(path))
-                zip_list_add(list, path, snx_format("logs/%s", names[i]));
-            else
-                free(path);
+    if (snx_is_dir(dir)) {
+        if (snx_list_dir(dir, &names, &count)) {
+            char why[256];
+            snx_os_error(why, sizeof why);
+            summary = snx_format("Not read: %s (%s)\n", dir, why);
+        } else {
+            for (i = 0; i < count; ++i) {
+                char* path = snx_path_join(dir, names[i]);
+                if (snx_is_file(path))
+                    zip_list_add(list, path, snx_format("logs/%s", names[i]));
+                else
+                    free(path);
+            }
+            snx_free_strings(names, count);
         }
-        snx_free_strings(names, count);
     }
     free(dir);
     zip_list_add(list, snx_format("%sthreads.txt", g_statedir), snx_strdup("threads.txt"));
@@ -87,6 +95,7 @@ static void collect_logs(ZipList* list) {
         char* early = snx_early_error_path(0);
         if (early) zip_list_add(list, early, snx_strdup(SNX_ERROR_LOG));
     }
+    return summary;
 }
 
 /* the local time as the kept logs name it: YYYY-MM-DD_HH-MM-SS. 0 when the system gives no time */
@@ -114,7 +123,7 @@ int snx_logs_export(int argc, char** argv) {
     char path[MAINTENANCE_CLI_PATH], base[MAINTENANCE_CLI_BASE], error[MAINTENANCE_CLI_ERROR];
     const char *game = NULL, *out = NULL;
     ZipList list;
-    char* made;
+    char *made, *summary;
     size_t added = 0;
     int i, status;
     for (i = 3; i < argc; ++i) {
@@ -135,6 +144,10 @@ int snx_logs_export(int argc, char** argv) {
     }
     if (!game) {
         snx_command_error("logs export: --game=PATH names the game's program");
+        return SNX_EXIT_USAGE;
+    }
+    if (out && snx_path_exists(out)) {
+        snx_command_error("logs export: %s: the file is there already: name another --out", out);
         return SNX_EXIT_USAGE;
     }
     status = snx_cli_game_file(game, path, sizeof path, base, sizeof base);
@@ -158,8 +171,9 @@ int snx_logs_export(int argc, char** argv) {
         return SNX_EXIT_USAGE;
     }
     memset(&list, 0, sizeof list);
-    collect_logs(&list);
-    status = snx_logs_zip(made, "", list.files, list.count, &added, error, sizeof error);
+    summary = collect_logs(&list);
+    status = snx_logs_zip(made, summary ? summary : "", list.files, list.count, &added, error, sizeof error);
+    free(summary);
     zip_list_free(&list);
     if (status) {
         snx_command_error("logs export: %s", error);
@@ -180,7 +194,7 @@ static int remove_cache(char* path, int shared) {
     char why[256];
     char* line;
     int failed;
-    if (!snx_path_exists(path)) {
+    if (snx_path_missing(path)) {
         line = shared ? snx_format("not present %s (shared by all games of the data folder)", path)
                       : snx_format("not present %s", path);
         snx_command_print(line);

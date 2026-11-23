@@ -57,6 +57,30 @@ file(WRITE "${old_log}" "an older run\n")
 file(WRITE "${threads}" "second 1, frames 2\n")
 file(WRITE "${error_log}" "an early error\n")
 
+set(existing "${dir}/existing.zip")
+file(WRITE "${existing}" "keep me\n")
+# ---- an existing --out and a game with no folders yet: exit 2 before any folder is made
+set(fresh_program "${data}/recompiled/Fresh/Fresh.exe")
+set(fresh_state "${state}/recompiled/Fresh")
+set(fresh_config "${config}/recompiled/Fresh")
+set(fresh_cache "${menu_cache}/recompiled/Fresh")
+file(MAKE_DIRECTORY "${data}/recompiled/Fresh")
+engine(export_exists_fresh logs export "--game=${fresh_program}" "--out=${existing}")
+if(NOT export_exists_fresh_code EQUAL 2)
+    message(FATAL_ERROR "logs export with a fresh game ended with ${export_exists_fresh_code}, not 2")
+endif()
+if(EXISTS "${fresh_state}" OR EXISTS "${fresh_config}" OR EXISTS "${fresh_cache}")
+    message(FATAL_ERROR "logs export to an existing --out made the game's folders")
+endif()
+
+# ---- an existing --out: exit 2, and the file's bytes stay
+file(READ "${existing}" before_hex HEX)
+engine(export_exists logs export "--game=${program}" "--out=${existing}")
+file(READ "${existing}" after_hex HEX)
+if(NOT export_exists_code EQUAL 2 OR NOT before_hex STREQUAL after_hex)
+    message(FATAL_ERROR "logs export to an existing file ended with ${export_exists_code}, not 2, or changed it")
+endif()
+
 # ---- logs export: the zip at --out, its entries and the text of one of them
 set(zip "${dir}/logs.zip")
 engine(export logs export "--game=${program}" "--out=${zip}")
@@ -104,16 +128,6 @@ if(at LESS 0)
     message(FATAL_ERROR "logs export's summary.txt does not name threads.txt:\n${summary}")
 endif()
 file(WRITE "${threads}" "second 1, frames 2\n")
-
-# ---- an existing --out: exit 2, and the file's bytes stay
-set(existing "${dir}/existing.zip")
-file(WRITE "${existing}" "keep me\n")
-file(READ "${existing}" before_hex HEX)
-engine(export_exists logs export "--game=${program}" "--out=${existing}")
-file(READ "${existing}" after_hex HEX)
-if(NOT export_exists_code EQUAL 2 OR NOT before_hex STREQUAL after_hex)
-    message(FATAL_ERROR "logs export to an existing file ended with ${export_exists_code}, not 2, or changed it")
-endif()
 
 # ---- no --out: one <name>-logs-<date>_<time>.zip in the state folder
 engine(export_default logs export "--game=${program}")

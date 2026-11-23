@@ -13,6 +13,7 @@
 #include <windows.h>
 #else
 #include <sys/stat.h>
+#include <unistd.h>
 #endif
 
 #define LONG_NAME_LEN 300
@@ -105,7 +106,9 @@ int main(void) {
         free(folder);
     }
 #else
-    {
+    if (geteuid() == 0) {
+        puts("skip: root can delete in a 0555 folder (CAP_DAC_OVERRIDE)");
+    } else {
         char* folder = snx_path_join(root, "held");
         char* child = snx_path_join(folder, "child");
         int result, code;
