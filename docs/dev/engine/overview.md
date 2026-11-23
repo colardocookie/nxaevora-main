@@ -30,8 +30,9 @@ The build makes one program. `engine/src/multicall/main.c` holds the only `main`
 1. The setup options of `snx_setup_options`.
 2. The CLI translation of `snx_command_translate`.
 3. The `--mcp` mode, when the first argument is `--mcp`.
-4. `snx_driver` in `engine/src/nx/runtime/driver/driver.c`.
-5. `snx_main` in `engine/src/nx/runtime/main.c`, which runs one game.
+4. In a build with the GUI, the `--migrate` mode, when the first argument is `--migrate` or `--migrate=`.
+5. `snx_driver` in `engine/src/nx/runtime/driver/driver.c`.
+6. `snx_main` in `engine/src/nx/runtime/main.c`, which runs one game.
 
 The path from a decrypted folder to a running game:
 

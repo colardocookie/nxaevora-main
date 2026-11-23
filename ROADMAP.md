@@ -42,8 +42,9 @@ at sea ran for 252 seconds with 0 misses. Before, the same scene had 114 misses.
   each, so a hints file is valid only for the program that wrote it. For the update, the user starts the update
   program.
 - Done: the scan of the jump tables is part of the recompile procedure (the skill `nx-recompile`). It makes the
-  hints from the game files, so the list is not in git. Other game-specific settings and patches go to
-  `recomp/config`.
+  hints from the game files, so the list is not in git. `recomp/config` is empty and no code reads it. The game
+  settings are in `engine/src/nx/runtime/settings.txt` and the game's `.ini`, and the game patches are in
+  `recomp/patches/`.
 - Open: the cause is a rule of the recompiler (it does not read the entries of a jump table). The hints are a
   workaround that needs no change in ScarletNX. Decide whether to fix `explore()` in ScarletNX and report it to the
   upstream project.

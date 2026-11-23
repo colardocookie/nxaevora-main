@@ -55,12 +55,12 @@ The main switches:
 | `SNX_ARCEUS_LIST_SCROLL_FIX` | on | The list scroll runs only on a 30 Hz tick. |
 | `SNX_ARCEUS_RIDE_SWAP_FIX` | on | Five per-call waits count 30 times a second. |
 | `SNX_ARCEUS_RIDE_RAMP_FIX` | on | The ride angle ramp follows elapsed time. |
-| `SNX_ARCEUS_CAPPED_FALL_FIX` | on | The capped falls follow elapsed time for five ride classes. |
+| `SNX_ARCEUS_CAPPED_FALL_FIX` | on | The capped falls follow elapsed time for the player and five ride classes. |
 | `SNX_ARCEUS_AIR_STEERING_FIX` | on | The air steering at `+6F0` follows elapsed time. |
 | `SNX_ARCEUS_DIRECT_MOVE_FIX` | on | The direct-position branch scales by elapsed time. |
 | `SNX_ARCEUS_FIELD_WAZA_FIX` | on | The field attack waits and counters run on 30 Hz ticks. |
 | `SNX_ARCEUS_WAZA_OBJECT_FIX` | on | The attack object counters advance on 30 Hz ticks. |
-| `SNX_ARCEUS_WAZA_SHOT_FIX` | `2` | The shot runs on 30 Hz ticks. `2` blends the drawn transform between ticks, `1` draws it at the tick rate, `0` is off. |
+| `SNX_ARCEUS_WAZA_SHOT_FIX` | `2` | The shot runs on 30 Hz ticks. `2` blends the drawn transform between ticks, `1` draws it at the tick rate, `0` is off. It warns when `SNX_ARCEUS_WAZA_OBJECT_FIX` is off, because shots may then end at the muzzle. |
 | `SNX_ARCEUS_CLOUD_FIX` | `2` | The eight sky cloud fields follow elapsed time. `2` scales all eight fields, `1` scales the first three, `0` is off. |
 | `SNX_ARCEUS_CLIMB_STEP` | `2` | The climb mover and the climb animation follow the frame step. `2` also fixes the stop count. |
 | `SNX_ARCEUS_WALL_JUMP_FIX` | on | The wall jump wait counts 30 steps a second. |
@@ -121,7 +121,7 @@ Channels 1 to 3 must follow channel 0 in order and for the same object. They reu
 
 The changed function is compiled again and marked active. A guard checks the function size, the prologue and the instruction words. The physics fix refuses to install without the elapsed-time clocks.
 
-The thrown-object flight update `main+1A7191C` is wrapped by `ball_flight_init`. The ratio is `r = step / 33333334`, clamped to at most 1 and at least 0.0625. The wrapper divides `+618` and `+61C` by `r`, scales drag as `1-(1-d)^r`, scales lift by `r`, restores the authored values after the call, and multiplies `+618` back.
+The thrown-object flight update `main+1A7191C` is wrapped by `ball_flight_init`. It installs only when the physics fix is active, or with `SNX_ARCEUS_TIMING_RESEARCH=1`, which only logs. The ratio is `r = step / 33333334`, clamped to at most 1 and at least 0.0625. The wrapper divides `+618` and `+61C` by `r`, scales drag as `1-(1-d)^r`, scales lift by `r`, restores the authored values after the call, and multiplies `+618` back.
 
 ### The AI navigation step
 
@@ -155,9 +155,9 @@ The gravity site `198DA8C` in `198D7E4` loads the negated step. The movement sit
 | Blinks | The blink countdown runs once a frame. `blink_fix_init` runs it `ticks` times through a 30 Hz cadence. |
 | Camera input and rate | The stick input and the camera rate assume one frame. `camera_input_init` and `camera_rate_init` scale them by elapsed time. `SNX_ARCEUS_CAMERA_SPEED` scales the rate. |
 | Menu repeat | The menu repeat advances once a frame. `pad_repeat_init` runs it on a 30 Hz tick. |
-| Capture | The waiting capture stages count frames. `capture_fix_init` counts 30 times per second of elapsed time. The carry is capped at 1 second. |
+| Capture | The waiting capture stages count frames. `capture_fix_init` counts 30 times per second of elapsed time. With `SNX_ARCEUS_TIMER_CARRY_FIX` on, the carry is capped at 1 second. |
 | Battle sequence | The battle sequence advances one step a frame. `battle_sequence_fix_init` uses `speed x 30 x elapsed`, cut at the next whole frame. Value 2 lands evenly, 1 is the plain cut, 0 is off. |
-| Map cursors | The map cursors move one step a frame. `map_cursor_fix_init` scales the speed by elapsed time and keeps the held counters on whole 1/30 second ticks. The carry is capped at 1 second. |
+| Map cursors | The map cursors move one step a frame. `map_cursor_fix_init` scales the speed by elapsed time and keeps the held counters on whole 1/30 second ticks. With `SNX_ARCEUS_TIMER_CARRY_FIX` on, the carry is capped at 1 second. |
 | Fade | The fade advances one step a frame. `fade_fix_init` multiplies the color delta by `elapsed x 30`. The start wrappers `fade_in_start` and `fade_out_start` reset the carried fraction. |
 | AI tick | The AI runs one frame a call. `ai_tick_fix_init` runs one frame for each 1/30 second and rewrites the 8-word block at `1051860`. |
 | Turn | The turn slerp uses the frame count. `turn_fix_init` makes the duration follow elapsed time. |
@@ -171,7 +171,7 @@ The gravity site `198DA8C` in `198D7E4` loads the negated step. The movement sit
 | Climb | The climb mover moves `speed / 30` a call and the animation divides by `speed / 30`. `climb_step_init` loads the frame step and multiplies. Value 2 also fixes the stop count at `+D04`. |
 | Wall jump | The wall jump wait counts steps. `wall_jump_fix_init` counts 30 steps a second. |
 | Ledge | The ledge scripts run a frame a call. `ledge_fix_init` runs them only on whole 1/30 second ticks. The smoothing at `main+1983770` follows. |
-| Capped falls and air steering | The falls and the ride steering assume one frame. `capped_fall_init` follows elapsed time for five ride classes and the steering at `+6F0`. |
+| Capped falls and air steering | The falls and the ride steering assume one frame. `capped_fall_init` follows elapsed time for the player and five ride classes and the steering at `+6F0`. |
 | Script tick | The state scripts run a frame a call. `script_tick_init` runs the masked classes on the frame nearest each whole 1/30 second, keeps one-frame inputs, and holds the frame-step cell at 1/30 during a ticked run. |
 | Script windows | The throw window runs between its native calls. `script_tick_init` installs the window between `main+1A91624` and `main+1A8EBA4` or `main+1A91370`. |
 | Event tick | The event job runs a frame a call. `event_tick_init` has 8 job slots, runs at most one a frame, caps the carry at two runs and carries pad presses for `IsPadTrigger`, `IsPadRelease` and `IsPadRepeat`. On by default. |
@@ -181,12 +181,12 @@ The gravity site `198DA8C` in `198D7E4` loads the negated step. The movement sit
 ## Current state
 
 - On the supported build with a frame limit above 30 FPS or unlimited, the elapsed-time clocks install by default.
-- The default sub-fixes install when the clocks install: physics, navigation, world timers, gravity, movement, capture, battle sequence, map cursor, fade, AI tick, turn, list scroll, ride swap, ride ramp, capped falls, air steering, direct move, field attacks, attack object, shot, cloud, climb, wall jump, ledge, event camera, blink, menu repeat, camera input and camera rate.
+- The default sub-fixes install when the clocks install: physics, navigation, world timers, gravity, movement, capture, battle sequence, map cursor, fade, AI tick, turn, list scroll, ride swap, ride ramp, capped falls, air steering, direct move, field attacks, attack object, shot, cloud, climb, wall jump, ledge, event camera, blink, menu repeat, camera input and camera rate, script tick, script windows.
 - Water and effects install in the same post-JIT pass, near its end.
 - Off by default: the probes and traces and the fixed resolution switch. The probes and traces only observe. The fixed resolution switch needs an explicit value of `1`.
 - Known issue, not fixed: with `SNX_ARCEUS_TEXT_TICK` on, the "next" prompt at the bottom right of the text box shows for a short time and then goes away.
 - At `fps_limit=game` or 1 to 30 FPS with no target, the whole layer installs nothing.
 - The layer supports only the `main` module of build 1.1.1. Another build logs one line and installs nothing.
-- Limits: a step above 100 ms is cut to 100 ms. The integer timer carry is capped at 1 second. The cave light ratio is at least 0.001. The thrown-object ratio is at least 0.0625 and at most 1. The capture and map-cursor carry is capped at 1 second. The frame-step cell reports at most 1/30 second.
+- Limits: a step above 100 ms is cut to 100 ms. With `SNX_ARCEUS_TIMER_CARRY_FIX` on (the default), the integer timer carry is capped at 1 second. With it off, a carry of one tick or more is set to 0. The cave light ratio is at least 0.001. The thrown-object ratio is at least 0.0625 and at most 1. The capture and map-cursor carry is capped at 1 second. The frame-step cell reports at most 1/30 second.
 - Table sizes: 8 event job slots, 8 demo controllers and 16 text records. A full table leaves the item as the game runs it, with a count.
 - Other contributors change this layer in open pull requests. This document describes the code of the base commit `5e35efe`.

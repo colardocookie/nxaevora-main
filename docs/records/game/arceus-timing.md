@@ -14,6 +14,8 @@ words it replaces, and it logs a refusal and changes nothing when they differ.
 
 Unset timing switches use the defaults below. `SNX_ARCEUS_TIMING_FIXES=0` turns off the entire timing layer. For every individual fix, setting its switch to `0` turns off that fix; probes and graphics settings remain opt-in.
 
+The `SNX_ARCEUS_*` switches are environment variables, read with `getenv`. No `.ini` setting holds them.
+
 | Switch | Default | What `=0` does |
 | --- | --- | --- |
 | `SNX_ARCEUS_TIMING_FIXES` | on | Installs nothing and suppresses the traces, research probes and fixed-resolution hook too. The throw owner guard is not part of the timing layer and stays on. |
