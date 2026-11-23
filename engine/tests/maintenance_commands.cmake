@@ -92,15 +92,19 @@ endif()
 engine(export_out_empty logs export "--game=${program}" "--out=")
 engine(export_out_last logs export "--game=${program}" --out)
 engine(export_out_option logs export "--game=${program}" --out "--game=${program}")
+engine(export_out_equals_option logs export "--game=${program}" "--out=--report.zip")
 execute_process(COMMAND ${env} "${RUNTIME}" logs export "--game=${program}" --out ""
                 WORKING_DIRECTORY "${dir}" TIMEOUT 20 RESULT_VARIABLE export_out_blank_code
                 OUTPUT_VARIABLE export_out_blank_out ERROR_VARIABLE export_out_blank_err)
-foreach(prefix export_out_empty export_out_last export_out_option export_out_blank)
+foreach(prefix export_out_empty export_out_last export_out_option export_out_equals_option export_out_blank)
     string(FIND "${${prefix}_err}" "--out" at)
     if(NOT ${prefix}_code EQUAL 2 OR at LESS 0)
         message(FATAL_ERROR "${prefix} ended with ${${prefix}_code}, not 2, or did not name --out: ${${prefix}_err}")
     endif()
 endforeach()
+if(EXISTS "${dir}/--report.zip")
+    message(FATAL_ERROR "logs export --out=--report.zip made ${dir}/--report.zip")
+endif()
 
 # ---- an --out whose parent is a regular file: exit 1, the path in the message, and no file
 set(parent_file "${dir}/notafolder")

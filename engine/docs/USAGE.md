@@ -67,10 +67,10 @@ refused with exit 2: name the game's program.
 games; it is not the game's own file. A missing file is not an error: `summary.txt` names it and the reason. `--out`
 names the zip; without it the zip is `<state>/<name>-logs-<date>_<time>.zip`, in local time. An existing file is
 refused with exit 2. `--out` needs a file: an empty value (`--out=` or `--out ""`), no value at the end, and a value
-that starts with `--` are usage errors, exit 2. The zip is made in memory and then written whole to a new file. When
-that write fails, the file is deleted and the command is exit 1 with its path and the reason. The command prints the
-zip's path and the number of the game's files that went into it. An add-on's program is refused with exit 2, as
-`settings get` refuses it.
+that starts with `--` (`--out --x` or `--out=--x`) are usage errors, exit 2. The zip is made in memory and then written
+whole to a new file. When that write fails, the file is deleted and the command is exit 1 with its path and the reason.
+The command prints the zip's path and the number of the game's files that went into it. An add-on's program is
+refused with exit 2, as `settings get` refuses it.
 
 `cache clean` deletes the shader cache, `<cache>/shader_cache`, and the code cache, `<cache>/<name>.jitcache`. With
 none of `--shaders`, `--code` and `--units` it deletes both. `--units` adds the recompile unit cache,

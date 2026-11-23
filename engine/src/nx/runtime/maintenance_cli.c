@@ -165,7 +165,7 @@ int snx_logs_export(int argc, char** argv) {
             return SNX_EXIT_USAGE;
         }
     }
-    if (out && !out[0]) {
+    if (out && (!out[0] || !strncmp(out, "--", 2))) {
         snx_command_error("logs export: --out needs a file");
         return SNX_EXIT_USAGE;
     }

@@ -734,9 +734,11 @@ int snx_write_new_file(const char* path, const void* data, size_t size, char* er
     const unsigned char* bytes = (const unsigned char*)data;
     size_t done = 0;
     int status = 0;
-    char why[256];
+    int stays_here = 0;
+    char why[256], stays[256];
     SnxFailCode code = 0;
     if (error && error_size) error[0] = 0;
+    stays[0] = 0;
     if (!path) return -1;
 #ifdef _WIN32
     wchar_t* wide_path = wide(path);
@@ -763,7 +765,10 @@ int snx_write_new_file(const char* path, const void* data, size_t size, char* er
             code = fail_code();
             status = -1;
         }
-        if (status) DeleteFileW(wide_path);
+        if (status && !DeleteFileW(wide_path)) { /* the write's reason stays the main one */
+            snx_os_error(stays, sizeof stays);
+            stays_here = 1;
+        }
         free(wide_path);
         if (!status) return 0;
         fail_code_keep(code);
@@ -795,13 +800,22 @@ int snx_write_new_file(const char* path, const void* data, size_t size, char* er
             code = errno;
             status = -1;
         }
-        if (status) unlink(path);
+        if (status && unlink(path)) {
+            snx_os_error(stays, sizeof stays);
+            stays_here = 1;
+        }
         if (!status) return 0;
         errno = code;
     }
 #endif
-    if (error && error_size)
-        snprintf(error, error_size, "%s could not be written: %s", path, snx_os_error(why, sizeof why));
+    if (error && error_size) {
+        snx_os_error(why, sizeof why);
+        if (stays_here)
+            snprintf(error, error_size, "%s could not be written: %s, and the partial file stays at that path (%s)",
+                     path, why, stays);
+        else
+            snprintf(error, error_size, "%s could not be written: %s", path, why);
+    }
     return -1;
 }
 int snx_write_changed(const char* path, const void* data, size_t size) {
