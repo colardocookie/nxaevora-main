@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the NXAevora contributors */
 /* PERF-1 (gpu/vk/landing.c) against the byte loops it replaces: out_changed_runs' word test (buffer.c) and
-   vk_write_changed's walk (writeback.c), copied here as they are with SNX_ARCEUS_PERF_LANDING unset. The same runs,
+   vk_write_changed's walk (writeback.c), copied here as they are with SNX_ARCEUS_PERF_LANDING=0. The same runs,
    and the same bytes in guest memory, on random and edge inputs. Level 3's landing_masked: the same bytes and the
    same count, run only where the CPU and OS have AVX-512BW. And the changed words the masked pass tells at
    SNX_ARCEUS_PERF_COMPARE=2. */
@@ -36,7 +36,7 @@ typedef struct {
     const uint8_t* res;
 } Out;
 
-/* writeback.c's walk with the switch unset, putting its runs into o */
+/* writeback.c's walk with the switch at 0, putting its runs into o */
 static void old_walk(const uint8_t* res, const uint8_t* org, const uint8_t* cur, uint32_t size, Out* o) {
     for (uint32_t i = 0; i < size;) {
         uint32_t n = size - i < 1024 ? size - i : 1024, end = i + n;

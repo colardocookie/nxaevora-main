@@ -356,7 +356,7 @@ static void test_pred(void) {
     assert(vk_query_pred_flush() == 1);
     /* the pass ends, the copy and its barrier, then the batch's barriers around its dispatch */
     assert(g_nlog == 6 && !memcmp(g_log, "ECBBXB", 6) && g_q.copied == g_q.next);
-    reset(0); /* unset: the report copied already, the batch copies nothing, not even a segment begun since */
+    reset(0); /* at 0: the report copied already, the batch copies nothing, not even a segment begun since */
     vk_query_reset(0);
     draw(0, 0, 3);
     assert(vk_query_report(0, 0x1000, 16, 0) == 1 && g_q.copied == g_q.next && !g_in_pass);

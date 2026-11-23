@@ -6,7 +6,7 @@ copied out of the source as they are, and run against small stand-ins for the re
 array, GPU addresses mapped to it one to one).
 
 Random batches of results over shared pages, some composed (rebased by earlier ones), some with a GPU-owned
-baseline, land in order at level 0 and at level 2 from the same start, with SNX_ARCEUS_PERF_LANDING unset and at 3,
+baseline, land in order at level 0 and at level 2 from the same start, with SNX_ARCEUS_PERF_LANDING at 0 and at 3,
 and with guest memory reached through a pointer and without one. landing.c is built portable: the runs from the
 write's own masked pass and the walk through the page index give the same bytes and the same rebases, also with a
 landing nested in a write and without memory. vk_write_changed_found's answer by path, and the index emptied by

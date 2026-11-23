@@ -286,7 +286,7 @@ static void test_level3(void) {
     assert(!strcmp(g_log + strlen("B0 D0 D1 B2 D2 D3 D4 B5 D5 B6 D6 B7 D7 D8 B10 D10 D11 B12 D12 "), "D13 D14 B15 D15 "));
     g_perf_times = 0;
 }
-/* the same sequence unset: a barrier for every reading draw, as before the switch */
+/* the same sequence at 0: a barrier for every reading draw, as before the switch */
 static void test_level0(void) {
     reset(0);
     const u64 clock = g_clock; /* PERF_TIMES off: no clock read (PERF-18's timing) */
@@ -311,7 +311,7 @@ static void test_level1(void) {
     reset(1);
     GfxOut* r = result(0x10000, 0x400, 5);
     GfxOut* n = result(0x10400, 0x400, 6); /* newer, the same page, no byte in common */
-    assert(read_at(0, 0x100, &b) == 2);    /* unset: several, composed */
+    assert(read_at(0, 0x100, &b) == 2);    /* at 0: several, composed */
     assert(read_at(1, 0x100, &b) == 1 && b == 5);
     g_map_fail = 1;                        /* no page map: every page neighbour meets, so the old path runs */
     assert(read_at(1, 0x100, &b) == 2);
@@ -319,7 +319,7 @@ static void test_level1(void) {
     n->alias = n->alias_bytes = 1;         /* newer, sharing bytes through another address: the old path */
     assert(read_at(1, 0x100, &b) == 2);
     n->alias = n->alias_bytes = 0;
-    r->ok = 0;                             /* the guest edited r's bytes: landed, as unset */
+    r->ok = 0;                             /* the guest edited r's bytes: landed, as at 0 */
     lands = 0;
     assert(read_at(1, 0x100, &b) == 0 && lands == 1);
     lands = 0;

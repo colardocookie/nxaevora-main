@@ -5,7 +5,7 @@
 stand-ins for the rest: guest memory, write tracking and GPU-side writes by page, the staging ring and an own buffer
 whose bytes are what a draw reads (no Vulkan).
 
-With the switch unset the sample is taken at every full check once an entry has been the same 63 times, and the
+With the switch at 0 the sample is taken at every full check once an entry has been the same 63 times, and the
 check without write tracking reads it. With the switch and write tracking no sample is taken. Tracking lost after a
 skip, through buf_get or another caller of vk_written_since, sends the next check to the full hash, which samples
 again. Contents A, B, A with tracking lost after B take the full check and draw A. At 256 KB or more, B patched in
@@ -233,12 +233,12 @@ static void settle(u64 len, u8 v, unsigned n) {
 }
 int main(void) {
     const Vb* e = &g_vb[1];
-    /* unset, write tracking on: the first check makes the entry, 62 more bring it to 63, and from there every full
+    /* at 0, write tracking on: the first check makes the entry, 62 more bring it to 63, and from there every full
        check takes the sample (today's sequence) */
     reset(0, 1);
     settle(16u << 10, 3, 100);
     assert(g_full == 100 && e->stable == 99 && g_samples == 100 - 63 && !e->sskip);
-    /* unset, no write tracking: the same sequence of samples, then the check without tracking reads it at 64 and on */
+    /* at 0, no write tracking: the same sequence of samples, then the check without tracking reads it at 64 and on */
     reset(0, 0);
     fill(16u << 10, 3);
     for (unsigned k = 0; k < 65; k++) (void)draw(16u << 10, 9);

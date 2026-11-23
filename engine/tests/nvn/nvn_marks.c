@@ -82,7 +82,7 @@ static void test_random_lists(void) {
         CHECK(!l.marks && !l.nmarks && !l.marks_cap && !l.marks_lost);
     }
 }
-/* the switch unset: the same ops and bytes, and no marks at all */
+/* the switch at 0: the same ops and bytes, and no marks at all */
 static void test_off(void) {
     NvnOpList on = {0}, off = {0};
     const uint32_t seed = rnd_state;
