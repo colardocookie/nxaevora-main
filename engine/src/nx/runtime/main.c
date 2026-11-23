@@ -899,11 +899,7 @@ int snx_main(int argc, char** argv) {
                 g_submit_probe == 1 ? "with the hashes" : "the times alone");
         /* 1: the draw's bind walks stop early (gpu/nvn/nvn_dirty.h). 2: also the builders' words go to the replay as
            they are written (PERF-30, gpu/nvn/nvn_params.h). 3: also the header helpers act without their words */
-        g_perf_replay = !replay                ? 0
-                        : !strcmp(replay, "1") ? 1
-                        : !strcmp(replay, "2") ? 2
-                        : !strcmp(replay, "3") ? 3
-                                               : 0;
+        g_perf_replay = perf_level(replay, 1, 3); /* 3 by default, the play set's */
         if (g_perf_replay) LOG("perf-replay: on, the draw's bind walks stop at their last set flag\n");
         if (g_perf_replay >= 2)
             LOG("perf-replay: EXPERIMENT level 2, a draw's bind and draw words go to the 3D engine as they are "
@@ -935,32 +931,32 @@ int snx_main(int argc, char** argv) {
             LOG("perf-compute-submit: EXPERIMENT on, a deferred dispatch is not submitted at once, its results go "
                 "with the next submission\n");
         }
-        const char* inplace = getenv("SNX_ARCEUS_PERF_INPLACE"); /* bench only (gpu/perf_times.h, PERF-17) */
-        if (inplace && inplace[0] >= '1' && inplace[0] <= '4' && !inplace[1]) {
-            g_perf_inplace = inplace[0] - '0';
+        const char* inplace = getenv("SNX_ARCEUS_PERF_INPLACE"); /* 4 by default (gpu/perf_times.h, PERF-17) */
+        g_perf_inplace = perf_level(inplace, 1, 4);
+        if (g_perf_inplace) {
             LOG("perf-inplace: EXPERIMENT level %d: a read binds the newest result sharing a byte in place%s%s%s\n",
                 g_perf_inplace, g_perf_inplace >= 2 ? ", a vertex stream over pending results at its exact length" : "",
                 g_perf_inplace >= 3 ? ", a read skips the reuse barrier with no writable result handed out since" : "",
                 g_perf_inplace >= 4 ? ", a writable composition skips gfx_overlay with no byte to copy" : "");
         } else if (inplace && *inplace && strcmp(inplace, "0"))
             LOG("perf-inplace: '%s' is not 0 to 4, off\n", inplace);
-        const char* query = getenv("SNX_ARCEUS_PERF_QUERY"); /* bench only (gpu/perf_times.h, PERF-19) */
-        g_perf_query = query && !strcmp(query, "1");
+        const char* query = getenv("SNX_ARCEUS_PERF_QUERY"); /* on by default (gpu/perf_times.h, PERF-19) */
+        g_perf_query = perf_level(query, 1, 1);
         if (g_perf_query)
             LOG("perf-query: EXPERIMENT on, a samples-passed report keeps the pass open and its counts are copied at "
                 "the submission's end, or at half the query ring\n");
-        const char* sample = getenv("SNX_ARCEUS_PERF_SAMPLE"); /* bench only (gpu/perf_times.h, PERF-24) */
-        g_perf_sample = sample && !strcmp(sample, "1");
+        const char* sample = getenv("SNX_ARCEUS_PERF_SAMPLE"); /* on by default (gpu/perf_times.h, PERF-24) */
+        g_perf_sample = perf_level(sample, 1, 1);
         if (g_perf_sample)
             LOG("perf-sample: EXPERIMENT on, with write tracking a buffer's full check takes no sampled hash (only the "
                 "check without write tracking reads one)\n");
-        const char* compare = getenv("SNX_ARCEUS_PERF_COMPARE"); /* bench only (gpu/perf_times.h, PERF-28) */
-        g_perf_compare = compare && !strcmp(compare, "2") ? 2 : 0; /* 1 was PERF-28 1a, not kept and removed */
+        const char* compare = getenv("SNX_ARCEUS_PERF_COMPARE"); /* 2 by default (gpu/perf_times.h, PERF-28) */
+        g_perf_compare = perf_level(compare, 2, 2); /* 1 was PERF-28 1a, not kept and removed */
         if (g_perf_compare == 2)
             LOG("perf-compare: EXPERIMENT level 2, a landing's whole-size masked pass finds its changed runs, and its "
                 "walk and a binding's walk visit only the pending results on their pages\n");
-        const char* scan = getenv("SNX_ARCEUS_PERF_SCAN"); /* bench only (gpu/nvn/nvn_cmdlist.h, PERF-33 part 2) */
-        g_nvn_oplist_marks = scan && !strcmp(scan, "1"); /* before any list is recorded */
+        const char* scan = getenv("SNX_ARCEUS_PERF_SCAN"); /* on by default (gpu/nvn/nvn_cmdlist.h, PERF-33 part 2) */
+        g_nvn_oplist_marks = perf_level(scan, 1, 1); /* before any list is recorded */
         if (g_nvn_oplist_marks)
             LOG("perf-scan: EXPERIMENT on, a list's fence, wait and call ops are marked as they are appended and the "
                 "submit reads them at their marks, not by walking every op\n");
@@ -1017,11 +1013,11 @@ int snx_main(int argc, char** argv) {
                 LOG("perf-submit-us: \"%s\" is not 250 to 8000, a submission holds upstream's 1000 us\n", submit_us);
             }
         }
-        /* masked stores in the landing (gpu/vk/landing.h). 3 is the only level left: 1 and 2 were removed */
-        g_perf_landing = landing && !strcmp(landing, "3") ? 3 : 0;
+        /* masked stores in the landing (gpu/vk/landing.h), 3 by default, the only level left: 1 and 2 were removed */
+        g_perf_landing = perf_level(landing, 3, 3);
         g_landing_masked = g_perf_landing && landing_masked_supported(); /* the CPU and OS check, once */
         if (landing && (!strcmp(landing, "1") || !strcmp(landing, "2")))
-            LOG("perf-landing: level %s was removed (research 19:31), storage results land as with it unset\n",
+            LOG("perf-landing: level %s was removed (research 19:31), storage results land as with it =0\n",
                 landing);
         if (g_perf_landing)
             LOG("perf-landing: on (level 3), storage results land %s\n",

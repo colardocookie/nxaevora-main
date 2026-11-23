@@ -704,14 +704,19 @@ void perf_copy_wpage(PerfCopies* c, uint64_t page, uint64_t frame);
 size_t perf_same_line(const PerfCopies* c, PerfStamps* s, PerfStamps* real, uint32_t frames, double clock_ns, char* out,
                       size_t size);
 
-/* SNX_ARCEUS_PERF_INPLACE=1, 2 or 3, bench only (PERF-17, research 02:42), each level with the ones below: 1 a read
-   binds in place the newest pending result sharing a byte with its range when it covers it, 2 a vertex stream with
-   pending results on its pages is looked up at its exact length, 3 a read skips the reuse barrier when no writable
-   result was handed out since the last one in its submission, 4 a writable composition skips gfx_overlay when no
-   pending result shares a byte with its range (PERF-21). 0 unless set. Read once at start */
+/* The FPS play set's eight levels, on by default (the user's verified set, 2026-11-22): unset gives top, =0 or any
+   value other than a level from lo to top turns it off, as SNX_ARCEUS_* switches do */
+static inline int perf_level(const char* v, int lo, int top) {
+    if (!v) return top;
+    return v[0] >= '0' + lo && v[0] <= '0' + top && !v[1] ? v[0] - '0' : 0;
+}
+/* SNX_ARCEUS_PERF_INPLACE=1 to 4 (PERF-17, research 02:42), each level with the ones below: 1 a read binds in place
+   the newest pending result sharing a byte with its range when it covers it, 2 a vertex stream with pending results
+   on its pages is looked up at its exact length, 3 a read skips the reuse barrier when no writable result was handed
+   out since the last one in its submission, 4 (the default) a writable composition skips gfx_overlay (PERF-21) */
 extern int g_perf_inplace;
-/* SNX_ARCEUS_PERF_QUERY=1, bench only (PERF-19, research 05:05): a samples-passed report neither ends the pass nor
-   copies the counts, which the submission it waits for copies at its end (vk/query.c vk_query_room). 0 unless set */
+/* SNX_ARCEUS_PERF_QUERY, on by default: a samples-passed report neither ends the pass nor copies the counts, which
+   the submission it waits for copies at its end (PERF-19, vk/query.c vk_query_room). =0 turns it off */
 extern int g_perf_query;
 /* SNX_ARCEUS_PERF_SAMPLE=1 (PERF-24): with write tracking a buffer's full check takes no sample (gpu/vk/buffer.c) */
 extern int g_perf_sample;

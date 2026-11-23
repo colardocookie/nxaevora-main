@@ -1322,6 +1322,24 @@ static void test_same(void) {
     CHECK(strstr(line, " span_lost"));
 }
 
+/* The play set's levels as main.c and release.c read them (perf_level): unset gives the top level, 0 and any value
+   that is not one level from lo to top turn it off */
+static void test_levels(void) {
+    static const struct { int lo, top; } sw[] = {{3, 3}, {1, 3}, {1, 1}, {1, 1}, {1, 4}, {1, 1}, {1, 1}, {2, 2}};
+    static const char* const bad[] = {"0", "", "5", "9", "1x", "33", "-1", "on", " 1", "1 "};
+    for (size_t i = 0; i < sizeof sw / sizeof *sw; i++) {
+        CHECK(perf_level(NULL, sw[i].lo, sw[i].top) == sw[i].top);
+        for (int l = 0; l <= 9; l++) {
+            const char v[2] = {(char)('0' + l), 0};
+            CHECK(perf_level(v, sw[i].lo, sw[i].top) == (l >= sw[i].lo && l <= sw[i].top ? l : 0));
+        }
+        for (size_t b = 0; b < sizeof bad / sizeof *bad; b++) CHECK(perf_level(bad[b], sw[i].lo, sw[i].top) == 0);
+    }
+    CHECK(perf_level("2", 3, 3) == 0 && perf_level("1", 3, 3) == 0); /* LANDING's removed levels */
+    CHECK(perf_level("1", 2, 2) == 0);                                 /* COMPARE's removed level */
+    CHECK(perf_level("2", 1, 3) == 2 && perf_level("3", 1, 4) == 3); /* a lower level still chosen */
+}
+
 int main(void) {
     test_rel_window();
     test_subs();
@@ -1353,6 +1371,7 @@ int main(void) {
     test_land();
     test_same();
     test_same_threads();
+    test_levels();
     CHECK(g_perf_inplace == 0 && g_perf_bind == PBK_OTHER && g_perf_exact == 0); /* unset: today's commands */
     CHECK(g_perf_cp.site == -1 && g_perf_cp.slot == -1 && g_perf_cp.draw == -1 && g_perf_cp.last == -1);
     if (failures) return 1;

@@ -2,7 +2,7 @@
    Copyright 2026 the NXAevora contributors */
 /* SNX_ARCEUS_PERF_LANDING=3 (PERF-1c, research 16:28): storage results land with 64-byte masked stores, and with
    word compares where those can't run. The same runs (buffer.c out_changed_runs) and the same bytes written
-   (writeback.c vk_write_changed) as the byte loops, which stay the path with it unset. No runtime header, so the host
+   (writeback.c vk_write_changed) as the byte loops, which stay the path with it =0. No runtime header, so the host
    test links it alone. */
 #ifndef SNX_GPU_VK_LANDING_H
 #define SNX_GPU_VK_LANDING_H

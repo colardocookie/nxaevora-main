@@ -490,13 +490,13 @@ static int release_overlaps(const Release* r, u64 gva, u64 len) {
     }
     return 0;
 }
-/* SNX_ARCEUS_PERF_STORAGE=1: the queue walks below translate the range they look for once, not once for each queued
-   release, and release_match stops at the latest match. They find the same releases. Read once */
+/* SNX_ARCEUS_PERF_STORAGE, on by default (=0 off): the queue walks below translate the range they look for once,
+   not once for each queued release, and release_match stops at the latest match. They find the same releases */
 static int g_perf_storage_walk = -1;
 static int perf_storage_walk(void) {
     if (g_perf_storage_walk < 0) {
         const char* v = getenv("SNX_ARCEUS_PERF_STORAGE");
-        g_perf_storage_walk = v && !strcmp(v, "1");
+        g_perf_storage_walk = perf_level(v, 1, 1);
         if (g_perf_storage_walk) LOG("vulkan: SNX_ARCEUS_PERF_STORAGE: release queue walks translate their range once\n");
     }
     return g_perf_storage_walk;

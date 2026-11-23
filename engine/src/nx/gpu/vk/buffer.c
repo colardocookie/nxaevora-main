@@ -32,7 +32,7 @@ typedef struct {
     int own;   /* buf is this entry's own buffer */
     u32 wseen; /* write-tracking clock when it last matched memory */
     u32 host_gen; /* g_vb_map_gen when host_cpu was found: 0 never */
-    u8 sskip;     /* SNX_ARCEUS_PERF_SAMPLE: the last full check took no sample, shash is older (never set unset) */
+    u8 sskip;     /* SNX_ARCEUS_PERF_SAMPLE: the last full check took no sample, shash is older (never set at 0) */
     u8 patched;   /* SNX_ARCEUS_PATCH_HASH: a patch copied bytes since the hash, so hash is older (never set unset) */
     u64 host_cpu; /* the guest memory the range shows, ~0 for none (entry_host) */
     VkBuffer buf;
@@ -1705,7 +1705,7 @@ static void src_index(const RangePages* q) {
         for (WalkRef* r = *walk_bucket(page); r; r = r->next) {
             if (r->page != page || !r->o->in_out || r->o->wstamp == stamp) continue;
             r->o->wstamp = stamp;
-            if (g_nscand == WALK_BOUND) { /* past the bound: the walks go over g_out, unsorted, as unset */
+            if (g_nscand == WALK_BOUND) { /* past the bound: the walks go over g_out, unsorted, as at 0 */
                 walk_noted(0, 1, g_nscand + 1);
                 return;
             }
