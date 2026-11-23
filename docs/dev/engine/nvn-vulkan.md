@@ -85,7 +85,7 @@ The render targets are in `engine/src/nx/gpu/nvn/nvn_rt.h`. `nvn_rt_emit` writes
 
 `h_queue_present_texture` marks the image PRESENTED and posts a `NVN_FRAME_PRESENT` job. `frame_show` presents through `g_renderer->present_buffer`. `frame_finish` frees the image and the list references and signals `frame_done_cv`.
 
-A window acquire paces outside the object lock with `present_pace`, picks a FREE image, waits on `frame_done_cv` when none is free, and signals the sync. `h_sync_wait` waits on the queue's syncpoint value with the timeout and compares across the 32-bit wrap. `h_queue_finish` waits on the same value. A cross-queue wait on a pending fence is not supported. It returns 0 with a log line.
+A window acquire paces outside the object lock with `present_pace`, picks a FREE image, and waits on `frame_done_cv` only while an image is PRESENTED. With no free and no presented image it fails with `no free window image` and writes `NVN_WINDOW_INVALID_INDEX`. A successful acquire signals the sync. `h_sync_wait` waits on the queue's syncpoint value with the timeout and compares across the 32-bit wrap. `h_queue_finish` waits on the same value. A cross-queue wait on a pending fence is not supported. It returns 0 with a log line.
 
 ### Threads and locks
 
@@ -94,7 +94,7 @@ Guest game threads run the host handlers on their guest cores through `native_ca
 | Lock | Mode | What it protects |
 | --- | --- | --- |
 | `objs_lock` | Exclusive | The object records and their generations, for a handler that creates, changes or removes a record. |
-| `objs_lock` | Shared | The command buffer handlers, which change only their own command buffer, so several threads can record at the same time. |
+| `objs_lock` | Shared | The command buffer handlers, which change only their own command buffer, so several threads can record at the same time. The buffer handlers `h_buffer_map`, `h_buffer_get_address` and `h_buffer_get_size` also take it, because they read the records and write none. |
 | `lists_lock` | Exclusive | The published list store. |
 | `slots_lock` | Exclusive | The handler slots and the NVN name table build. |
 
@@ -114,7 +114,7 @@ At a clean exit, `nvn_native_report` lists the resolved addresses, the number wi
 
 `engine/src/nx/gpu/shader/shader.h` is the translator. `shader_to_spirv` translates a Maxwell graphics program and `shader_compute_to_spirv` translates a compute program. Both return allocated SPIR-V words. The module holds `decode.c`, `shader.c`, `structure.c`, `spirv_translate.c`, `spirv_compute.c`, `corpus.c` and `shipped.c`.
 
-The translator is shared by both NVN paths. The renderer makes pipelines from the game's shader code in `engine/src/nx/gpu/vk/`. The translated shaders and the pipelines are cached in `shader_cache/`. The runtime change `0002-global-red-add-u64` adds `RED.E.ADD.64` to the translator and declares `Int64Atomics`, so each global buffer gets a 64-bit aliased view.
+The translator is shared by both NVN paths. The renderer makes pipelines from the game's shader code in `engine/src/nx/gpu/vk/`. The translated shaders and the pipelines are cached in `shader_cache/`. The runtime change `0002-global-red-add-u64` adds `RED.E.ADD.64` to the translator and declares `Int64Atomics`, so each global buffer gets a 64-bit aliased view. It also needs the device feature `shaderBufferInt64Atomics`. A device without the feature refuses the program.
 
 ### Coverage, diagnostics and tests
 
@@ -133,7 +133,7 @@ The diagnostics are in `engine/src/nx/gpu/nvn/diag/`:
 
 The NVN settings and their defaults are in `engine/src/nx/runtime/settings.txt`: `nvn_trace` 0, `nvn_legacy` 0, `nvn_drawrec` 0, `nvn_measure` 0, `nvn_native_missing` 1, `nvn_selftest` 0, `nvn_selftest_mutate` empty and `nvn_exectest` 0.
 
-The in-game tests are in `engine/src/nx/gpu/nvn/test/`. `nvn_selftest.c` needs `nvn_trace=1` and `nvn_legacy=1`. `nvn_exectest.c` needs `nvn_trace=1` and `nvn_legacy=0`. Both are diagnostics and draw nothing. The host tests are in `engine/tests/nvn/`: `nvn_objtab`, `nvn_cmdlist`, `nvn_frame`, `nvn_replay`, `nvn_rt`, `draw_record`, `nvn_measure`, `nvn_params`, `nvn_exectest` and `nvn_enum_trace`, with the selftest parts `nvn_selftest_cmp`, `nvn_selftest_mem`, `nvn_selftest_rec`, `nvn_selftest_dec` and `nvn_selftest_regdiff`. `engine/tests/CMakeLists.txt` adds them to `ctest`.
+The in-game tests are in `engine/src/nx/gpu/nvn/test/`. `nvn_selftest.c` needs `nvn_trace=1` and `nvn_legacy=1`. `nvn_exectest.c` needs `nvn_trace=1` and `nvn_legacy=0`. Both are diagnostics and draw nothing. The host tests are in `engine/tests/nvn/`: `nvn_objtab`, `nvn_cmdlist`, `nvn_frame`, `nvn_replay`, `nvn_rt`, `draw_record`, `nvn_measure`, `nvn_params`, `nvn_exectest`, `nvn_enum_trace`, `nvn_command_gap` and `nvn_control`, with the selftest parts `nvn_selftest_cmp`, `nvn_selftest_mem`, `nvn_selftest_rec`, `nvn_selftest_dec` and `nvn_selftest_regdiff`. `engine/tests/CMakeLists.txt` adds them to `ctest`.
 
 ## Current state
 
@@ -150,7 +150,7 @@ The in-game tests are in `engine/src/nx/gpu/nvn/test/`. `nvn_selftest.c` needs `
 - The GPU thread replays each list into Maxwell methods.
 - The frame presents the window image through the renderer.
 - Fences follow the queue syncpoint. `nvnSyncWait`, `nvnQueueWaitSync` and `nvnQueueFinish` wait on it.
-- The read-write `objs_lock` split is in use for the command buffer handlers.
+- The read-write `objs_lock` split is in use for the command buffer handlers and the three buffer getters.
 
 ### Present but not used or not complete
 
