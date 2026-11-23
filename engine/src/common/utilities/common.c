@@ -554,10 +554,21 @@ void snx_free_strings(char** strings, size_t count) {
     for (size_t i = 0; i < count; ++i) free(strings[i]);
     free(strings);
 }
+/* the OS's last error code, which snx_os_error reads: GetLastError on Windows, errno on POSIX */
+#ifdef _WIN32
+typedef DWORD SnxFailCode;
+static SnxFailCode fail_code(void) { return GetLastError(); }
+static void fail_code_keep(SnxFailCode code) { SetLastError(code); }
+#else
+typedef int SnxFailCode;
+static SnxFailCode fail_code(void) { return errno; }
+static void fail_code_keep(SnxFailCode code) { errno = code; }
+#endif
 int snx_list_dir(const char* path, char*** names, size_t* count) {
     char** list = NULL;
     size_t n = 0, cap = 0;
     int error = 0;
+    SnxFailCode code = 0;
 #ifdef _WIN32
     WIN32_FIND_DATAW data;
     char* pattern = snx_path_join(path, "*");
@@ -570,6 +581,7 @@ int snx_list_dir(const char* path, char*** names, size_t* count) {
         if (!wcscmp(data.cFileName, L".") || !wcscmp(data.cFileName, L"..")) continue;
         char* name = utf8(data.cFileName);
         if (!name) {
+            code = fail_code();
             error = 1;
             break;
         }
@@ -579,7 +591,10 @@ int snx_list_dir(const char* path, char*** names, size_t* count) {
         }
         list[n++] = name;
     } while (FindNextFileW(h, &data));
-    if (!error && GetLastError() != ERROR_NO_MORE_FILES) error = 1;
+    if (!error && GetLastError() != ERROR_NO_MORE_FILES) {
+        code = fail_code();
+        error = 1;
+    }
     FindClose(h);
 #else
     DIR* dir = opendir(path);
@@ -589,6 +604,7 @@ int snx_list_dir(const char* path, char*** names, size_t* count) {
         errno = 0;
         ent = readdir(dir);
         if (!ent) {
+            code = fail_code();
             error = errno != 0;
             break;
         }
@@ -603,6 +619,7 @@ int snx_list_dir(const char* path, char*** names, size_t* count) {
 #endif
     if (error) {
         snx_free_strings(list, n);
+        fail_code_keep(code);
         return 1;
     }
     if (n > 1) qsort(list, n, sizeof(*list), snx_compare_strings);
@@ -610,16 +627,6 @@ int snx_list_dir(const char* path, char*** names, size_t* count) {
     *count = n;
     return 0;
 }
-/* the OS's last error code, which snx_os_error reads: GetLastError on Windows, errno on POSIX */
-#ifdef _WIN32
-typedef DWORD SnxFailCode;
-static SnxFailCode fail_code(void) { return GetLastError(); }
-static void fail_code_keep(SnxFailCode code) { SetLastError(code); }
-#else
-typedef int SnxFailCode;
-static SnxFailCode fail_code(void) { return errno; }
-static void fail_code_keep(SnxFailCode code) { errno = code; }
-#endif
 static int remove_one(const char* path, int dir) {
 #ifdef _WIN32
     wchar_t* p = wide(path);

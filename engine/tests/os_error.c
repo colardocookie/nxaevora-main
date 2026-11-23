@@ -13,7 +13,6 @@
 #include <windows.h>
 #else
 #include <sys/stat.h>
-#include <unistd.h>
 #endif
 
 #define LONG_NAME_LEN 300
@@ -106,20 +105,28 @@ int main(void) {
         free(folder);
     }
 #else
-    if (geteuid() == 0) {
-        puts("skip: root can delete in a 0555 folder (CAP_DAC_OVERRIDE)");
-    } else {
+    {
         char* folder = snx_path_join(root, "held");
         char* child = snx_path_join(folder, "child");
+        char* probe = snx_path_join(folder, "probe");
         int result, code;
-        assert(folder && child && !snx_mkdirs(folder) && !snx_write_file(child, "x", 1));
+        assert(folder && child && probe && !snx_mkdirs(folder) && !snx_write_file(child, "x", 1));
         assert(!chmod(folder, 0555));
-        result = snx_remove_tree(folder);
-        code = errno;
-        assert(result == 1);
-        assert(code == EACCES); /* the child's unlink, not the folder's own rmdir */
-        assert(!chmod(folder, 0755));
-        assert(!snx_remove_tree(folder)); /* the folder is writable again: the child and the folder go */
+        if (!snx_write_file(probe, "x", 1)) {
+            /* a capability such as CAP_DAC_OVERRIDE lets this process write in the 0555 folder: skip the case */
+            assert(!snx_remove_tree(probe));
+            assert(!chmod(folder, 0755));
+            assert(!snx_remove_tree(folder));
+            puts("skip: this process can delete in a 0555 folder (CAP_DAC_OVERRIDE)");
+        } else {
+            result = snx_remove_tree(folder);
+            code = errno;
+            assert(result == 1);
+            assert(code == EACCES); /* the child's unlink, not the folder's own rmdir */
+            assert(!chmod(folder, 0755));
+            assert(!snx_remove_tree(folder)); /* the folder is writable again: the child and the folder go */
+        }
+        free(probe);
         free(child);
         free(folder);
     }
