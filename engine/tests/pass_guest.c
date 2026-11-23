@@ -59,9 +59,14 @@ int main(int argc, char** argv) {
         set(NULL); /* read once */
         CHECK(pass_guest_on(2.0f) == 0 && g_test_lines == 0);
     } else if (!strcmp(which, "empty")) {
-        /* set but empty: off and silent, as before the default changed */
+        /* set but empty: off and silent where the value is kept. The Windows CRT removes a variable set to "", so
+           there it is unset, which is on */
         set("");
+#ifdef _WIN32
+        CHECK(pass_guest_on(2.0f) == 1 && g_test_lines == 1 && g_test_warns == 0);
+#else
         CHECK(pass_guest_on(2.0f) == 0 && g_pass_guest == 0 && g_test_lines == 0);
+#endif
     } else if (!strcmp(which, "zeroscale")) {
         set("0");
         CHECK(pass_guest_on(4.0f / 3.0f) == 0 && g_pass_guest == 0 && g_test_lines == 0);
