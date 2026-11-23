@@ -633,6 +633,12 @@ add_test(NAME vulkan_landing_timing COMMAND snx-test-vulkan-landing timing) # re
 if(Python3_Interpreter_FOUND) # buffer.c's in-place reads (SNX_ARCEUS_PERF_INPLACE), its own code copied out and run
     add_test(NAME vulkan_inplace COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/vulkan_inplace.py"
              "${CMAKE_C_COMPILER}" -std=gnu11 -O1)
+    # the FPS play set's levels through their own code: COMPARE (buffer.c, writeback.c), QUERY (query.c), SAMPLE
+    # (buffer.c's buf_get). vulkan_beside.py, an experiment's, is run by hand
+    foreach(t vulkan_compare vulkan_query vulkan_sample)
+        add_test(NAME ${t} COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/${t}.py"
+                 "${CMAKE_C_COMPILER}" -std=gnu11 -O1 -pthread)
+    endforeach()
 endif()
 
 add_executable(snx-test-perf-times perf_times.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/perf_times.c")
