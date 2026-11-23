@@ -630,6 +630,11 @@ snx_test_target(snx-test-vulkan-landing 11)
 add_test(NAME vulkan_landing COMMAND snx-test-vulkan-landing)
 add_test(NAME vulkan_landing_timing COMMAND snx-test-vulkan-landing timing) # research 14:37: prints, always passes
 
+if(Python3_Interpreter_FOUND) # buffer.c's in-place reads (SNX_ARCEUS_PERF_INPLACE), its own code copied out and run
+    add_test(NAME vulkan_inplace COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/vulkan_inplace.py"
+             "${CMAKE_C_COMPILER}" -std=gnu11 -O1)
+endif()
+
 add_executable(snx-test-perf-times perf_times.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/perf_times.c")
 snx_test_target(snx-test-perf-times 11)
 add_test(NAME perf_times COMMAND snx-test-perf-times)

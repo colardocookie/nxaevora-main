@@ -56,6 +56,8 @@ typedef struct GfxOut {
     u8 *org, *ptr;
     VmaAllocation mem;
     u64 pages[1], vmap[1];
+    u32 npages;
+    int in_out;
     struct GfxOut* next;
 } GfxOut;
 typedef struct {
@@ -183,6 +185,17 @@ static u32 draw_page_index(const DrawPage* p, size_t n, u64 key) { return (void)
 static int atlas_fill(const DrawPage* p, size_t n, u8* ptr, VkBuffer b, u64 off) {
     return (void)p, (void)n, (void)ptr, (void)b, (void)off, 0;
 }
+/* PERF-28's page index (SNX_ARCEUS_PERF_COMPARE=2) and the probes' notes: this test runs at COMPARE 0, where
+   buffer.c's src_first and src_next walk g_out in order and walk_add and walk_remove find nothing to do */
+static void walk_add(GfxOut* o) { (void)o; }
+static void walk_remove(GfxOut* o) { (void)o; }
+static void src_index(const RangePages* q) { (void)q; }
+static GfxOut* src_first(u32* at) { return *at = 0, g_out; }
+static GfxOut* src_next(const GfxOut* o, u32* at) { return (void)at, o->next; }
+static u64 out_block(u32 npages, u32 len) { return (void)npages, len; }
+static void unlocked_note(int k) { (void)k; }
+static void composed_note(u64 a, u64 n) { (void)a, (void)n; }
+static void vk_release_result(u64 sub, int kind) { (void)sub, (void)kind; }
 /* the PERF_TIMES hooks, counted straight into the table */
 static void vk_perf_src(int kind, int outcome) { perf_copy_src(&g_perf_cp, kind, outcome); }
 static void vk_perf_class(int cls) { perf_copy_class(&g_perf_cp, cls); }
