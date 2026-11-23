@@ -40,7 +40,7 @@ static unsigned low_fps_skip_logs, log_lines, drp_layer_notes, drp_bare_lines, d
 static char drp_bare_line[512]; /* the last bare start line, formatted */
 void logf_(int level, const char* fmt, ...) {
     log_lines++;
-    if (strstr(fmt, "arceus-discord: presence off: it needs the timing layer")) drp_layer_notes++;
+    if (strstr(fmt, "arceus-discord: presence off: without the timing layer")) drp_layer_notes++;
     if (strstr(fmt, "arceus-discord: EXPERIMENT: without the timing layer")) {
         va_list args;
         va_start(args, fmt);
@@ -329,8 +329,8 @@ static void test_discord_default(void) {
     discord_starts = 0, drp_presence = 0, drp_ticking = 0, drp_base = saved_drp;
     main_base = saved_base, g_disp = saved_disp;
 }
-/* Without the timing layer presence is off, and says so only when it was wanted in Arceus 1.1.1 (research 20:46,
-   option c; the reviewer 20:46: the flip's own condition, not the bare switch). With the layer on, no such line */
+/* Without the timing layer and with SNX_ARCEUS_DISCORD_BARE=0 presence is off, and says so only when it was wanted in
+   Arceus 1.1.1 (research 20:46, option c, the note rewritten for =0). With the layer on, no such line */
 static void test_discord_layer_off(void) {
     SnxModInfo main_mod = {.name = "main", .base = 4096};
     memcpy(main_mod.build_id, arceus_main_id, sizeof main_mod.build_id);
@@ -338,6 +338,7 @@ static void test_discord_layer_off(void) {
     const SnxModule* const saved_mod = g_mod;
     const u64 saved_base = main_base;
     g_mod = &module, main_base = 0;
+    flag("SNX_ARCEUS_DISCORD_BARE", "0");
     const struct {
         const char *presence, *app;
         unsigned notes;
@@ -371,10 +372,11 @@ static void test_discord_layer_off(void) {
     assert(drp_layer_notes == 0);
     unset_flag("SNX_ARCEUS_DISCORD");
     unset_flag("SNX_ARCEUS_DISCORD_APP");
+    unset_flag("SNX_ARCEUS_DISCORD_BARE");
     g_mod = saved_mod, main_base = saved_base;
 }
 /* DISCORD-30 (research 23:29, the reviewer's D1 to D6): without the timing layer presence runs with
-   SNX_ARCEUS_DISCORD_BARE exactly 1. The clock read entry first, then the start, the counters and the tick. */
+   SNX_ARCEUS_DISCORD_BARE unset or 1. The clock read entry first, then the start, the counters and the tick. */
 static unsigned bare_clock_calls;
 static void bare_clock_original(CPU* c, u64 entry) { (void)c, (void)entry, bare_clock_calls++; }
 static void bare_returns(CPU* c, u64 entry) { (void)entry, c->pc = c->x[30]; }
@@ -398,10 +400,10 @@ static void test_discord_bare(void) {
     timing_enabled = clocks_installed = 0;
     flag("SNX_ARCEUS_DISCORD", "1");
     flag("SNX_ARCEUS_DISCORD_APP", "1234567890");
-    /* D2: only "1" turns it on. Unset, 0 or "on" give option c's note and touch nothing */
+    /* on by default: unset or "1" turns it on. 0 or "on" give the note and touch nothing */
     const char* const values[] = {NULL, "0", "on", "1"};
     for (unsigned i = 0; i < sizeof values / sizeof values[0]; i++) {
-        const int on = i == 3;
+        const int on = i == 0 || i == 3;
         memset(memory, 0, sizeof memory), memset(table, 0, sizeof table);
         gw32(clock, 0x8b21d008), table[clock / 4] = bare_clock_original;
         if (values[i]) flag("SNX_ARCEUS_DISCORD_BARE", values[i]);
@@ -479,6 +481,10 @@ static void test_discord_bare(void) {
         len[0] = site->size + 4; /* the function the module lists is another one */
         for (unsigned g = 0; g < site->guards; g++) gw32(pc + site->guard_at[g], site->guard[g]);
         assert(!drp_bare_counter(k, at) && gr32(pc + site->at) != site->word);
+        /* no JIT function lists (the reviewer's M13): refused, no word written and no body asked for */
+        len[0] = site->size, module.fn_lo = NULL, jit_changes = 0;
+        assert(!drp_bare_counter(k, at) && gr32(pc + site->at) != site->word && !jit_changes);
+        module.fn_lo = lo;
     }
     /* the camera counts as its fix does: a readable object and a call that returned. The sequence counts each call */
     camera_input_calls = battle_sequence_calls = 0;

@@ -4513,7 +4513,7 @@ static void drp_active_read(void) {
     pm_unlock(&drp_lock);
 }
 
-/* Without the timing layer (SNX_ARCEUS_DISCORD_BARE=1, DISCORD-30, research 23:29) the fixes' two counters are
+/* Without the timing layer (SNX_ARCEUS_DISCORD_BARE, DISCORD-30, research 23:29) the fixes' two counters are
    counted by wrappers of their own, on the fixes' own JIT bodies (body_sites), and do nothing else */
 static GuestFn drp_bare_body[BODY_SITES];
 /* as the camera input fix counts: the object readable, and only a call that returned */
@@ -4721,18 +4721,17 @@ static void discord_presence_init_bare(u64 base) {
 }
 
 /* Presence ticks in the clock layer's read wrapper and reads two of its fixes' counts. Without the layer (the game's
-   own 30 FPS, SNX_ARCEUS_TIMING_FIXES=0) it runs only with SNX_ARCEUS_DISCORD_BARE=1, and is off otherwise. When
-   it was wanted in Arceus 1.1.1 and is off, one line says why. */
+   own 30 FPS, SNX_ARCEUS_TIMING_FIXES=0) it runs unless SNX_ARCEUS_DISCORD_BARE=0. When it was wanted in Arceus
+   1.1.1 and is off, one line says why. */
 static void discord_layer_off(void) {
     const SnxModInfo* mod = NULL;
     for (u32 i = 0; g_mod && i < g_mod->nmods; i++)
         if (!strcmp(g_mod->mods[i].name, "main")) mod = &g_mod->mods[i];
     if (!drp_wanted() || !mod || memcmp(mod->build_id, arceus_main_id, sizeof arceus_main_id)) return;
-    const char* bare = getenv("SNX_ARCEUS_DISCORD_BARE");
-    if (bare && !strcmp(bare, "1")) discord_presence_init_bare(mod->base);
+    if (arceus_switch_enabled("SNX_ARCEUS_DISCORD_BARE", 1)) discord_presence_init_bare(mod->base);
     else
-        LOG("arceus-discord: presence off: it needs the timing layer (target 60, 120 or unlocked, with "
-            "SNX_ARCEUS_TIMING_FIXES on)\n");
+        LOG("arceus-discord: presence off: without the timing layer it runs only with SNX_ARCEUS_DISCORD_BARE unset "
+            "or 1\n");
 }
 
 void arceus_clock_post_jit(void) {
