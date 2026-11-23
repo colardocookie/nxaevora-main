@@ -22,7 +22,7 @@
 #include "gui/icons.h"
 #include "gui/latin.h"
 #include "gui/log.h"
-#include "gui/logzip.h"
+#include "common/utilities/logzip.h"
 #include "gui/wide.h"
 #include "gui/model.h"
 #include "gui/place.h"
@@ -11795,8 +11795,9 @@ static int share_folder_empty(App* app, const char* share) {
 }
 /* the message on the screen, the summary of the newest game log, the last run's output, the launcher's own log and its
    fatal errors, and that game log, in share/ of logs_folder, emptied first: with zip as summary.txt of
-   scarletnx-logs-<when>.zip beside the launcher's logs and the games' of the last GUI_LOG_DAYS days (gui/logzip.h),
-   else as scarletnx.log alone; then that folder opened in the system's file manager, to share from there */
+   scarletnx-logs-<when>.zip beside the launcher's logs and the games' of the last GUI_LOG_DAYS days
+   (common/utilities/logzip.h), else as scarletnx.log alone; then that folder opened in the system's file manager, to
+   share from there */
 static void share_log(App* app, bool zip) {
     char *game, *run, *recompiled, *said, *fatal, *played, *summary, *text, *saved = NULL, *share, *logs;
     char console[4096], errors[4096];
@@ -11848,7 +11849,7 @@ static void share_log(App* app, bool zip) {
         log_stamp((SnxU64)time(NULL), stamp, sizeof stamp);
         zip_name = snx_format("scarletnx-logs-%s.zip", stamp);
         saved = snx_path_join(share, zip_name);
-        written = saved && !gui_logs_zip(saved, text, files.files, files.count, error, sizeof error);
+        written = saved && !snx_logs_zip(saved, text, files.files, files.count, NULL, error, sizeof error);
         if (saved && !written)
             snprintf(app->message, sizeof(app->message), snx_tr("The logs could not be saved: %s"), error);
         log_files_free(&files);

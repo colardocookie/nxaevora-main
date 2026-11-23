@@ -214,9 +214,10 @@ add_test(NAME dump_input COMMAND snx-test-dump-input)
 add_executable(snx-test-host-shared-lock host_shared_lock.c "${PROJECT_SOURCE_DIR}/src/common/filesystem/host.c")
 snx_test_target(snx-test-host-shared-lock 11)
 add_test(NAME host_shared_lock COMMAND snx-test-host-shared-lock)
-# snx_os_error: the system's reason a message names, Windows' GetLastError where its calls leave errno
+# snx_os_error: the system's reason a message names, Windows' GetLastError where its calls leave errno; and
+# snx_remove_tree keeps the first failure's code. C11: the test uses CreateFileW and chmod
 add_executable(snx-test-os-error os_error.c)
-snx_test_target(snx-test-os-error 99)
+snx_test_target(snx-test-os-error 11)
 target_link_libraries(snx-test-os-error PRIVATE scarletnx-common)
 add_test(NAME os_error COMMAND snx-test-os-error)
 # RtAPI.cas128: the host's 16-byte compare-and-swap and the locked one, a pair stored whole or not at all
