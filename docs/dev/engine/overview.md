@@ -55,7 +55,7 @@ The recompiler has its own document: [aot-recompiler.md](aot-recompiler.md).
 | `settings list` | `--settings` |
 | `settings list --scope=recompile` | `--settings=recompile` |
 | `settings schema`, `settings get`, `settings set`, `settings check` | Run by `engine/src/nx/runtime/settings_cli.c`. |
-| `logs`, `cache` | Stop with `SNX_EXIT_USAGE` until the command exists. |
+| `logs export`, `cache clean` | Run by `engine/src/nx/runtime/maintenance_cli.c`; they share their `--game` checks with `settings get` and `settings set` (`snx_cli_game_require`). |
 
 `--help` must come alone. Any other argument gives exit code 2.
 

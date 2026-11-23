@@ -728,6 +728,82 @@ int snx_write_file(const char* path, const void* data, size_t size) {
     int result = fwrite(data, 1, size, f) != size;
     return fclose(f) != 0 || result;
 }
+/* a write() of a size_t in pieces is at most this many bytes: WriteFile takes a DWORD */
+#define SNX_WRITE_NEW_CHUNK ((size_t)1 << 30)
+int snx_write_new_file(const char* path, const void* data, size_t size, char* error, size_t error_size) {
+    const unsigned char* bytes = (const unsigned char*)data;
+    size_t done = 0;
+    int status = 0;
+    char why[256];
+    SnxFailCode code = 0;
+    if (error && error_size) error[0] = 0;
+    if (!path) return -1;
+#ifdef _WIN32
+    wchar_t* wide_path = wide(path);
+    HANDLE h = wide_path ? CreateFileW(wide_path, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL)
+                         : INVALID_HANDLE_VALUE;
+    if (h == INVALID_HANDLE_VALUE) {
+        code = fail_code();
+        free(wide_path);
+        if (code == ERROR_FILE_EXISTS || code == ERROR_ALREADY_EXISTS) return 1;
+        fail_code_keep(code);
+        status = -1;
+    } else {
+        while (done < size) {
+            DWORD chunk = (DWORD)(size - done > SNX_WRITE_NEW_CHUNK ? SNX_WRITE_NEW_CHUNK : size - done);
+            DWORD wrote = 0;
+            if (!WriteFile(h, bytes + done, chunk, &wrote, NULL) || wrote != chunk) {
+                code = fail_code();
+                status = -1;
+                break;
+            }
+            done += wrote;
+        }
+        if (!CloseHandle(h) && !status) {
+            code = fail_code();
+            status = -1;
+        }
+        if (status) DeleteFileW(wide_path);
+        free(wide_path);
+        if (!status) return 0;
+        fail_code_keep(code);
+    }
+#else
+    int fd = open(path, O_WRONLY | O_CREAT | O_EXCL, 0666);
+    if (fd < 0) {
+        code = errno;
+        if (code == EEXIST) return 1;
+        errno = code;
+        status = -1;
+    } else {
+        while (done < size) {
+            ssize_t wrote = write(fd, bytes + done, size - done);
+            if (wrote < 0) {
+                if (errno == EINTR) continue;
+                code = errno;
+                status = -1;
+                break;
+            }
+            if (!wrote) {
+                code = EIO;
+                status = -1;
+                break;
+            }
+            done += (size_t)wrote;
+        }
+        if (close(fd) && !status) {
+            code = errno;
+            status = -1;
+        }
+        if (status) unlink(path);
+        if (!status) return 0;
+        errno = code;
+    }
+#endif
+    if (error && error_size)
+        snprintf(error, error_size, "%s could not be written: %s", path, snx_os_error(why, sizeof why));
+    return -1;
+}
 int snx_write_changed(const char* path, const void* data, size_t size) {
     size_t n;
     unsigned char* old = snx_read_file(path, &n);

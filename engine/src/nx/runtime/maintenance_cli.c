@@ -23,17 +23,40 @@
 #define MAINTENANCE_CLI_GROWTH 8    /* the zip list's first slots */
 
 /* The game's settings file, <config>/<name>.ini, for the program path of --game: main.c's naming of the game's path and
-   folders, then the .ini that snx_main opens. 0, -1 for a path that names no game (the folders are not made), or the
-   add-on kind (SNX_ADDON_UPDATE or SNX_ADDON_DLC) for an update's or a DLC's program, whose run opens the base game's
-   .ini (addon_init), the base game's name then in base. The settings commands share it */
+   folders, then the .ini that snx_main opens. 0, -1 for a path that names no game, or the add-on kind
+   (SNX_ADDON_UPDATE or SNX_ADDON_DLC) for an update's or a DLC's program, whose run opens the base game's .ini
+   (addon_init), the base game's name then in base. The folders are resolved only: a caller that writes makes its own */
 int snx_cli_game_file(const char* program, char* out, size_t n, char* base, size_t base_size) {
     int kind;
+    if (!program || !out) return -1;
     snx_game_locate(program);
     if (!g_exename[0]) return -1;
     kind = snx_game_addon(g_exedir, g_exename, base, base_size, NULL);
     if (kind != SNX_ADDON_NONE) return kind;
-    snx_game_folders();
+    snx_game_folders_find();
     snprintf(out, n, "%s%s.ini", g_confdir, g_exename);
+    return 0;
+}
+
+/* The checks that logs export, cache clean, settings get and settings set share before they read or write a game's
+   file: the path of --game exists in a form they take (a program file or a folder), it is not an add-on's program, and
+   it names a game's program. 0 for a game, with out and base filled; else the exit code, command in the message */
+int snx_cli_game_require(const char* command, const char* game, char* out, size_t n, char* base, size_t base_size) {
+    int status;
+    if (!game || (!snx_is_file(game) && !snx_is_dir(game))) {
+        snx_command_error("%s: %s: not there: check --game", command, game ? game : "");
+        return SNX_EXIT_GAME_FILES;
+    }
+    status = snx_cli_game_file(game, out, n, base, base_size);
+    if (status > 0) {
+        snx_command_error("%s: %s is %s %s: name the game's program", command, game,
+                          status == SNX_ADDON_UPDATE ? "an update of" : "a DLC of", base);
+        return SNX_EXIT_USAGE;
+    }
+    if (status < 0) {
+        snx_command_error("%s: %s: not a game's program: check --game", command, game);
+        return SNX_EXIT_GAME_FILES;
+    }
     return 0;
 }
 
@@ -132,7 +155,7 @@ int snx_logs_export(int argc, char** argv) {
         } else if (!strncmp(argv[i], "--out=", 6)) {
             out = argv[i] + 6;
         } else if (!strcmp(argv[i], "--out")) {
-            if (++i == argc) {
+            if (++i == argc || !strncmp(argv[i], "--", 2)) {
                 snx_command_error("logs export: --out needs a file");
                 return SNX_EXIT_USAGE;
             }
@@ -142,40 +165,43 @@ int snx_logs_export(int argc, char** argv) {
             return SNX_EXIT_USAGE;
         }
     }
+    if (out && !out[0]) {
+        snx_command_error("logs export: --out needs a file");
+        return SNX_EXIT_USAGE;
+    }
     if (!game) {
         snx_command_error("logs export: --game=PATH names the game's program");
         return SNX_EXIT_USAGE;
     }
-    if (out && snx_path_exists(out)) {
-        snx_command_error("logs export: %s: the file is there already: name another --out", out);
-        return SNX_EXIT_USAGE;
-    }
-    status = snx_cli_game_file(game, path, sizeof path, base, sizeof base);
-    if (status > 0) {
-        snx_command_error("logs export: %s is %s %s: name the game's program", game,
-                          status == SNX_ADDON_UPDATE ? "an update of" : "a DLC of", base);
-        return SNX_EXIT_USAGE;
-    }
-    if (status < 0) {
-        snx_command_error("logs export: %s: not a game's program: check --game", game);
-        return SNX_EXIT_GAME_FILES;
-    }
+    status = snx_cli_game_require("logs export", game, path, sizeof path, base, sizeof base);
+    if (status) return status;
     made = output_path(out);
     if (!made) {
         snx_command_error("logs export: the local time cannot be read");
         return SNX_EXIT_INTERNAL;
     }
-    if (snx_path_exists(made)) {
+    if (!out) { /* the default path is in the game's state folder: make it, and only it, now that the checks are done */
+        char* folder = snx_dirname(made);
+        char why[256];
+        if (!folder || snx_mkdirs(folder)) {
+            snx_command_error("logs export: %s: cannot make its folder: %s", made, snx_os_error(why, sizeof why));
+            free(folder);
+            free(made);
+            return SNX_EXIT_INTERNAL;
+        }
+        free(folder);
+    }
+    memset(&list, 0, sizeof list);
+    summary = collect_logs(&list);
+    status = snx_logs_zip_new(made, summary ? summary : "", list.files, list.count, &added, error, sizeof error);
+    free(summary);
+    zip_list_free(&list);
+    if (status == 1) {
         snx_command_error("logs export: %s: the file is there already: name another --out", made);
         free(made);
         return SNX_EXIT_USAGE;
     }
-    memset(&list, 0, sizeof list);
-    summary = collect_logs(&list);
-    status = snx_logs_zip(made, summary ? summary : "", list.files, list.count, &added, error, sizeof error);
-    free(summary);
-    zip_list_free(&list);
-    if (status) {
+    if (status < 0) {
         snx_command_error("logs export: %s", error);
         free(made);
         return SNX_EXIT_INTERNAL;
@@ -246,16 +272,8 @@ int snx_cache_clean(int argc, char** argv) {
         snx_command_error("cache clean: --game=PATH names the game's program");
         return SNX_EXIT_USAGE;
     }
-    status = snx_cli_game_file(game, path, sizeof path, base, sizeof base);
-    if (status > 0) {
-        snx_command_error("cache clean: %s is %s %s: name the game's program", game,
-                          status == SNX_ADDON_UPDATE ? "an update of" : "a DLC of", base);
-        return SNX_EXIT_USAGE;
-    }
-    if (status < 0) {
-        snx_command_error("cache clean: %s: not a game's program: check --game", game);
-        return SNX_EXIT_GAME_FILES;
-    }
+    status = snx_cli_game_require("cache clean", game, path, sizeof path, base, sizeof base);
+    if (status) return status;
     both = !shaders && !code && !units;
     if (shaders || both) failed |= remove_cache(snx_format("%sshader_cache", g_cachedir), 0);
     if (code || both) failed |= remove_cache(snx_format("%s%s.jitcache", g_cachedir, g_exename), 0);

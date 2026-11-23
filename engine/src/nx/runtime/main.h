@@ -34,10 +34,12 @@ extern char g_addondir[1024], g_gamename[256];
    installed build's data folder the XDG folders of each kind */
 extern char g_confdir[1024], g_statedir[1024], g_cachedir[1024];
 /* The game's name and folders of the program path at program (snx_main's first steps, main.c): g_exedir and g_exename
-   from the path, then g_confdir and the others from the game's record or the environment. The CLI's settings commands
-   call both, with no game started, and make <g_confdir><g_exename>.ini, the file snx_main opens */
+   from the path, then g_confdir and the others from the game's record or the environment. snx_game_folders makes the
+   folders; snx_game_folders_find only resolves the same paths, with no folder made. The CLI's settings and maintenance
+   commands call snx_game_locate and then snx_game_folders_find, with no game started */
 void snx_game_locate(const char* program);
 void snx_game_folders(void);
+void snx_game_folders_find(void);
 /* The add-on that the program at exedir named exename is (addon_init's test): SNX_ADDON_UPDATE or SNX_ADDON_DLC, its
    ID in id, the base game's name (the folder's) in base; SNX_ADDON_NONE for the game's own program, base "" */
 int snx_game_addon(const char* exedir, const char* exename, char* base, size_t base_size, u64* id);

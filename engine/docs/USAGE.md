@@ -43,7 +43,7 @@ The first argument selects the command:
 the command's usage. `logs --help`, `logs export --help`, `cache --help` and `cache clean --help` show the command's
 usage too. `--help` comes alone: any other argument with it is exit 2, for all five settings words. `logs` and `cache`
 with no command, an unknown command, an unknown option or a missing `--game=` are exit 2, and they write and delete
-nothing.
+nothing. All four commands that take `--game` refuse a path that is not there with exit 3.
 
 `settings schema` needs no game. Its rows are the tables of `src/nx/runtime/settings.txt`, the game's own (in-game)
 rows included, and each row gives its `scope`: `startup`, `in-game`, `launcher` or `recompile`. The rows of LLVM
@@ -66,9 +66,11 @@ refused with exit 2: name the game's program.
 `scarletnx-error.log`. For a game of a data folder, the last one is that folder's early error file, shared by its
 games; it is not the game's own file. A missing file is not an error: `summary.txt` names it and the reason. `--out`
 names the zip; without it the zip is `<state>/<name>-logs-<date>_<time>.zip`, in local time. An existing file is
-refused with exit 2. The zip is made in memory and then written whole. The command prints the zip's path and the
-number of the game's files that went into it. An add-on's program is refused with exit 2, as `settings get` refuses
-it.
+refused with exit 2. `--out` needs a file: an empty value (`--out=` or `--out ""`), no value at the end, and a value
+that starts with `--` are usage errors, exit 2. The zip is made in memory and then written whole to a new file. When
+that write fails, the file is deleted and the command is exit 1 with its path and the reason. The command prints the
+zip's path and the number of the game's files that went into it. An add-on's program is refused with exit 2, as
+`settings get` refuses it.
 
 `cache clean` deletes the shader cache, `<cache>/shader_cache`, and the code cache, `<cache>/<name>.jitcache`. With
 none of `--shaders`, `--code` and `--units` it deletes both. `--units` adds the recompile unit cache,
