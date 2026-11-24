@@ -199,15 +199,28 @@ static void case_store_before_apply(const char* root) {
     free(path);
 }
 
-/* #90: the limit counts the store's keys and the missing default rows together: at TEST_STORE_MAX the write is full */
+/* #90: the limit counts the store's keys and the missing default rows together: at TEST_STORE_MAX the write is full,
+   and it keeps every key, so the next start parses the file whole */
 static void case_store_limit_boundary(const char* root) {
     char* path = snx_path_join(root, "boundary.ini");
+    char line[32];
     char* text;
+    int i;
     assert(path);
     text = make_keys_text(TEST_STORE_MAX - 1);
     put(path, text);
     free(text);
     ini_open(path);
+    assert_has(path, "def_key=dflt\n");
+    assert(count_key_rows(path) <= TEST_STORE_MAX);
+    for (i = 0; i < TEST_STORE_MAX - 1; i++) {
+        snprintf(line, sizeof line, "zz_test_%03d=1\n", i);
+        assert_has(path, line);
+    }
+    ini_open(path);
+    ini_set("zz_test_000", "2");
+    ini_poll(1);
+    assert_has(path, "zz_test_000=2\n");
     assert_has(path, "def_key=dflt\n");
     free(path);
 }
