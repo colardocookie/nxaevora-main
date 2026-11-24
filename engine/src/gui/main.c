@@ -284,6 +284,12 @@ typedef struct App {
        was, for its row on the Compile tab */
     GuiQueue queue;
     GuiProcess* job_process;
+    /* the Arceus graphics page's check of this PC's upscalers (--arceus-capabilities), behind the menu: its output so
+       far and the time it is ended at */
+    GuiProcess* arceus_check;
+    char* arceus_lines;
+    size_t arceus_size;
+    Uint64 arceus_until;
     GuiConsole job_console, ended_console;
     GuiSteps job_steps, ended_steps;
     uint32_t ended_serial; /* the job ended_console and ended_steps are of, 0 for none */
@@ -6552,15 +6558,51 @@ static void settings_groups(App* app) {
     }
 }
 /* Pokemon Legends: Arceus's graphics page: which upscalers this PC can run, asked of the program that runs the game
-   (--arceus-capabilities), five seconds at most. No answer: each one not checked */
-static void settings_arceus_check(App* app) {
-    char* driver = find_driver(app, GUI_SWITCH);
-    const char* argv[] = {driver, "--arceus-capabilities", NULL};
-    char* lines = driver ? capture_within(app, argv, 5000) : NULL;
+   (--arceus-capabilities) on a process of its own, so the Settings open at once. Its marks come when it ends */
+static void settings_arceus_marks(App* app, const char* lines) {
     gui_settings_arceus_capabilities(settings_of(app), lines);
     gui_settings_arceus_note(settings_of(app)); /* the environment's note wins over the check's */
-    free(lines);
+}
+static void settings_arceus_check(App* app) {
+    char error[256];
+    if (app->arceus_check) return; /* one at a time: the running one answers */
+    char* driver = find_driver(app, GUI_SWITCH);
+    const char* argv[] = {driver, "--arceus-capabilities", NULL};
+    app->arceus_check = driver ? gui_process_create() : NULL;
+    if (app->arceus_check && !gui_process_start(app->arceus_check, argv, error, sizeof error)) {
+        gui_process_destroy(app->arceus_check);
+        app->arceus_check = NULL;
+    }
     free(driver);
+    if (!app->arceus_check) {
+        settings_arceus_marks(app, NULL); /* no program to ask: each one not checked */
+        return;
+    }
+    app->arceus_size = 0;
+    app->arceus_until = SDL_GetTicks() + 5000; /* five seconds, then it is ended and none is checked */
+}
+/* the check running: its output read, a bounded amount a frame; once it ended, the marks */
+static void settings_arceus_pump(App* app) {
+    char buffer[4096];
+    int status = 1;
+    if (!app->arceus_check) return;
+    for (int reads = 0; reads < 16; ++reads) {
+        const int n = gui_process_read(app->arceus_check, buffer, sizeof buffer);
+        char* grown = n > 0 ? realloc(app->arceus_lines, app->arceus_size + (size_t)n + 1) : NULL;
+        if (!grown) break;
+        app->arceus_lines = grown;
+        memcpy(app->arceus_lines + app->arceus_size, buffer, (size_t)n);
+        app->arceus_lines[app->arceus_size += (size_t)n] = 0;
+    }
+    if (app->arceus_until && SDL_GetTicks() > app->arceus_until) {
+        gui_process_terminate(app->arceus_check);
+        app->arceus_until = 0; /* ended by the limit: nothing it said is taken */
+    }
+    if (!gui_process_finished(app->arceus_check, &status)) return;
+    gui_process_destroy(app->arceus_check);
+    app->arceus_check = NULL;
+    settings_arceus_marks(app, !status && app->arceus_until && app->arceus_size ? app->arceus_lines : NULL);
+    app->arceus_size = 0;
 }
 /* the groups, row on the focus */
 static void settings_top(App* app, int row) {
@@ -10284,12 +10326,14 @@ static int aot_built(const GuiSteps* steps) {
 }
 static bool watch_get(App* app, uint64_t* stamp);
 static void job_pump(App* app);
+static void settings_arceus_pump(App* app);
 static void taskbar(App* app);
 static void games_back(App* app, const char* path);
 static void pump(App* app) {
     text_left(app);
     setup_keyboard(app);
     job_pump(app);
+    settings_arceus_pump(app);
     if (!app->queue.count && app->menu.view == GUI_LOAD_RECOMPILE)
         games_back(app, NULL); /* its tab went with its last line */
     if (app->menu.running) {
@@ -13580,6 +13624,8 @@ static void forget(App* app) {
     if (app->run_out) fclose(app->run_out);
     free(app->run_log);
     gui_process_destroy(app->job_process); /* the queue's recompile ends with the menu */
+    gui_process_destroy(app->arceus_check); /* and the page's check */
+    free(app->arceus_lines);
     gui_queue_free(&app->queue);
     if (app->job_out) fclose(app->job_out);
     free(app->job_log);

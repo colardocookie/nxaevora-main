@@ -606,7 +606,8 @@ start line says which. While the environment sets one of the seven, the launcher
 window's lock say so.
 
 Which upscalers the PC can run. The launcher asks the program that runs the game, `--arceus-capabilities`, each
-time its Settings open, and waits five seconds at most. That mode (`gpu/vk/capabilities.c`) makes no device, no
+time its Settings open, on a process of its own that it reads between frames, so the Settings open at once. It ends
+the check after five seconds. That mode (`gpu/vk/capabilities.c`) makes no device, no
 window and no game. For each of FSR, DLSS and XeSS it asks what the game asks at its start: the adapter and its
 library (`vk_upscaler_present`), an instance with the adapter's names, the card the game's rule picks without a window
 (Vulkan 1.3, the swapchain, a graphics and compute queue, a discrete card first), and the adapter's needs of that
