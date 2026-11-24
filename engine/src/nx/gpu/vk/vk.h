@@ -223,6 +223,13 @@ u64 vk_frame_id(void);
 void vk_frame_hold(u64 frame_id);
 u64 vk_last_submit(void);        /* the last submission's number, which its completion signals */
 void vk_submit_progress(u64* submitted, u64* done); /* the last submission and the last done (any thread) */
+int vk_submit_completed(u64* done); /* the last done, 0 when the timeline could not be read */
+/* record.c: 1 from the moment a command buffer could not be begun or ended, a submission was refused, a frame's
+   command pool could not be reset or a wait for the timeline failed, for good. A submission's number on the
+   timeline may still be reached, so "completed" then no longer means "ran". vk_rec_mark_failed sets it and does
+   nothing else. */
+int vk_rec_submit_failed(void);
+void vk_rec_mark_failed(void);
 void vk_wait_submit(u64 value);  /* until the GPU has done that submission (any thread, without vk_lock) */
 /* Flush recorded work without frame recycling or guest result callbacks, under
    vk_lock, before an ownership readback uses the graphics queue directly. */
@@ -266,6 +273,20 @@ void vk_rec_queue(VkQueue q);  /* before submitting to or presenting on q outsid
 int vk_wsi_present_pending(void);
 /* Under vk_lock. Returns zero when an optional window redraw must defer, otherwise supplies the Vulkan result. */
 int vk_wsi_acquire_locked(int game, VkSemaphore acq, u32* idx, VkResult* result);
+/* A library outside the runtime records on the frame's command buffer cb at once, in one stretch under vk_lock:
+   before (may be NULL) queues what must come first, the ring is drained, direct records and says 1 when it did,
+   all bound state is forgotten. Only OK and REFUSED mean direct was called. With every other answer before may
+   still have run: what it queued is recorded, and may be submitted, and whatever that work uses is in use. */
+/* OK: direct said 1. REFUSED: it said 0. FAILED: a begin, an end or a submission has failed. NO_BUFFER: cb is
+   not the frame's unsubmitted buffer, at the call (then before did not run either) or after before ran. */
+enum { VK_REC_DIRECT_OK, VK_REC_DIRECT_REFUSED, VK_REC_DIRECT_FAILED, VK_REC_DIRECT_NO_BUFFER, VK_REC_DIRECT_UNKNOWN };
+typedef void (*VkRecBefore)(VkCommandBuffer cb, void* user);
+/* direct answers as an upscaler does (SNX_UPSCALER_OK, _REFUSED, _FAILED, _UNKNOWN). UNKNOWN: what cb holds is not
+   known, vk_rec_direct answers VK_REC_DIRECT_UNKNOWN and no submission of cb is made from then on (DL2 revision 2) */
+typedef int (*VkRecDirect)(VkCommandBuffer cb, void* user);
+int vk_rec_unknown(void); /* 1 once a library left the frame's command buffer in a state not known */
+void vk_rec_end_run(int code) __attribute__((noreturn)); /* the process ends now, nothing released */
+int vk_rec_direct(VkCommandBuffer cb, VkRecBefore before, VkRecDirect direct, void* user);
 /* presents image idx of sc once wait is signaled, in order after the submissions queued before it (vk_lock). The
    result is this present's without the recording thread, otherwise that of an earlier one which wasn't VK_SUCCESS,
    or VK_SUCCESS: a swapchain out of date shows a frame later */
@@ -762,7 +783,10 @@ VkImageView vk_tex_storage_view(Surf* s, VkImageViewType type);
 VkImageView vk_null_view(VkImageViewType type, int num);
 /* the sampler for a TSC: raise lets anisotropy= raise its filtering (a 2D texture with mipmaps), integer gives its
    border color as integers (an integer texture) */
+/* raise: bit 0 anisotropy raised to the setting, bit 1 the level bias shifted by g_vk_sampler_shift */
 VkSampler vk_sampler(const u32* tsc, int raise, int integer);
+int vk_sampler_made(VkSampler s, VkSamplerCreateInfo* out); /* read only, for a log line */
+extern float g_vk_sampler_shift;
 extern int g_vk_anisotropy; /* anisotropy=, read once at start: the sampler table keeps the samplers it made */
 void vk_tex_frame(void);    /* a frame was presented: evicts what wasn't used for a while */
 
@@ -805,6 +829,7 @@ void vk_buf_mem_need(u64 gva, u64 len);
 u64 vk_buf_reclaim(u32 before, u64 want);
 void vk_buf_stats(u32* count, u64* bytes);
 int vk_buf_pending(u64 gva, u64 len); /* a pending graphics result overlaps the range */
+int vk_buf_owned(u64 gva, u64 len);   /* GPU-owned bytes are on the range's pages: guest memory is stale there */
 u64 vk_buf_adds(void);                /* graphics results committed so far: as vk_compute_adds */
 int vk_buf_pending_any(void);         /* any graphics result is pending */
 int vk_buf_pending_unsubmitted(void); /* one is in the commands recorded since the last submit */
@@ -946,14 +971,12 @@ extern u32 g_vk_stage_sets; /* sets in the pipeline layout: 5, or 2 without the 
     (VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT |                                           \
      VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_GEOMETRY_BIT | VK_SHADER_STAGE_FRAGMENT_BIT)
 void vk_pipeline_init(void);
-/* the shader at gva (after a VertexA program at gva_a, or 0). The masks key integer inputs: attributes for the
-   vertex stage, textures and render target outputs for the fragment stage. rt_int keys the primitives of the
-   tessellation evaluation and geometry stages (ShaderInfo.rt_int_mask). clip: the clip distances the 3D engine
-   enables, and SNX_SH_NOT_LAST (the stages before rasterization). The translator reads ch's bound constant buffers
-   (ch->cbind) to resolve indirect branches. xfb: what transform feedback captures of the last stage before
-   rasterization's outputs (ShaderInfo.xfb), NULL for none */
+/* the shader at gva (after a VertexA program at gva_a, or 0), keyed by its integer attributes (vertex) or textures and
+   targets (fragment), rt_int the tessellation and geometry primitives, clip the clip distances and SNX_SH_NOT_LAST,
+   xfb what transform feedback captures (ShaderInfo.xfb, or NULL), txq ShaderInfo.txq_fixed (fragment, or NULL). The
+   translator reads ch's bound constant buffers (ch->cbind) to resolve indirect branches */
 VkSh* vk_shader_get(const GpuChannel* ch, u64 gva, u64 gva_a, int stage, u64 int_mask, u64 sint_mask, u32 rt_int,
-                    u32 rt_sint, u32 clip, u64 dc_color, u32 dc_funcs, u32 unfed, const ShXfb* xfb);
+                    u32 rt_sint, u32 clip, u64 dc_color, u32 dc_funcs, u32 unfed, const ShXfb* xfb, const u32* txq);
 /* whether the constant buffer words s's translation read still hold in ch's bound buffers (vk_shader_get's check on
    a hit, for a caller that kept s) */
 int vk_shader_cb_hold(const GpuChannel* ch, const VkSh* s);
@@ -1064,6 +1087,114 @@ VkImageView vk_ui_swapchain_view(VkImage sc); /* the view of a swapchain image t
 void vk_imgui_draw(VkCommandBuffer cb, VkImage sc, u32 game_w, u32 game_h);
 void vk_imgui_swapchain_gone(void);
 void vk_render_clear(GpuChannel* ch, u32 v);
+/* gpu/vk/temporal.c: the temporal probe (SNX_ARCEUS_TEMPORAL=probe). A draw is shown to it before it is recorded,
+   and it runs its passes before the draw of the scene colour's first reader */
+int vk_temporal_enabled(void);
+void vk_temporal_draw(GpuChannel* ch, const VkSh* vs, const VkSh* fs0, Surf* const* sampled,
+                      const u32* const* tic, const u32* const* tsc, int nt, Surf* const* rt, u32 n, Surf* zt);
+void vk_temporal_recorded(const VkViewport* viewport, const VkRect2D* scissor);
+void vk_temporal_sampler(u32 slot, VkSampler sampler);
+void vk_temporal_before(u64 fs0_hash);
+/* SNX_ARCEUS_UPSCALER=spatial (D3): the hand-over of the scaled picture. g_vk_watch is the scene colour's Surf while
+   the watch is armed (from the hook to the present of a frame whose replacement was recorded), else NULL: every use of
+   it goes to vk_temporal_watch. The renderer asks, for each binding of the scene, what the binding is given. */
+extern const Surf* g_vk_watch;
+enum { VK_WATCH_READ, VK_WATCH_WRITE, VK_WATCH_WROTE, VK_WATCH_FREED, VK_WATCH_OVERLAP };
+void vk_temporal_watch(const Surf* s, int kind);
+/* every surface a draw, a table element, a blit or a dispatch binds from a guest header goes here: one over the
+   scene colour's memory through another Surf is a consumer (D3-2 A2, research 12:15) */
+static inline void vk_temporal_watch_bound(const Surf* t) {
+    if (g_vk_watch && t && t != g_vk_watch) vk_temporal_watch(t, VK_WATCH_OVERLAP);
+}
+struct TemporalSpatialDraw;
+int vk_temporal_spatial_decide(const GpuChannel* ch, const VkSh* vs, const VkSh* fs0, u32 handle, const Surf* t,
+                               struct TemporalSpatialDraw* d, int* listed);
+VkImageView vk_temporal_spatial_view_for(const VkComponentMapping* map); /* the game view's own mapping */
+void vk_temporal_spatial_binding(int on, int listed, int given); /* around a scene binding's vk_surf_use */
+void vk_temporal_spatial_fault(const char* what);
+/* the scene camera's constant block with this frame's jitter in place of the guest's, 1 when buffer and offset are set */
+int vk_temporal_camera_block(u64 address, u32 bound, u32 size, VkBuffer* buffer, u64* offset);
+void vk_temporal_camera_seen(u64 address, u32 bound, u32 size, u64 program);
+void vk_temporal_object_failed(const char* what);
+/* SNX_ARCEUS_TEMPORAL_GPUTIME: the results of brackets whose submission has completed, without waiting */
+void vk_temporal_gputime_poll(void);
+/* SNX_ARCEUS_UPSCALER, from a frame's recycle: notes whether the context on its way has completed, and no more */
+void vk_temporal_upscaler_poll(void);
+void vk_temporal_gputime_present(void); /* right after g_vk_present is raised: the window's clock */
+/* Object vectors (SNX_ARCEUS_TEMPORAL_VECTORS=object). vk_temporal_object: 1 when the draw's object (constant bank
+   6) moved since the frame before, with the fragment program and its constant block for the draw that writes its
+   vector. vk_temporal_object_begin then begins that draw's pass, outside any other: the vector target and depth. */
+typedef struct {
+    VkShaderModule fs;
+    VkBuffer block;
+    u64 offset;
+    u32 size;
+    VkFormat format;
+} VkTemporalObject;
+/* Skinned characters, with object vectors on. vk_temporal_skin_keep after a transform feedback draw keeps its
+   output 0. vk_temporal_skin: 1 when a draw that reads such an output can be drawn again for its vector, with our
+   two programs, their constant block, last frame's positions and the scene depth to sample. */
+typedef struct {
+    VkShaderModule vs, fs;
+    VkBuffer block, before;
+    u64 offset, before_offset, before_size;
+    u32 size;
+    VkFormat format;
+    VkImageView depth;
+    VkSampler sampler;
+} VkTemporalSkin;
+void vk_temporal_skin_keep(VkCommandBuffer cb, u64 address, u32 size, VkBuffer source, u64 offset);
+int vk_temporal_skin(const GpuChannel* ch, Surf* zt, u64 address, u64 offset, u64 last_vertex, VkTemporalSkin* out);
+/* every plain G-buffer draw, once, before vk_temporal_skin and vk_temporal_object: 1 when its block has a matrix of
+   a frame ago. The draw's vertex and index buffer addresses, index count, first index and vertex program name it. */
+int vk_temporal_object_note(const GpuChannel* ch, const Surf* zt, u64 vertex, u64 index, u32 count, u32 first,
+                            u64 program);
+int vk_temporal_objects(void);
+/* SNX_ARCEUS_TEMPORAL_MIPBIAS: the level shift for material textures of a draw into the scene, 0 for other draws */
+float vk_temporal_mip_bias(const Surf* zt);
+int vk_temporal_object(const GpuChannel* ch, const Surf* zt, VkTemporalObject* out);
+int vk_temporal_object_begin(VkCommandBuffer cb, const VkRenderingAttachmentInfo* depth, int stencil);
+void vk_temporal_object_pipeline(void);
+/* read-only: this frame's transform feedback outputs and the draws that read them */
+void vk_temporal_feedback(u64 address, u32 size, u32 index);
+int vk_temporal_feedback_find(u64 address, u32* index, u64* offset, u32* size);
+int vk_temporal_skinned_line(void);
+/* gpu/vk/scene_scale.c: read only, and only with SNX_ARCEUS_SCENE_SCALE in use */
+void vk_scene_scale_note(const GpuChannel* ch, const Surf* zt, u32 colours);
+/* gpu/vk/upscaler_host.c: the steps with an upscaler's adapter (upscaler.h) before a device exists */
+struct SnxUpscalerApi;
+const struct SnxUpscalerApi* vk_upscaler_adapter(const char* name);
+const struct SnxUpscalerApi* vk_upscaler_adapter_selftest(const char* name);
+int vk_upscaler_not_in_game(const char* name);
+int vk_upscaler_instance_extensions(const struct SnxUpscalerApi* api, const char** names, u32* count, u32 room);
+int vk_upscaler_device_needs(const struct SnxUpscalerApi* api, VkInstance instance, VkPhysicalDevice device,
+                             PFN_vkGetInstanceProcAddr lookup, const char** names, u32* count, u32 room,
+                             const void** features, u32* core);
+/* What the game's device is tried with for an adapter, checked and copied by the host (upscaler_needs.h) */
+typedef struct {
+    char adapter[32];
+    u32 count;
+    const char* names[8]; /* the host's own copies */
+    int have, quads, linear; /* the derivatives' structure is asked for, and its bits to turn on */
+    int mutable_have, mutable_on; /* the mutable descriptor type's (since ABI 5) */
+    u32 core;                /* core feature bits to turn on in the caller's own structures */
+    VkPhysicalDeviceComputeShaderDerivativesFeaturesNV derivatives; /* the host's own structures for the chain */
+    VkPhysicalDeviceMutableDescriptorTypeFeaturesEXT mutable_desc;
+} VkUpscalerDeviceAsk;
+int vk_upscaler_instance_ask(const char* name, const char** names, u32* count, u32 room);
+int vk_upscaler_instance_met(const struct SnxUpscalerApi* api);
+int vk_upscaler_device_ask(const char* name, VkInstance instance, VkPhysicalDevice device,
+                           PFN_vkGetInstanceProcAddr lookup, u32 has_core, VkUpscalerDeviceAsk* ask);
+int vk_upscaler_device_names(const VkUpscalerDeviceAsk* ask, const char** names, u32* count, u32 room);
+void vk_upscaler_device_failed(const VkUpscalerDeviceAsk* ask, int result);
+void vk_upscaler_device_made(const VkUpscalerDeviceAsk* ask);
+int vk_upscaler_device_met(const struct SnxUpscalerApi* api, const char* switch_name, const char* const* names,
+                           u32 count, const void* features, u32 core);
+void vk_temporal_object_fate(int known, int reads, int again);
+void vk_temporal_multiply(const float a[16], const float b[16], float out[16]);
+/* gpu/vk/render.c: the read-only frame pass census (SNX_PASS_CENSUS=1) hears of each frame shown */
+void vk_pass_census_present(const Surf* shown);
+void vk_pass_census_dispatch(u64 code, const u64* address, const u32* size, int n);
 VkViewport vk_render_viewport(const u32* r);
 VkViewport vk_render_viewport_at(const u32* r, u32 index);
 int vk_render_depth_clamp(const u32* r);

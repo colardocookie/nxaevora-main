@@ -17,6 +17,7 @@
 #include "nx/gpu/nvn/nvn_native.h"
 #include "nx/gpu/nvn/diag/nvn_trace.h"
 #include "nx/gpu/renderer.h"
+#include "nx/gpu/vk/upscaler_selftest.h"
 #include "nx/hle/filesystem/fs.h"
 #include "nx/hle/hle.h"
 #include "nx/hle/kernel/kernel.h"
@@ -753,12 +754,41 @@ static int open_menu(const char* argv0) {
     return status;
 }
 
+/* The upscaler's self-test (gpu/vk/upscaler_selftest.c) with what little it needs of a start: the program's
+   folder and the name the run goes by, taken from the command line as the start does and without opening
+   anything, the folders by the runtime's own record of them, and the log as a file though no game is loaded,
+   so that its lines are where a report of the run reads them. No key file, no check for dumps, no menu, no
+   window, no file of the game. The process's result. */
+static int upscaler_selftest(const char* adapter, int argc, char** argv) {
+    const char* game = game_option(argc, argv);
+    int result;
+    snx_game_locate(game ? game : program_path(argv[0]));
+    snx_game_folders();
+    log_without_game();
+    LOG("ScarletNX - upscaler self-test\n");
+    LOG("build: %s\n", snx_build_info());
+    result = vk_upscaler_selftest(adapter);
+    fflush(NULL);
+    return result;
+}
+
 int snx_main(int argc, char** argv) {
     char module[sizeof g_exedir + sizeof g_exename + 16], ini[sizeof g_confdir + sizeof g_exename + 8];
     char base[sizeof g_exename];
     const char *game, *title;
     const SnxModule* mod;
     int status, i;
+    /* SNX_ARCEUS_UPSCALER_SELFTEST=<adapter>: the upscaler's self-test in place of everything else, on a path of
+       its own that ends the run. It is looked at first: before the options, the check for dumps, the menu,
+       the guest's address space and the game's code. Without the switch this is one look,
+       and the start goes on in the order it always had. */
+    {
+        const char* selftest = getenv("SNX_ARCEUS_UPSCALER_SELFTEST");
+        if (selftest_asked(selftest)) {
+            status = upscaler_selftest(selftest, argc, argv);
+            goto done;
+        }
+    }
     hle_init(); /* before anything, the options included, touches g_hle */
     status = snx_startup_options(argc, argv);
     if (status) goto done;

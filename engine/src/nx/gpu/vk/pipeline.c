@@ -421,6 +421,7 @@ static void sh_key_info(ShaderInfo* si, int stage, const u32 mask[20], const ShX
         si->tex_dc_color_funcs = mask[9];
         si->in_unfed_mask = mask[10];
         si->early_fragment_tests = mask[11];
+        memcpy(si->txq_fixed, mask + 12, sizeof si->txq_fixed);
     } else {
         si->attr_int_mask = ints;
         si->attr_sint_mask = sints;
@@ -507,7 +508,7 @@ static VkSh* sh_make(const u8* code, u32 mlen, u64 h, int stage, const u32 mask[
     return s;
 }
 VkSh* vk_shader_get(const GpuChannel* ch, u64 gva, u64 gva_a, int stage, u64 int_mask, u64 sint_mask, u32 rt_int,
-                    u32 rt_sint, u32 clip, u64 dc_color, u32 dc_funcs, u32 unfed, const ShXfb* xfb) {
+                    u32 rt_sint, u32 clip, u64 dc_color, u32 dc_funcs, u32 unfed, const ShXfb* xfb, const u32* txq) {
     pf_merge();
     g_sh_ch = ch;
     g_sh_bind = stage <= ST_FS ? stage : 0;
@@ -530,8 +531,11 @@ VkSh* vk_shader_get(const GpuChannel* ch, u64 gva, u64 gva_a, int stage, u64 int
         mask[7] = (u32)xh | 1;
         mask[8] = (u32)(xh >> 32);
     }
+    /* the fragment stage's fixed size query (ShaderInfo.txq_fixed), in words 12 to 14, mixed in only when set */
+    if (stage == ST_FS && txq && txq[0]) memcpy(mask + 12, txq, 3 * sizeof(u32));
     u32 mix = (u32)vk_hash(mask, 12 * sizeof(u32));
     if (stage == ST_GS) mix ^= (u32)vk_hash(mask + 12, 8 * sizeof(u32));
+    if (stage == ST_FS && mask[12]) mix ^= (u32)vk_hash(mask + 12, 3 * sizeof(u32));
     /* the set from every bit of the key, mixed by multiplying: programs are 256-byte aligned, and a shift and xor of
        their addresses left most sets unused */
     u64 hk = (gva * 0x9E3779B97F4A7C15ull) ^ (gva_a * 0xC2B2AE3D27D4EB4Full) ^ ((u64)mix << 24) ^ (u64)stage;
