@@ -8,6 +8,8 @@
 #include "nx/memory/mem.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/perf_times.h"
+#include "nx/gpu/vk/landing.h"
 
 /* Nested because a result can flush an overlapping render target while landing. */
 static _Thread_local unsigned t_result_depth;
@@ -18,26 +20,62 @@ int vk_result_landing(void) { return t_result_depth != 0; }
 /* whether [p, p + n) overlaps the guest's address space, where pages the GPU holds fault when read */
 static int in_guest(const u8* p, u32 n) { return p < g_mem + AS_SIZE && p + n > g_mem; }
 
-void vk_write_changed(u64 addr, const u8* res, const u8* org, u32 size) {
+/* where landing_runs puts a run: guest memory through its host pointer, else gmem_write */
+typedef struct {
+    u64 addr;
+    const u8* res;
+    u8* dst;
+} LandingDst;
+static void landing_put(void* ctx, u32 from, u32 n) {
+    const LandingDst* d = ctx;
+    if (d->dst)
+        memcpy(d->dst + from, d->res + from, n);
+    else
+        gmem_write(d->addr + from, d->res + from, n);
+    if (g_perf_times > 1) gpu_mem_landed(d->addr + from, n); /* PERF-23, SNX_ARCEUS_PERF_TIMES=2 */
+}
+/* SNX_ARCEUS_PERF_TIMES (PERF-23): the span a 64-byte masked store of landing_masked wrote, for the record as
+   written */
+static void landing_note(void* ctx, u32 from, u32 n) {
+    const LandingDst* d = ctx;
+    gpu_mem_landed(d->addr + from, n);
+}
+
+/* chg (SNX_ARCEUS_PERF_COMPARE=2, PERF-28 1b): told the result's changed words as landing_masked_chg tells them. 1
+   when it was told them all: a result with no changed word, or one landed by the masked pass */
+static int write_changed(u64 addr, const u8* res, const u8* org, u32 size, LandingPut chg, void* chg_ctx) {
     /* res and org are host copies: the shader's output read back into host-cached memory, and the bytes it started
        from, snapshotted when it was bound (buffer.c, compute.c, surface.c). Comparing them reads no guest page, so it
        can't fault on one the GPU holds. Only cur below reads guest memory, after vk_rt_before_write */
-    if (!size) return;
+    if (!size) return 1;
     if (in_guest(res, size) || in_guest(org, size)) fatal("vulkan: a storage result compared in guest memory");
-    if (!memcmp(res, org, size)) return; /* nothing written: no guest read, allocation or flush */
+    if (!memcmp(res, org, size)) return 1; /* nothing written: no guest read, allocation or flush */
     vk_result_begin();
     vk_rt_before_write(addr, size);
     u8* dst = gmem_ptr(addr, size);
     u8* tmp = NULL;
     const u8* cur = dst;
-    int changed = 0;
+    int changed = 0, found = 0;
+    u64 written = 0;
     if (!cur) {
         tmp = malloc(size);
         if (!tmp) fatal("Out of memory landing a shader storage buffer");
         gmem_read(addr, tmp, size);
         cur = tmp;
     }
-    for (u32 i = 0; i < size;) {
+    if (g_perf_landing) { /* SNX_ARCEUS_PERF_LANDING=3: the same bytes, a 64-byte masked store a step */
+        LandingDst d = {addr, res, dst};
+        if (g_landing_masked && dst && chg) {
+            written = landing_masked_chg(res, org, dst, size, landing_put, g_perf_times > 1 ? landing_note : NULL, &d,
+                                         chg, chg_ctx);
+            found = 1;
+        } else if (g_landing_masked && dst)
+            written = landing_masked(res, org, dst, size, landing_put, g_perf_times > 1 ? landing_note : NULL, &d);
+        else /* no AVX-512BW, or no contiguous host pointer: found a word at a time */
+            written = landing_runs(res, org, cur, size, landing_put, &d);
+        changed = written != 0;
+    }
+    for (u32 i = 0; !g_perf_landing && i < size;) {
         u32 n = size - i < 1024 ? size - i : 1024, end = i + n;
         /* Large storage bindings often change only a few bytes: the host's vectorized comparison of the two host
            copies skips their unchanged ranges, and guest memory is read only where the shader changed a byte */
@@ -60,10 +98,21 @@ void vk_write_changed(u64 addr, const u8* res, const u8* org, u32 size) {
                 memcpy(dst + start, res + start, i - start);
             else
                 gmem_write(addr + start, res + start, i - start);
+            if (g_perf_times > 1) gpu_mem_landed(addr + start, i - start); /* PERF-23, SNX_ARCEUS_PERF_TIMES=2 */
+            written += i - start;
             changed = 1;
         } while (i < end);
     }
     free(tmp);
+    if (written && g_perf_times) perf_count(&g_perf, PC_WC_BYTES, written);
     if (changed) gpu_mem_written_shader(addr, size); /* other GPU virtual addresses can alias these guest pages */
     vk_result_end();
+    return found;
+}
+void vk_write_changed(u64 addr, const u8* res, const u8* org, u32 size) {
+    (void)write_changed(addr, res, org, size, NULL, NULL);
+}
+int vk_write_changed_found(u64 addr, const u8* res, const u8* org, u32 size, void (*chg)(void* ctx, u32 from, u32 n),
+                           void* ctx) {
+    return write_changed(addr, res, org, size, chg, ctx);
 }

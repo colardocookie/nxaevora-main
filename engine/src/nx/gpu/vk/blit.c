@@ -10,6 +10,7 @@
    Under vk_lock, in the frame's command buffer */
 #include <string.h>
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/perf_times.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/platform/log.h"
@@ -43,6 +44,7 @@ static int blit(const GpuBlit* b) {
     VkOwnRes* d;
     int ok = 1;
     if (!n || !rows) return 1;
+    perf_pass_why(PE_IMAGE);
     vk_render_end();
     if (sspan > g_vk.alloc_cap || dspan > g_vk.alloc_cap || !(scr = vk_bl_scratch(used, &cap))) return 0;
     u32* t = (u32*)vk_stage(4ull * (n + rows), vk_stage_align(), &tb, &tat);

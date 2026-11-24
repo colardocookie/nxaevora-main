@@ -15,6 +15,7 @@
    draws after it read the next frame's slots there, and vertices flew to other characters. So the stream holds its
    releases until it stops, at its end or at a wait (vk_release_submit), when the commands after them have read guest
    memory, and the ones no GPU work holds are performed then. */
+#include <stdlib.h>
 #include <string.h>
 #include "common/utilities/common.h"
 #include "common/utilities/endian.h"
@@ -25,6 +26,9 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/tracy.h" /* tests/vulkan_release.c stubs vk.h */
+#include "nx/gpu/perf_times.h"
+#include "nx/gpu/perf_sample.h"
+#include "nx/memory/own.h"
 
 typedef struct {
     u64 gate;  /* the graphics submit whose completion it waits for */
@@ -120,16 +124,37 @@ static void rix_track(Release* r, u64 seq, int delta) {
     }
 }
 
+/* gmem_write's three steps, each timed (PERF-32's split, research 04:3x): the same calls in the same order */
+static void write_timed(u64 gva, const void* src, u64 size) {
+    if (!size) return;
+    const u64 t0 = plat_ns();
+    gmem_before_write(gva, size);
+    const u64 t1 = plat_ns();
+    gmem_write_raw(gva, src, size);
+    const u64 t2 = plat_ns();
+    gpu_mem_written(gva, size);
+    const u64 t3 = plat_ns();
+    perf_wait_note(PW_HOOKS, NULL, t1 - t0);
+    perf_wait_note(PW_COPY, NULL, t2 - t1);
+    perf_wait_note(PW_WRITTEN, NULL, t3 - t2);
+}
 static void perform(Release* r) {
     if (r->samples) { /* the count, as the report's structure size says: one word, or the value and the timestamp */
+        const int timed = g_perf_probes;
+        const u64 q0 = timed ? plat_ns() : 0;
         u64 v = vk_query_value(r->qch, r->qfirst, r->qend);
+        if (timed) perf_wait_note(PW_QUERY, NULL, plat_ns() - q0);
         if (r->len == 4)
             snx_st_le32(r->data, (u32)v);
         else
             snx_st_le64(r->data, v);
     }
     vk_result_begin();
-    if (r->gva)
+    /* PERF-33: a release with gate 0 (nothing pending) was never registered, release() registers gated ones only */
+    if (r->gva && r->gate && g_perf_probes) perf_sub_landed(&g_perf, r->gate, plat_ns());
+    if (r->gva && g_perf_probes)
+        write_timed(r->gva, r->data, r->len);
+    else if (r->gva)
         gmem_write(r->gva, r->data, r->len);
     else
         syncpt_add_quiet(r->id, 1); /* under vk_lock: the events it reaches are signaled as it is let go */
@@ -138,14 +163,35 @@ static void perform(Release* r) {
 void vk_release_events(void) { syncpt_events(); }
 /* lands the results of every submit up to gate and compute batch up to cgate (they have finished) and performs the
    releases they gate, in order */
+static _Thread_local int t_release_thread; /* SNX_ARCEUS_PERF_TIMES times this thread's holds only */
+/* PERF-36G: the hold's phase for a GPU-thread wait that begins in it, with the probes only. Returns the one before */
+static int hold_phase(int phase) {
+    const int was = __atomic_load_n(&g_vk_hold_phase, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_vk_hold_phase, phase, __ATOMIC_RELAXED);
+    return was;
+}
 static void release_through(u64 gate, u64 cgate) {
+    const u64 lock0 = g_perf_times && t_release_thread ? plat_ns() : 0; /* and its wait for vk_lock (PERF-14) */
     vk_lock();
+    const int phase0 = g_perf_probes ? hold_phase(VKH_COMPUTE) : 0;
+    if (g_perf_probes) { /* PERF-36G: would PERF-36's pick find ownership active (its fallback) */
+        __atomic_fetch_add(&g_perf_vkx.holds, 1, __ATOMIC_RELAXED);
+        if (__atomic_load_n(&g_own_any, __ATOMIC_ACQUIRE))
+            __atomic_fetch_add(&g_perf_vkx.holds_owned, 1, __ATOMIC_RELAXED);
+    }
+    const u64 held = lock0 ? plat_ns() : 0;
+    const u64 outputs0 = held ? __atomic_load_n(&g_perf.wb_total, __ATOMIC_RELAXED) : 0;
     vk_result_begin();
     vk_compute_land_through(cgate);
+    const u64 compute = held ? plat_ns() : 0; /* PERF-27: the hold by part */
+    if (g_perf_probes) hold_phase(VKH_GRAPHICS);
     vk_land_through(gate);
+    const u64 graphics = held ? plat_ns() : 0;
     vk_result_end();
+    if (g_perf_probes) hold_phase(VKH_RELEASES);
     for (;;) {
         Release r;
+        u64 r0 = held && g_perf_probes ? plat_ns() : 0, own = 0; /* PERF-29: a release's queue work and its own */
         pm_lock(&g_rlock);
         if (g_rtail == g_rheld || g_rq[g_rtail % RQ_N].gate > gate || g_rq[g_rtail % RQ_N].cgate > cgate) {
             pm_unlock(&g_rlock);
@@ -158,28 +204,64 @@ static void release_through(u64 gate, u64 cgate) {
         if (r.gva) pend_add(&g_rpages, r.gva, r.len, -1);
         if (!r.gva) {
             /* release_value sees the transfer from queued to completed atomically. */
+            const u64 p0 = r0 ? plat_ns() : 0;
             perform(&r);
+            if (r0) own = plat_ns() - p0;
             if (r.id < SYNC_N) g_rincr[r.id]--;
+            if (g_perf_times) perf_tail_performed(&g_perf, g_rtail - 1, plat_ns());
         }
         if (g_rtail == g_rhead) __atomic_store_n(&g_gpu_releases, 0, __ATOMIC_RELEASE);
         pm_unlock(&g_rlock);
+        const u64 r1 = r0 ? plat_ns() : 0;
         if (r.gva) perform(&r);
+        if (r0) {
+            if (r.gva) own = plat_ns() - r1;
+            perf_release_add(&g_perf_p29, !r.gva ? PRL_SYNC : r.samples ? PRL_SAMPLES : PRL_PAYLOAD, own,
+                             r1 - r0 - (r.gva ? 0 : own));
+        }
     }
+    if (held) {
+        const u64 end = plat_ns(), outputs = __atomic_load_n(&g_perf.wb_total, __ATOMIC_RELAXED) - outputs0;
+        perf_caps_hold(&g_perf_caps, compute - held, graphics - compute, end - graphics);
+        perf_time_add(&g_perf, PT_RELEASE_HOLD, end - held);
+        perf_time_add(&g_perf, PT_REL_LOCK_ALL, held - lock0);
+        perf_rel_interval(&g_perf, REL_LOCK, lock0, held, 0);
+        perf_rel_interval(&g_perf, REL_HOLD, held, end, outputs); /* the outputs landed under this hold */
+    }
+    if (g_perf_probes) hold_phase(phase0); /* a nested hold gives back its caller's */
     vk_unlock();
+    if (g_perf_times) perf_tail_freed(&g_perf, plat_ns());
 }
+int vk_release_pages_hit(u64 gva, u64 len) { return len && pend_hit(&g_rpages, gva, len); } /* PERF-37 */
 static void release_thread(void* p) {
     (void)p;
     SNX_THREAD_NAME("Vulkan release");
+    t_release_thread = 1;
+    if (g_perf_times) g_perf_release_thread = 1; /* PERF-27: buffer.c's landings, told apart by thread */
     for (;;) {
         u64 gate, cgate;
         pm_lock(&g_rlock);
-        while (g_rtail == g_rheld) pc_wait(&g_rcv, &g_rlock, -1);
+        while (g_rtail == g_rheld) {
+            pc_wait(&g_rcv, &g_rlock, -1);
+            if (g_perf_probes) /* woken with something let go, or for nothing (research 12:38) */
+                __atomic_fetch_add(g_rtail != g_rheld ? &g_perf_handoff.rwait_work : &g_perf_handoff.rwait_idle, 1,
+                                   __ATOMIC_RELAXED);
+        }
         gate = g_rq[g_rtail % RQ_N].gate;
         cgate = g_rq[g_rtail % RQ_N].cgate;
         pm_unlock(&g_rlock);
         SNX_ZONE(z_release, "vk release");
+        perf_thread_sample(PTH_RELEASE); /* PERF-31, with SNX_ARCEUS_PERF_PROBES */
+        const u64 wait0 = g_perf_times ? plat_ns() : 0;
         vk_wait_submit(gate);
+        if (g_perf_times) {
+            const u64 now = plat_ns();
+            perf_rel_interval(&g_perf, REL_GPU, wait0, now, 0); /* before tail_done, which reads it */
+            perf_tail_done(&g_perf, gate, now);
+        }
+        const u64 cwait0 = g_perf_times ? plat_ns() : 0;
         vk_compute_wait(cgate);
+        if (g_perf_times) perf_rel_interval(&g_perf, REL_GPU, cwait0, plat_ns(), 0);
         {
             SNX_ZONE(z, "land and release");
             release_through(gate, cgate);
@@ -190,9 +272,19 @@ static void release_thread(void* p) {
 
 /* the submit gate names, recorded still: submitted now, so waiting for it ends (vk_lock) */
 static void submit_through(u64 gate) {
-    if (gate > vk_last_submit()) vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
+    if (gate > vk_last_submit()) {
+        perf_submit_why(SW_RELEASE);
+        vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
+    }
 }
 /* r once everything recorded before it has landed and the stream has stopped (g_rheld) */
+/* PERF-33 (research 05:16): the one place a result is queued for the release thread, sub the submission it is
+   recorded in. Every producer calls it where it queues one, under vk_lock, testing the switch first. The count
+   reads it, and a later gate of the increment will, not a list of kinds. A landing never registered is counted */
+void vk_release_result(u64 sub, int kind) {
+    perf_sub_carry(&g_perf, sub, kind);
+    perf_handoff_result(&g_perf_handoff, kind, g_vk_drawn); /* its place among the frame's draws (research 08:52) */
+}
 static void release(Release* r) {
     SNX_ZONE_V(z, "vk release queue", r->samples);
     vk_lock();
@@ -229,7 +321,15 @@ static void release(Release* r) {
         if (r->gate < prev->gate) r->gate = prev->gate;
         if (r->cgate < prev->cgate) r->cgate = prev->cgate;
     }
+    if (g_perf_probes && r->gva && r->gate) vk_release_result(r->gate, r->samples ? PCY_SAMPLES : PCY_PAYLOAD);
     if (r->gva) rix_track(r, g_rhead, 1);
+    /* SNX_ARCEUS_PERF_TIMES: a present's increment starts its tail, under g_rlock so its perform comes after */
+    if (!r->gva && g_perf_times && gpu_on_gpu_thread() && perf_tail_take(&g_perf)) {
+        u64 submitted, done;
+        vk_submit_progress(&submitted, &done);
+        perf_count(&g_perf, PC_REL_DEPTH, g_rhead - g_rtail); /* queued and not yet performed */
+        perf_tail_queued(&g_perf, g_rhead, r->gate, submitted, done, plat_ns());
+    }
     g_rq[g_rhead % RQ_N] = *r;
     g_rhead++;
     if (r->gva) pend_add(&g_rpages, r->gva, r->len, 1);
@@ -315,6 +415,96 @@ static int release_overlaps(const Release* r, u64 gva, u64 len) {
     }
     return 0;
 }
+/* SNX_ARCEUS_PERF_STORAGE, on by default (=0 off): the queue walks below translate the range they look for once,
+   not once for each queued release, and release_match stops at the latest match. They find the same releases */
+static int g_perf_storage_walk = -1;
+static int perf_storage_walk(void) {
+    if (g_perf_storage_walk < 0) {
+        const char* v = getenv("SNX_ARCEUS_PERF_STORAGE");
+        g_perf_storage_walk = perf_level(v, 1, 1);
+        if (g_perf_storage_walk) LOG("vulkan: SNX_ARCEUS_PERF_STORAGE: release queue walks translate their range once\n");
+    }
+    return g_perf_storage_walk;
+}
+/* [gva, gva + len)'s guest memory, page by page as release_overlaps translates it, its contiguous pages merged: more
+   runs than it holds leaves all set, and the walk then takes release_overlaps itself */
+#define QUERY_RUNS 16
+typedef struct {
+    u64 gva, len;
+    u32 n;
+    int all;
+    struct {
+        u64 cpu, n;
+    } run[QUERY_RUNS];
+} QueryRuns;
+static void query_runs(u64 gva, u64 len, QueryRuns* q) {
+    q->gva = gva;
+    q->len = len;
+    q->n = 0;
+    q->all = 0;
+    for (u64 off = 0; off < len;) {
+        u64 b = gva + off, other = gmmu_translate(b), span = 4096 - (b & 4095);
+        if (span > len - off) span = len - off;
+        if (other) {
+            if (q->n && q->run[q->n - 1].cpu + q->run[q->n - 1].n == other)
+                q->run[q->n - 1].n += span;
+            else if (q->n == QUERY_RUNS) {
+                q->all = 1;
+                return;
+            } else {
+                q->run[q->n].cpu = other;
+                q->run[q->n].n = span;
+                q->n++;
+            }
+        }
+        off += span;
+    }
+}
+/* release_overlaps(r, q->gva, q->len), with the range's pages translated already */
+static int release_overlaps_runs(const Release* r, const QueryRuns* q) {
+    u64 gva = q->gva, len = q->len;
+    if (q->all) return release_overlaps(r, gva, len);
+    if (!r->gva || !r->len || !len) return 0;
+    if (gva >= r->gva ? gva - r->gva < r->len : r->gva - gva < len) return 1;
+    for (u32 at = 0; at < r->len;) {
+        u64 a = r->gva + at, cpu = gmmu_translate(a);
+        u32 n = 4096 - (u32)(a & 4095);
+        if (n > r->len - at) n = r->len - at;
+        for (u32 k = 0; cpu && k < q->n; k++) {
+            u64 other = q->run[k].cpu, span = q->run[k].n;
+            if (other >= cpu ? other - cpu < n : cpu - other < span) return 1;
+        }
+        at += n;
+    }
+    return 0;
+}
+/* the latest queued release over [gva, gva + len), or of syncpoint id when len is 0, or the latest at all: its gate and
+   cgate, 0 when none. With g_rlock held */
+static int release_find(u64 gva, u64 len, u32 id, int all, u64* gate, u64* cgate) {
+    int found = 0;
+    for (u64 i = g_rtail; i < g_rhead; i++) {
+        const Release* r = &g_rq[i % RQ_N];
+        if (all || (len ? release_overlaps(r, gva, len) : !r->gva && r->id == id)) {
+            *gate = r->gate;
+            *cgate = r->cgate;
+            found = 1;
+        }
+    }
+    return found;
+}
+static int release_find_runs(u64 gva, u64 len, u32 id, int all, u64* gate, u64* cgate) {
+    QueryRuns q;
+    if (len && !all) query_runs(gva, len, &q);
+    for (u64 i = g_rhead; i-- > g_rtail;) {
+        const Release* r = &g_rq[i % RQ_N];
+        if (all || (len ? release_overlaps_runs(r, &q) : !r->gva && r->id == id)) {
+            *gate = r->gate;
+            *cgate = r->cgate;
+            return 1;
+        }
+    }
+    return 0;
+}
 /* Drain through the latest matching release. Gates are monotonic prefix maxima. */
 static void release_match(u64 gva, u64 len, u32 id, int all) {
     u64 gate = 0, cgate = 0;
@@ -328,14 +518,8 @@ static void release_match(u64 gva, u64 len, u32 id, int all) {
     pm_lock(&g_rlock);
     g_rheld = g_rhead; /* needed now: the stream holds them no longer */
     if (g_rthread) pc_broadcast(&g_rcv);
-    for (u64 i = g_rtail; i < g_rhead; i++) {
-        const Release* r = &g_rq[i % RQ_N];
-        if (all || (len ? release_overlaps(r, gva, len) : !r->gva && r->id == id)) {
-            gate = r->gate;
-            cgate = r->cgate;
-            found = 1;
-        }
-    }
+    found = perf_storage_walk() ? release_find_runs(gva, len, id, all, &gate, &cgate)
+                                : release_find(gva, len, id, all, &gate, &cgate);
     pm_unlock(&g_rlock);
     if (found) {
         submit_through(gate);
@@ -344,6 +528,29 @@ static void release_match(u64 gva, u64 len, u32 id, int all) {
         release_through(gate, cgate);
     }
     vk_unlock();
+}
+/* whether the queued releases over [gva, gva + len) can be read past: 1, 0 when none is there, -1 when one can't. With
+   g_rlock held */
+static int release_read_state(u64 gva, u64 len) {
+    int r = 0;
+    for (u64 i = g_rtail; i < g_rhead && r >= 0; i++) {
+        const Release* q = &g_rq[i % RQ_N];
+        if (!release_overlaps(q, gva, len)) continue;
+        /* a count the GPU hasn't given yet, or the same memory through another address: not known here */
+        r = !q->samples && gva < q->gva + q->len && q->gva < gva + len && len <= 0x10000 ? 1 : -1;
+    }
+    return r;
+}
+static int release_read_runs(u64 gva, u64 len) {
+    QueryRuns runs;
+    int r = 0;
+    query_runs(gva, len, &runs);
+    for (u64 i = g_rtail; i < g_rhead && r >= 0; i++) {
+        const Release* q = &g_rq[i % RQ_N];
+        if (!release_overlaps_runs(q, &runs)) continue;
+        r = !q->samples && gva < q->gva + q->len && q->gva < gva + len && len <= 0x10000 ? 1 : -1;
+    }
+    return r;
 }
 /* [gva, gva + len) as the stream sees it: memory, then the payloads of the releases queued over it in their order (1),
    or 0 when none is queued there, or -1 when one there can't be read past now. Under vk_lock, which release_through
@@ -360,12 +567,7 @@ int vk_release_read(u64 gva, void* dst, u64 len) {
         return 0;
     }
     pm_lock(&g_rlock);
-    for (u64 i = g_rtail; i < g_rhead && r >= 0; i++) {
-        const Release* q = &g_rq[i % RQ_N];
-        if (!release_overlaps(q, gva, len)) continue;
-        /* a count the GPU hasn't given yet, or the same memory through another address: not known here */
-        r = !q->samples && gva < q->gva + q->len && q->gva < gva + len && len <= 0x10000 ? 1 : -1;
-    }
+    r = perf_storage_walk() ? release_read_runs(gva, len) : release_read_state(gva, len);
     pm_unlock(&g_rlock);
     if (r > 0 && (vk_compute_pending(gva, len) || vk_buf_pending(gva, len) || vk_gfx_image_pending(gva, len))) r = -1;
     if (r > 0) {

@@ -12,6 +12,7 @@ void pm_wait_note(const void* m, const void* at, int cond) {
     (void)at;
     (void)cond;
 }
+const PmWaitHook* g_pm_hook; /* host.c's */
 void crash_report(void* host_pc, void* fault, int sig) {
     (void)host_pc;
     (void)fault;
@@ -74,8 +75,40 @@ static void parent(void* p) {
     if (plat_thread(child, NULL, 0)) fatal("plat_thread failed\n");
 }
 
+/* PERF-32's wait hook: with one set, a yield, a signal, a broadcast and a timed wait each tell it once, with their
+   caller, and with none set they tell nothing */
+static int noted[PMW_N];
+static const void* noted_at;
+static uint64_t hook_now(void) { return 1; }
+static void hook_note(int kind, const void* at, uint64_t ns) {
+    if (kind >= 0 && kind < PMW_N && ns == 0) noted[kind]++;
+    noted_at = at;
+}
+static void test_hook(void) {
+    static const PmWaitHook hook = {hook_now, hook_note};
+    PCond c;
+    PMutex m = {.l = PTHREAD_MUTEX_INITIALIZER};
+    pc_init(&c);
+    plat_yield();
+    pc_signal(&c); /* no hook yet: nothing noted */
+    CHECK(!noted[PMW_YIELD] && !noted[PMW_WAKE], "the hook unset noted %d yields, %d wakes", noted[PMW_YIELD],
+          noted[PMW_WAKE]);
+    g_pm_hook = &hook;
+    plat_yield();
+    CHECK(noted[PMW_YIELD] == 1 && noted_at, "a yield noted %d times", noted[PMW_YIELD]);
+    pc_signal(&c);
+    pc_broadcast(&c);
+    CHECK(noted[PMW_WAKE] == 2, "a signal and a broadcast noted %d wakes", noted[PMW_WAKE]);
+    pthread_mutex_lock(&m.l);
+    pc_wait(&c, &m, 1000000);
+    pthread_mutex_unlock(&m.l);
+    CHECK(noted[PMW_COND] == 1 && !noted[PMW_LOCK] && !noted[PMW_SLEEP], "a timed wait noted %d", noted[PMW_COND]);
+    g_pm_hook = NULL;
+}
+
 int main(void) {
     int ids[CPU_SETSIZE], n;
+    test_hook();
     g_nall = mine(g_all, CPU_SETSIZE);
     n = plat_cpus(ids, CPU_SETSIZE);
     CHECK(n == g_nall && !memcmp(ids, g_all, sizeof *ids * (size_t)(n > 0 ? n : 0)),

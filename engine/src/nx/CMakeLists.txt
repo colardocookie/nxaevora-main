@@ -64,7 +64,7 @@ target_link_libraries(snx_video PRIVATE FFmpeg::avcodec)
 # hwopus (hle/services/audio.c) decodes Opus with FFmpeg too; acc's user picture is a splash drawing (cmake/splash.cmake)
 include("${PROJECT_SOURCE_DIR}/cmake/splash.cmake")
 target_link_libraries(snx_hle PRIVATE FFmpeg::avcodec OpenSSL::SSL snx_splash)
-snx_component(gpu gpu/gpu.c gpu/maxwell/engines.c gpu/maxwell/mme.c gpu/maxwell/mme_hle.c gpu/maxwell/mme_jit.c gpu/maxwell/compute.c gpu/maxwell/fermi2d.c gpu/maxwell/dma.c gpu/maxwell/write_pages.c gpu/maxwell/maxwell3d.c gpu/renderer.c
+snx_component(gpu gpu/gpu.c gpu/perf_times.c gpu/frame_log.c gpu/maxwell/engines.c gpu/maxwell/mme.c gpu/maxwell/mme_hle.c gpu/maxwell/mme_jit.c gpu/maxwell/compute.c gpu/maxwell/fermi2d.c gpu/maxwell/dma.c gpu/maxwell/write_pages.c gpu/maxwell/maxwell3d.c gpu/renderer.c
               gpu/nvn/diag/nvn_trace.c gpu/nvn/diag/nvn_enum_trace.c gpu/nvn/nvn_native.c gpu/nvn/nvn_objtab.c gpu/nvn/nvn_cmdlist.c gpu/nvn/nvn_frame.c gpu/nvn/nvn_replay.c gpu/nvn/nvn_rt.c gpu/nvn/nvn_params.c gpu/nvn/diag/nvn_measure.c gpu/nvn/diag/nvn_measure_calc.c gpu/nvn/diag/draw_record.c gpu/nvn/diag/draw_record_sig.c gpu/nvn/test/nvn_selftest.c gpu/nvn/test/nvn_selftest_obj.c gpu/nvn/test/nvn_selftest_res.c gpu/nvn/test/nvn_selftest_cmp.c gpu/nvn/test/nvn_selftest_mem.c gpu/nvn/test/nvn_selftest_rec.c gpu/nvn/test/nvn_selftest_dec.c gpu/nvn/test/nvn_selftest_regdiff.c gpu/nvn/test/nvn_selftest_cmd.c gpu/nvn/test/nvn_selftest_cbstate.c gpu/nvn/test/nvn_exectest.c gpu/shipped_pass.c)
 # mme_jit.c compiles the macros mme_hle.c has no implementation for with the LLVM backend
 target_link_libraries(snx_gpu PRIVATE snx_llvm)
@@ -81,7 +81,7 @@ set(platform runtime/platform/plat.c runtime/platform/plat_sdl.c runtime/platfor
              runtime/platform/prepare_screen.c
              "${PROJECT_BINARY_DIR}/generated/controls_png.c")
 if(WIN32)
-    list(APPEND platform runtime/platform/plat_win32.c runtime/platform/profiler_win32.c)
+    list(APPEND platform runtime/platform/plat_win32.c runtime/platform/profiler_win32.c runtime/platform/profile_calc.c)
 else()
     list(APPEND platform runtime/platform/plat_posix.c)
 endif()
@@ -96,7 +96,7 @@ snx_component(shader gpu/shader/shader.c gpu/shader/decode.c gpu/shader/corpus.c
 # the opcode enum and decoder, generated from gpu/shader/maxwell_opcodes.def
 include("${PROJECT_SOURCE_DIR}/cmake/shaderdec.cmake")
 snx_shaderdec(snx_shader)
-snx_component(vk gpu/vk/renderer.c gpu/vk/device.c gpu/vk/cmd.c gpu/vk/record.c gpu/vk/format.c gpu/vk/surface.c gpu/vk/rt_group.c gpu/vk/texture.c
+snx_component(vk gpu/vk/landing.c gpu/vk/renderer.c gpu/vk/device.c gpu/vk/cmd.c gpu/vk/record.c gpu/vk/format.c gpu/vk/surface.c gpu/vk/rt_group.c gpu/vk/texture.c
                  gpu/vk/buffer.c gpu/vk/writeback.c gpu/vk/pipeline.c gpu/vk/pipeline_file.c gpu/vk/render.c gpu/vk/release.c gpu/vk/query.c gpu/vk/compute.c
                  gpu/vk/pending_pages.c gpu/vk/memory.c gpu/vk/renderdoc.c gpu/vk/astc.c gpu/vk/blocklinear.c gpu/vk/texconv.c gpu/vk/owned.c gpu/vk/nvdec.c gpu/vk/dma.c gpu/vk/blit.c gpu/vk/ui.c gpu/texture/blocklinear.c gpu/texture/depth.c gpu/vk/vic.c gpu/vk/vma.cpp gpu/vk/gpuprof.c
                  gpu/vk/ftz_probe.c gpu/vk/pass_guest.c gpu/vk/postfx.c gpu/vk/temporal.c gpu/vk/scene_scale.c gpu/vk/upscaler.c gpu/vk/upscaler_host.c gpu/vk/upscaler_module.c gpu/vk/upscaler_selftest.c gpu/vk/imgui.c gpu/vk/imgui_glue.cpp gpu/vk/imgui_style.cpp gpu/vk/imgui_input.c gpu/vk/imgui_text.c gpu/vk/imgui_events.cpp gpu/vk/imgui_ui.cpp gpu/vk/imgui_settings.c gpu/vk/debug_stats.c

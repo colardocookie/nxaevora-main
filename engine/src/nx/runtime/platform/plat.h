@@ -79,6 +79,10 @@ void plat_vm_decommit(u8* p, u64 size);    /* inaccessible again, and zero when 
    protection with PAGEMAP_SCAN, Windows the write watch of the reservation; SNX_NO_WW in the environment turns both
    off */
 int plat_ww_scan(u8* p, u64 size, void (*cb)(u8* p, u64 size));
+/* SNX_ARCEUS_PERF_PROBES (PERF-31): the calling thread's CPU time so far in the kernel and in user mode, in ns (0 and 0
+   where the host cannot tell), and the process's page faults so far */
+void plat_thread_cpu(u64* kernel_ns, u64* user_ns);
+u64 plat_page_faults(void);
 /* The alias pool: one host memory object whose pages can be mapped at several addresses of the reservation at once,
    and outside it, so two guest addresses (MapMemory's view and its source, code memory's owner and slave, shared
    memory and its service) are the same pages. Linux (a memfd); elsewhere plat_alias_init says -1 and
@@ -164,6 +168,8 @@ void plat_audio_volume(PAudio* a, float volume);
 /* ---- crash reports and profiling */
 void plat_install_crash_handler(void);
 void plat_prof_start(void); /* starts the sampling profiler (the profile option): Windows only */
+/* the calling thread's name in profile.txt, called only with the profile option on: Windows only */
+void plat_prof_label_self(const char* name);
 #if defined(_WIN32)
 void plat_prof_add_thread(HANDLE h); /* a thread to sample; the profiler keeps its own handle */
 #endif

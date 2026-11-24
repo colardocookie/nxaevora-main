@@ -10,6 +10,7 @@
 #include <string.h>
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/perf_times.h"
 #include "nx/memory/mem.h"
 #include "nx/memory/own.h"
 #include "nx/hle/services/nvdrv.h"
@@ -150,6 +151,7 @@ static void own_land(const OwnRange* r, u8* const* dst, u32 n) {
     SNX_ZONE_V(z, "vk own land", n);
     vk_lock();
     for (u32 k = 0; k < n; k++) cpu_read_note(r[k].addr, r[k].size);
+    perf_submit_why(SW_READBACK);
     vk_submit_for_readback();
     while (i < n) {
         Piece pc[64];
@@ -220,6 +222,7 @@ void vk_own_publish(u64 cpu, u64 size, VkOwnRes* r, u64 off) {
     if (!size) return;
     vk_rt_before_write_cpu(cpu, size);
     gpu_mem_written_cpu(cpu, size); /* what is built from the bytes (textures, buffers) takes the new ones */
+    if (g_perf_probes && g_owned.traps) __atomic_fetch_add(&g_perf_vkx.own_begin, 1, __ATOMIC_RELAXED); /* PERF-36G */
     if (g_owned.traps && !own_begin(cpu, size, r, off)) return;
     /* not trapped here: older owners of the bytes let go of them, and the result lands now */
     own_drop(cpu, size);

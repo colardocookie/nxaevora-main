@@ -712,15 +712,15 @@ type, range and help, tab-separated. Every setting, the recompiler's too, is des
 | `log` | `1` | Log detail. `2` logs everything, which adds runtime overhead |
 | `auto_stub_ipc` | `1` | A service command the runtime doesn't know answers success, logged as `[undeclared]`, and a service it doesn't have answers every command that way. `0` answers them with the console's UnknownCommandId instead, which shows the gap where the game makes the call |
 | `diag` | `0` | `1` saves the data of each new compute shader to `captures/compute`, and each new shader's snx-shaderc corpus entry to `captures/shaders`, for debugging |
-| `vk_validation` | `0` | `1` turns on the Vulkan validation layer (`VK_LAYER_KHRONOS_validation`, from the Vulkan SDK or the distribution's validation layers package), which logs each misuse of Vulkan it finds. It slows the game down a lot. Without the layer installed the run only warns |
+| `vk_validation` | `0` | `1` turns on the Vulkan validation layer (`VK_LAYER_KHRONOS_validation`, from the Vulkan SDK or the distribution's validation layers package), which logs each misuse of Vulkan it finds. It slows the game down a lot. Without the layer installed the run only warns. `SNX_ARCEUS_VK_VALIDATION=1` in the environment turns it on too |
 | `slp_vectorizer` | `0` | `1` runs LLVM's SLP vectorizer, which packs scalar instructions into SIMD ones, in the recompile and the JIT; the next recompile and the JIT's next run take it. Off while LLVM 23 can break a module with it and stop the recompile (llvm-project issue 231525). LLVM Internals' `llvm_slp_vectorization` leaves it running |
 | `fpsr_flags` | `1` | `1` keeps FPSR's cumulative flags (IOC, DZC, OFC, UFC, IXC and QC) as the console raises them, which costs every floating-point or saturating operation a test of its result. `0` keeps only the results exact; a game that never reads FPSR (few do) runs floating-point and saturating code faster. The next recompile and the JIT's next run take it |
 | `gdb_jit` | `0` | `1`, with the GDB stub (`-S` or `-s`), hands the code the JIT compiles to GDB ([GDB](#gdb-linux)). GDB stops the game for each compile while it is attached, and each compile's object stays in memory for the run |
-| `profile` | `0` | `1` writes `profile.txt` every 10 seconds. The CPU profiler is Windows only |
+| `profile` | `0` | `1` writes `profile.txt` every 10 seconds: for each thread of the last 10 seconds, its CPU time, its share in game code, runtime code, other host code (also summed by module) and system waits, and its top 80 functions. Each window is also kept as `profile-<seconds>.txt`. Both go beside the log, in the state folder. `SNX_ARCEUS_PROFILE=1` in the environment turns it on too. The CPU profiler is Windows only |
 | `nvn_trace` | `0` | `1` logs each NVN function the game resolves and, at exit, how often each was called ([DEVELOPMENT.md](DEVELOPMENT.md)). The game runs slower |
 | `shader_corpus` | empty | A folder that keeps each translated shader for `snx-shaderc`. With it every shader is translated, and none is kept for the next run |
 | `gpu_trace_target` | empty | `address[:bytes]`: logs the clears and draws that write a render target starting in that GPU address range |
-| `vk_gpu_profile` | `0` | `1` logs the GPU's time per rendering pass every 10 seconds |
+| `vk_gpu_profile` | `0` | `1` logs the GPU's time per rendering pass every 10 seconds. `SNX_ARCEUS_GPU_PROFILE=1` in the environment turns it on too |
 | `vk_buffer_stats` | `0` | `1` logs what the renderer copies between guest memory and its buffers |
 | `vk_record` | `1` | `0` records Vulkan commands on the GPU thread instead of a thread of their own |
 | `compute` | `1` | `0` skips every compute shader dispatch |
