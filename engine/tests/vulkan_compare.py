@@ -50,7 +50,6 @@ HEAD = r'''
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include <unistd.h>
 typedef uint64_t u64;
 typedef uint32_t u32;
 typedef uint8_t u8;
@@ -337,7 +336,7 @@ static void check_level2(void) {
    out_changed_runs' runs through the whole-size masked pass, 0 through the byte loop or without a host pointer */
 static ChgRun told[1 << 12];
 static u32 ntold;
-static void tell(void* ctx, u32 from, u32 n) {
+static void told_run(void* ctx, u32 from, u32 n) {
     (void)ctx;
     assert(ntold < sizeof told / sizeof *told);
     told[ntold++] = (ChgRun){from, from + n};
@@ -350,7 +349,7 @@ static void check_found(void) {
         const int unchanged = !memcmp(o->ptr, o->org, o->size), how = round % 4; /* 3: level 3 without AVX-512BW */
         g_perf_landing = how ? 3 : 0, g_landing_masked = how == 1 || how == 2, direct = how != 2;
         ntold = 0;
-        const int r = vk_write_changed_found(o->addr, o->ptr, o->org, o->size, tell, NULL);
+        const int r = vk_write_changed_found(o->addr, o->ptr, o->org, o->size, told_run, NULL);
         const u32 want = out_changed_runs(o); /* into g_chg, with nothing put there for o */
         if (unchanged)
             assert(r == 1 && !ntold && !want), cases[0]++;
@@ -593,7 +592,6 @@ static void check_abort(void) {
     g_perf_compare = 0;
 }
 int main(void) {
-    alarm(120); /* a mark never cleared hangs a landing: fail instead (reviewer N3) */
     check_level2();
     check_found();
     check_lost();
@@ -656,7 +654,8 @@ def main():
         subprocess.run([*cc, "-I", str(SRC), "-DSNX_LANDING_PORTABLE", "-Wall", "-Wno-unused-function", "-o",
                         str(exe), str(c),
                         str(SRC / "nx/gpu/vk/landing.c"), str(SRC / "nx/gpu/perf_times.c"), "-lpthread"], check=True)
-        return subprocess.run([str(exe)]).returncode
+        # A mark never cleared hangs a landing: fail after 120 s instead (reviewer N3), on Windows too.
+        return subprocess.run([str(exe)], timeout=120).returncode
 
 
 if __name__ == "__main__":
