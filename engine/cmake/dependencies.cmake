@@ -106,7 +106,6 @@ endif()
 # builds with its own Configure and make, which cmake/openssl.cmake runs
 # The archives' SHA-256 are also part of their cache keys (cmake/deps_cache.cmake)
 include("${PROJECT_SOURCE_DIR}/cmake/deps_cache.cmake")
-include("${PROJECT_SOURCE_DIR}/cmake/apple.cmake")
 if(SNX_BUILD_NX)
     set(snx_openssl_sha256 325b5c806167c13b40b1ffeadfe0248197c00eccc4cf123ec1e28d2d2fd216d9)
     CPMAddPackage(NAME OpenSSL VERSION 4.0.3
@@ -196,9 +195,7 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
         set(snx_tracy_options "TRACY_ENABLE ON" "TRACY_ON_DEMAND ON" "TRACY_NO_CRASH_HANDLER ON" "TRACY_STATIC ON"
                               "TRACY_MANUAL_LIFETIME ON" "TRACY_NO_CODE_TRANSFER ON" "TRACY_NO_FRAME_IMAGE ON"
                               "TRACY_NO_WAIT_STACKS ON" "TRACY_NO_VERIFY ON")
-        if(NOT ANDROID)
-            list(APPEND snx_tracy_options "TRACY_ONLY_LOCALHOST ON" "TRACY_NO_BROADCAST ON")
-        endif()
+        list(APPEND snx_tracy_options "TRACY_ONLY_LOCALHOST ON" "TRACY_NO_BROADCAST ON")
         CPMAddPackage(NAME tracy VERSION 0.14.1
                       URL https://github.com/wolfpld/tracy/archive/refs/tags/v0.14.1.tar.gz
                       URL_HASH SHA256=bf4af567e9c7524d07f3caa745fad02fb33bd5694f11910750382d1efbb251c1
@@ -254,19 +251,18 @@ if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) OR SNX_BUILD_GUI)
     endif()
 endif()
 
-# miniz (MIT) for the launcher's Share Log, the logs in one zip (src/gui/logzip.c): its one-file release, miniz.c,
-# built alone, without its stdio functions (the zip is made in memory and written as every file is, for Windows'
-# UTF-8 paths) and without zlib's names, which another library's zlib could share
-if(SNX_BUILD_GUI)
-    CPMAddPackage(NAME miniz VERSION 3.1.2
-                  URL https://github.com/richgel999/miniz/releases/download/3.1.2/miniz-3.1.2.zip
-                  URL_HASH SHA256=f0446d863f9c19926ad9483c523fdc42e42b8d4a6a431d27e09d49c79a140d9a
-                  DOWNLOAD_ONLY YES)
-    add_library(snx_miniz STATIC "${miniz_SOURCE_DIR}/miniz.c")
-    target_include_directories(snx_miniz SYSTEM PUBLIC "${miniz_SOURCE_DIR}")
-    target_compile_definitions(snx_miniz PUBLIC MINIZ_NO_STDIO MINIZ_NO_ZLIB_COMPATIBLE_NAMES)
-    snx_quiet(snx_miniz)
-endif()
+# miniz (MIT) for the logs zip (src/common/utilities/logzip.c), which the launcher's Share Log and the runtime's
+# `logs export` share: its one-file release, miniz.c, built alone, without its stdio functions (the zip is made in
+# memory and written as every file is, for Windows' UTF-8 paths) and without zlib's names, which another library's zlib
+# could share
+CPMAddPackage(NAME miniz VERSION 3.1.2
+              URL https://github.com/richgel999/miniz/releases/download/3.1.2/miniz-3.1.2.zip
+              URL_HASH SHA256=f0446d863f9c19926ad9483c523fdc42e42b8d4a6a431d27e09d49c79a140d9a
+              DOWNLOAD_ONLY YES)
+add_library(snx_miniz STATIC "${miniz_SOURCE_DIR}/miniz.c")
+target_include_directories(snx_miniz SYSTEM PUBLIC "${miniz_SOURCE_DIR}")
+target_compile_definitions(snx_miniz PUBLIC MINIZ_NO_STDIO MINIZ_NO_ZLIB_COMPATIBLE_NAMES)
+snx_quiet(snx_miniz)
 
 # The boot splash's drawings are SVGs, drawn at the splash's size by lunasvg (MIT) on plutovg (MIT; its rasterizer and
 # stroker come from FreeType, under the FreeType License, source/FTL.TXT). cmake/splash.cmake builds both. The runtime

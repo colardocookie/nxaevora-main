@@ -2,7 +2,7 @@
 <!-- Copyright 2026 the ScarletNX contributors -->
 # NRO implementation notes
 
-ScarletNX already parsed NRO files and staged optional embedded RomFS data through
+NXAevora Engine already parsed NRO files and staged optional embedded RomFS data through
 `-r`. Direct positional NRO input now bypasses container extraction and goes
 straight to recompilation and launch. It always recompiles rather than trusting a
 same-stem executable left by another input. The existing mixed NSO/NRO data-cache
@@ -18,7 +18,7 @@ Atmosphère is the only external implementation reference for these changes, pin
 - [`ValidateNro` in `ro_service_impl.cpp`](https://github.com/Atmosphere-NX/Atmosphere/blob/c7e6c35e900b52c364d557bdbfe554c857158d97/stratosphere/ro/source/impl/ro_service_impl.cpp)
   checks the segment order and contiguous uncompressed layout.
 
-The implementation is written for ScarletNX's existing C loaders. No Atmosphère
+The implementation is written for NXAevora Engine's existing C loaders. No Atmosphère
 source files are vendored.
 
 ## Validation and limits
@@ -34,7 +34,7 @@ mapping padding. An NRO descriptor selects `exefs/main.nro` or `main.nro`, so an
 NSO named `main` cannot shadow it. As with the existing NSO check, the build ID is not
 a cryptographic comparison of every instruction.
 
-Unlike Atmosphère's on-device registration service, ScarletNX retains support for
+Unlike Atmosphère's on-device registration service, NXAevora Engine retains support for
 byte-packed synthetic fixtures rather than requiring page-aligned section sizes.
 It does not implement NRR authorization, compressed NRO decompression, dynamic NRO
 registration or a new homebrew-loader startup ABI in this change. Existing ASET

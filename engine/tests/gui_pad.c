@@ -71,11 +71,7 @@ int main(void) {
     assert(key_of(SNX_PAD_WEST, SWITCH) == SDLK_R && key_of(SNX_PAD_NORTH, SWITCH) == SDLK_DELETE);
     assert(key_of(SNX_PAD_WEST, PS) == SDLK_DELETE && key_of(SNX_PAD_NORTH, PS) == SDLK_R);
     assert(key_of(SNX_PAD_WEST, NONE) == SDLK_DELETE && key_of(SNX_PAD_NORTH, NONE) == SDLK_R);
-#ifdef SDL_PLATFORM_ANDROID
-    assert(key_of(SNX_PAD_START, XBOX) == SDLK_F5 && key_of(SNX_PAD_BACK, XBOX) == SDLK_ESCAPE);
-#else
     assert(key_of(SNX_PAD_START, XBOX) == SDLK_F5 && key_of(SNX_PAD_BACK, XBOX) == SDLK_F1);
-#endif
     /* the foot's keys as the pad names them: the letters of a PlayStation pad its shapes, in the keys alone */
     {
         static const char said[] = "D-pad: move. A: select. ~X/Y: A or B. LT/RT: page. B: back.";

@@ -14,7 +14,6 @@ trim = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(trim)
 
 H1, H2 = 'a' * 64, 'b' * 64
-NDK = '/usr/local/lib/android/sdk/ndk/28.2.13676358'
 failures = []
 
 
@@ -25,9 +24,6 @@ def check(what, got, want):
 
 for key, want in [
     ('ccache-linux-x86_64-38789058950-1', 'ccache-linux-x86_64'),
-    ('ccache-android-arm64-v8a-38786187285-2', 'ccache-android-arm64-v8a'),
-    (f'cpm-android-arm64-v8a-{H1}', 'cpm-android-arm64-v8a'),
-    (f'android-llvm-x86_64-{H1}-{NDK}', 'android-llvm-x86_64'),
     (f'msys2-pkgs-upd:true-conf:b326d718-files:{H1}', 'msys2-pkgs-upd:true-conf:b326d718'),
     # one entry per object (sccache): nothing to tell its family from, so it stays
     (f'sccache/e/a/d/{H1}', f'sccache/e/a/d/{H1}'),
@@ -58,7 +54,6 @@ caches = {
     # the dependencies changed back: the older entry is the one runs read now
     'cpm read now': cache(MAIN, f'cpm-linux-{H1}', '2026-10-15T09:00:00Z', '2026-10-01T00:00:00Z'),
     'cpm left': cache(MAIN, f'cpm-linux-{H2}', '2026-10-10T00:00:00Z'),
-    'llvm': cache(MAIN, f'android-llvm-x86_64-{H1}-{NDK}', '2026-10-15T08:00:00Z'),
     'msys2 old files': cache(MAIN, f'msys2-pkgs-upd:true-conf:b326d718-files:{H1}', '2026-10-13T00:00:00Z'),
     'msys2 new files': cache(MAIN, f'msys2-pkgs-upd:true-conf:b326d718-files:{H2}', '2026-10-15T00:00:00Z'),
     'msys2 other conf': cache(MAIN, f'msys2-pkgs-upd:true-conf:855f2908-files:{H1}', '2026-10-12T00:00:00Z'),
@@ -102,7 +97,7 @@ check("why for a tag's", got.get('tag'), "a tag's")
 check('why for a replaced entry', got.get('old ccache'), 'replaced by ccache-linux-x86_64-200-1')
 check('nothing deleted twice', len(doomed), len(got))
 # a listing of nothing but main's newest entries leaves them all
-newest = [caches[name] for name in ('new ccache', 'aarch64 ccache', 'cpm read now', 'llvm', 'msys2 new files')]
+newest = [caches[name] for name in ('new ccache', 'aarch64 ccache', 'cpm read now', 'msys2 new files')]
 check('newest entries kept', trim.plan(newest, set(), {'main'}), [])
 
 for failure in failures:

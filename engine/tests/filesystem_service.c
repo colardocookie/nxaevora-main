@@ -47,9 +47,14 @@ void mem_query(u64 addr, MemBlock* out) {
 }
 char g_datadir[1024], g_exename[256], g_exedir[1024], g_confdir[1024], g_addondir[1024], g_gamename[256];
 u64 g_addon;
+/* the platform's clock, which fs.c's Discord presence hook reads when its flag is on: a fixed time is enough here */
+u64 plat_ns(void) { return 1000000000ull; }
+SnxDrpFiles g_drp_files = {-1, 0, 0, 0}; /* discord_presence.c's, which this test does not link */
+int g_drp_packs;
 const u64 g_user_id[2] = {0x0123456789ABCDEFull, 0xFEDCBA9876543210ull}; /* am.c's: the first user */
 static jmp_buf* test_fatal_jump;                                   /* a fatal() the test waits for comes back here */
 static char test_fatal_text[1024];
+static int test_game_files; /* the last fatal was fatal_game_files: its exit is 3 */
 static unsigned test_checks, test_scans, test_objects;
 static int test_scans_allowed = 1;
 
@@ -182,17 +187,30 @@ void logf_(int level, const char* format, ...) {
 }
 /* options.c's: the game's settings, where the runtime read them */
 const char* ini_file(void) { return "config/Game.ini"; }
-void fatal(const char* format, ...) {
-    va_list args;
-    va_start(args, format);
+static void test_fatal(const char* format, va_list args, int game_files) __attribute__((noreturn));
+static void test_fatal(const char* format, va_list args, int game_files) {
+    test_game_files = game_files;
     if (test_fatal_jump) {
         vsnprintf(test_fatal_text, sizeof test_fatal_text, format, args);
-        va_end(args);
         longjmp(*test_fatal_jump, 1);
     }
     vfprintf(stderr, format, args);
-    va_end(args);
     exit(1);
+}
+void fatal(const char* format, ...) {
+    va_list args;
+    va_start(args, format);
+    test_fatal(format, args, 0);
+}
+void fatal_game_files(const char* format, ...) {
+    va_list args;
+    va_start(args, format);
+    test_fatal(format, args, 1);
+}
+void fatal_internal(const char* format, ...) {
+    va_list args;
+    va_start(args, format);
+    test_fatal(format, args, 2); /* 2: inside the runtime, which is not the game's files */
 }
 void frontend_frame(void) {}
 
@@ -1818,9 +1836,80 @@ static void test_rhash(void) {
     CHECK(rhash(0x18, "Data") == 0x0418D017u);
     CHECK(rhash(0, "\xC3\xA9") == 0x5D41D65Cu);
 }
+/* Discord presence's region and battle kind (research 18:25, 19:35): rfile_read notes a region's pack and a kind
+   file only while g_drp_packs is set, at each of the game's reads (logged is once a run), never at the runtime's quiet
+   ones, and reads the same either way */
+static void test_discord_pack(void) {
+    static u8 data[8] = {'g', 'f', 'p', 'a', 'k', 1, 2, 3};
+    FsNode node;
+    memset(&node, 0, sizeof node);
+    node.name = (char*)"ha_area03.gfpak";
+    node.size = sizeof data;
+    node.is_virtual = node.attached = 1;
+    node.virtual_data = data;
+    node.fd = -1;
+    RFile rf;
+    memset(&rf, 0, sizeof rf);
+    rf.node = &node;
+    rf.size = sizeof data;
+    u8 got[8];
+    g_drp_files.region = -1;
+    g_drp_packs = 0;
+    CHECK(!rfile_read(&rf, 0, got, 8, 0) && !memcmp(got, data, 8) && g_drp_files.region == -1 && rf.logged);
+    g_drp_packs = 1;
+    CHECK(!rfile_read(&rf, 2, got, 4, 1) && !memcmp(got, data + 2, 4) && g_drp_files.region == -1);
+    CHECK(!rfile_read(&rf, 0, got, 8, 0) && !memcmp(got, data, 8) && g_drp_files.region == 3);
+    node.name = (char*)"ha_terrain.bnsh";
+    CHECK(!rfile_read(&rf, 0, got, 8, 0) && g_drp_files.region == 3);
+    node.name = (char*)"ha_area00.gfpak";
+    g_drp_packs = 0;
+    CHECK(!rfile_read(&rf, 0, got, 8, 0) && g_drp_files.region == 3);
+    g_drp_packs = 1;
+    CHECK(!rfile_read(&rf, 0, got, 8, 0) && g_drp_files.region == 0 && !g_drp_files.kinds);
+    node.name = (char*)"cmn_battle_start_ns.wbin";
+    g_drp_packs = 0;
+    CHECK(!rfile_read(&rf, 0, got, 8, 0) && !memcmp(got, data, 8) && !g_drp_files.kinds);
+    g_drp_packs = 1;
+    CHECK(!rfile_read(&rf, 0, got, 8, 1) && !g_drp_files.kinds);
+    CHECK(!rfile_read(&rf, 0, got, 8, 0) && !memcmp(got, data, 8) && g_drp_files.kinds == 2 && g_drp_files.region == 0);
+    node.name = (char*)"trdata_trainer03_19.bin";
+    CHECK(!rfile_read(&rf, 0, got, 8, 0) && g_drp_files.kinds == 3);
+    /* a noble fight: the bank starts it, the next scene ends it, and nothing with the flag off */
+    node.name = (char*)"PM_N_900.bnk";
+    g_drp_packs = 0;
+    CHECK(!rfile_read(&rf, 0, got, 8, 0) && !g_drp_files.noble);
+    g_drp_packs = 1;
+    CHECK(!rfile_read(&rf, 0, got, 8, 0) && !memcmp(got, data, 8) && g_drp_files.noble == (SNX_DRP_NOBLE_ON | 900));
+    node.name = (char*)"d170.bseq";
+    CHECK(!rfile_read(&rf, 0, got, 8, 1) && g_drp_files.noble == (SNX_DRP_NOBLE_ON | 900));
+    CHECK(!rfile_read(&rf, 0, got, 8, 0) && !g_drp_files.noble);
+    /* a lost fight's script ends it too, an arena's sub-area pack does not (research 22:05, 22:15) */
+    node.name = (char*)"PM_N_493.bnk";
+    CHECK(!rfile_read(&rf, 0, got, 8, 0) && g_drp_files.noble == (SNX_DRP_NOBLE_ON | 493));
+    node.name = (char*)"ha_area04_s04.gfpak";
+    CHECK(!rfile_read(&rf, 0, got, 8, 0) && g_drp_files.noble == (SNX_DRP_NOBLE_ON | 493));
+    node.name = (char*)"gameoverpre.blua";
+    g_drp_packs = 3; /* the probe's one line for this open */
+    CHECK(!rfile_read(&rf, 0, got, 8, 0) && !g_drp_files.noble);
+    g_drp_packs = 0;
+    g_drp_files.region = -1;
+    g_drp_files.kinds = 0;
+}
+/* fs.c's exit code for a failure to index a part of the game's files: out of memory is the host's (1), every other
+   failure status is the game's files (3), as the table in exit_codes.h says */
+static void test_tree_exit_code(void) {
+    static const FsTreeResult failures[] = {FS_TREE_NOTFOUND, FS_TREE_EXISTS, FS_TREE_NOTEMPTY, FS_TREE_INVALID,
+                                            FS_TREE_TOOLONG, FS_TREE_IO, FS_TREE_READONLY, FS_TREE_NOTDELETABLE,
+                                            FS_TREE_NOTRENAMABLE};
+    size_t i;
+    CHECK(tree_exit_code(FS_TREE_NOMEM) == 1);
+    for (i = 0; i < sizeof failures / sizeof failures[0]; i++) CHECK(tree_exit_code(failures[i]) == 3);
+}
 int main(int argc, char** argv) {
     hle_init();
     test_rhash();
+    test_discord_pack();
+    test_tree_exit_code();
     g_hle.kernel.title_id = 0x0100000000010000ull; /* the title the test was written for */
     CHECK((argc == 3 || argc == 4) && strstr(argv[1], "scarletnx-fs-tree-") != NULL);
     CHECK(!test_chdir(argv[1]));
@@ -1866,6 +1955,7 @@ int main(int argc, char** argv) {
         }
         test_fatal_jump = NULL;
         CHECK(strstr(test_fatal_text, "has no exefs/") != NULL && strstr(test_fatal_text, "-r") != NULL);
+        CHECK(test_game_files == 1);
         CHECK(strstr(test_log_text, "fs: source=noexefs-data/Game.nsp") != NULL);
         cleanup_service();
         free(g_mem);
@@ -1892,6 +1982,7 @@ int main(int argc, char** argv) {
         test_fatal_jump = NULL;
         CHECK(strstr(test_fatal_text, g_addondir) != NULL && strstr(test_fatal_text, "has no exefs/") != NULL &&
               strstr(test_fatal_text, "-r") != NULL);
+        CHECK(test_game_files == 1);
         cleanup_service();
         free(g_mem);
         printf("PASS %u checks: an update's data folder without exefs/ stops the game\n", test_checks);
@@ -1934,6 +2025,7 @@ int main(int argc, char** argv) {
             }
             free(said);
             CHECK(test_fatal_text[0] && !strstr(test_fatal_text, romfs));
+            CHECK(test_game_files == 1);
             cleanup_service();
             free(g_mem);
             free(romfs);

@@ -16,8 +16,7 @@ extern const SnxVariants* g_variants;
    program's own path */
 extern int (*snx_menu)(const char* self);
 /* the launcher's loading look (gui/theme.h's gui_run_theme), for the runtime's own loading screen: NULL in a runtime
-   built without the menu, which keeps the YoRHa theme's built in. Android's is one (src/nx/CMakeLists.txt: the
-   launcher is the app's own library there), so its screen is YoRHa's whatever theme the launcher shows */
+   built without the menu, which keeps the YoRHa theme's built in */
 extern void (*snx_menu_run_theme)(const char* folder, SnxRunTheme* out);
 /* Saves what outlives the run (the hints, the renderer's pipeline cache) and reports nvn_trace before a clean exit:
    the main loop's, the unattended limit's, svcExitProcess. The first caller saves; one that comes while it does waits,
@@ -34,6 +33,21 @@ extern char g_addondir[1024], g_gamename[256];
 /* where its settings (config), its log and threads.txt (state) and its caches go: g_exedir, or for a game in an
    installed build's data folder the XDG folders of each kind */
 extern char g_confdir[1024], g_statedir[1024], g_cachedir[1024];
+/* The game's name and folders of the program path at program (snx_main's first steps, main.c): g_exedir and g_exename
+   from the path, then g_confdir and the others from the game's record or the environment. snx_game_folders makes the
+   folders; snx_game_folders_find only resolves the same paths, with no folder made. The CLI's settings and maintenance
+   commands call snx_game_locate and then snx_game_folders_find, with no game started */
+void snx_game_locate(const char* program);
+void snx_game_folders(void);
+void snx_game_folders_find(void);
+/* The add-on that the program at exedir named exename is (addon_init's test): SNX_ADDON_UPDATE or SNX_ADDON_DLC, its
+   ID in id, the base game's name (the folder's) in base; SNX_ADDON_NONE for the game's own program, base "" */
+int snx_game_addon(const char* exedir, const char* exename, char* base, size_t base_size, u64* id);
+/* The early error file's path, <folder>/scarletnx-error.log: the data folder's state folder for a game of a data
+   folder, else the game's state folder, else its own folder, else the user's state folder. The backend's early error
+   file and `logs export` both use it; make makes the folder, as the backend does before a write, and `logs export`
+   passes 0. NULL when no folder is known yet or make fails */
+char* snx_early_error_path(int make);
 extern volatile int g_quit; /* set to leave the main loop, which saves and exits */
 extern int g_frames;        /* the frames shown so far, atomic: the presenting thread counts them */
 /* the crash handler's report (plat_posix.c, plat_win32.c): the faulting host pc, the address it touched (NULL when not

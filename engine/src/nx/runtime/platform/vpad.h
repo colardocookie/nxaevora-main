@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The on-screen controls: a pad drawn over the game (ui.h) that fingers or the mouse press, with rEden's touch
-   overlay's sprites, sizes and options, laid out as the console's two controllers hold them. The same on every
-   platform: on by default on Android, off elsewhere. Kept in the game's .ini (keys controls and controls_*) */
+   overlay's sprites, sizes and options, laid out as the console's two controllers hold them. Kept in the game's .ini
+   (keys controls and controls_*) */
 #ifndef SNX_VPAD_H
 #define SNX_VPAD_H
 #include "nx/runtime/platform/ui.h"

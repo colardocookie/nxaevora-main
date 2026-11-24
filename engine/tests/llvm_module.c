@@ -23,9 +23,18 @@
 #include <string.h>
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
+#include <fcntl.h>
+#include <io.h>
+#include <process.h>
+#include <sys/stat.h>
 #include <windows.h>
 #else
 #include <dlfcn.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #endif
 
 /* assembled with clang -target aarch64-linux-gnu: main at 0x80 (reached by the B at 0), func, tail at 0x200 */
@@ -50,6 +59,353 @@ static void check(int ok, const char* what) {
 static void put32(unsigned char* p, size_t off, unsigned long n) {
     unsigned i;
     for (i = 0; i < 4; ++i) p[off + i] = (unsigned char)(n >> (8 * i));
+}
+
+/* a file's text, NUL terminated; the caller frees it */
+static char* read_text(const char* path) {
+    size_t size = 0;
+    unsigned char* data = snx_read_file(path, &size);
+    char* text = (char*)snx_alloc(size + 1);
+    if (data) memcpy(text, data, size);
+    text[size] = 0;
+    free(data);
+    return text;
+}
+
+#ifdef _WIN32
+/* One argument as the Windows CRT reads it from a command line: quoted, each quote escaped with a backslash, and the
+   backslashes before a quote doubled. NULL on failure */
+static char* quoted_argument(const char* arg) {
+    size_t i, slashes = 0, n = 0, size = strlen(arg);
+    char* out = (char*)malloc(2 * size + 3);
+    if (!out) return NULL;
+    out[n++] = '"';
+    for (i = 0; i < size; ++i) {
+        if (arg[i] == '\\') {
+            ++slashes;
+            continue;
+        }
+        if (arg[i] == '"') slashes = 2 * slashes + 1;
+        while (slashes) {
+            out[n++] = '\\';
+            --slashes;
+        }
+        out[n++] = arg[i];
+    }
+    slashes *= 2;
+    while (slashes) {
+        out[n++] = '\\';
+        --slashes;
+    }
+    out[n++] = '"';
+    out[n] = 0;
+    return out;
+}
+
+/* argv with every argument quoted: _spawnvp joins the strings with spaces and adds no quote, so an argument with a
+   space would become more than one. NULL on failure */
+static char** quoted_argv(const char* const* argv) {
+    size_t i, count = 0;
+    char** out;
+    while (argv[count]) ++count;
+    out = (char**)calloc(count + 1, sizeof *out);
+    if (!out) return NULL;
+    for (i = 0; i < count; ++i) {
+        out[i] = quoted_argument(argv[i]);
+        if (!out[i]) {
+            while (i) free(out[--i]);
+            free(out);
+            return NULL;
+        }
+    }
+    return out;
+}
+
+static void free_quoted(char** argv) {
+    size_t i;
+    if (!argv) return;
+    for (i = 0; argv[i]; ++i) free(argv[i]);
+    free(argv);
+}
+#endif
+
+/* Runs argv with stdout and stderr in two files, apart: snx_run sends both to one pipe. 0, or the child's code */
+static int run_split(const char* const* argv, const char* cwd, char** out_text, char** err_text) {
+    char *out = snx_path_join(cwd, "progress-out.txt"), *err = snx_path_join(cwd, "progress-err.txt");
+    int ofd = -1, efd = -1, saved_out = -1, saved_err = -1, rc = 1;
+    *out_text = *err_text = NULL;
+#ifdef _WIN32
+    HANDLE old_out, old_err;
+    intptr_t status;
+    char** quoted;
+    /* the stdout file is text mode, as a cmd redirect gives the child: the stream must keep its LF */
+    ofd = _open(out, _O_CREAT | _O_TRUNC | _O_WRONLY | _O_TEXT, _S_IREAD | _S_IWRITE);
+    efd = _open(err, _O_CREAT | _O_TRUNC | _O_WRONLY | _O_BINARY, _S_IREAD | _S_IWRITE);
+    if (ofd < 0 || efd < 0) goto done;
+    fflush(NULL);
+    saved_out = _dup(1);
+    saved_err = _dup(2);
+    if (saved_out < 0 || saved_err < 0) goto done;
+    old_out = GetStdHandle(STD_OUTPUT_HANDLE);
+    old_err = GetStdHandle(STD_ERROR_HANDLE);
+    if (_dup2(ofd, 1) || _dup2(efd, 2)) goto restore;
+    SetStdHandle(STD_OUTPUT_HANDLE, (HANDLE)_get_osfhandle(ofd));
+    SetStdHandle(STD_ERROR_HANDLE, (HANDLE)_get_osfhandle(efd));
+    quoted = quoted_argv(argv);
+    if (quoted) {
+        status = _spawnvp(_P_WAIT, argv[0], (const char* const*)quoted);
+        free_quoted(quoted);
+        rc = status < 0 ? 1 : (int)status;
+    }
+restore:
+    if (saved_out >= 0) {
+        _dup2(saved_out, 1);
+        SetStdHandle(STD_OUTPUT_HANDLE, old_out);
+        _close(saved_out);
+    }
+    if (saved_err >= 0) {
+        _dup2(saved_err, 2);
+        SetStdHandle(STD_ERROR_HANDLE, old_err);
+        _close(saved_err);
+    }
+#else
+    pid_t pid;
+    int status = 0;
+    ofd = open(out, O_CREAT | O_TRUNC | O_WRONLY, 0600);
+    efd = open(err, O_CREAT | O_TRUNC | O_WRONLY, 0600);
+    if (ofd < 0 || efd < 0) goto done;
+    fflush(NULL);
+    saved_out = dup(1);
+    saved_err = dup(2);
+    if (saved_out < 0 || saved_err < 0) goto done;
+    if (dup2(ofd, 1) < 0 || dup2(efd, 2) < 0) goto restore;
+    close(ofd);
+    ofd = -1;
+    close(efd);
+    efd = -1;
+    pid = fork();
+    if (!pid) {
+        if (cwd && chdir(cwd)) _exit(126);
+        execvp(argv[0], (char* const*)argv);
+        _exit(127);
+    }
+    if (pid > 0)
+        while (waitpid(pid, &status, 0) < 0 && errno == EINTR) continue;
+    rc = pid > 0 && WIFEXITED(status) ? WEXITSTATUS(status) : 1;
+restore:
+    dup2(saved_out, 1);
+    dup2(saved_err, 2);
+    close(saved_out);
+    close(saved_err);
+#endif
+done:
+    if (ofd >= 0) {
+#ifdef _WIN32
+        _close(ofd);
+#else
+        close(ofd);
+#endif
+    }
+    if (efd >= 0) {
+#ifdef _WIN32
+        _close(efd);
+#else
+        close(efd);
+#endif
+    }
+    *out_text = read_text(out);
+    *err_text = read_text(err);
+    free(out);
+    free(err);
+    return rc;
+}
+
+static int json_line(const char* line, size_t size, const char* text) {
+    return strlen(text) == size && !memcmp(line, text, size);
+}
+
+/* 1 when line is a recompile progress line, with its value and total */
+static int progress_values(const char* line, size_t size, unsigned long long* value, unsigned long long* total) {
+    static const char prefix[] = "{\"v\":1,\"stage\":\"recompile\",\"event\":\"progress\",\"value\":";
+    const size_t at = sizeof prefix - 1;
+    char* end;
+    const char* p;
+    if (size <= at || memcmp(line, prefix, at)) return 0;
+    p = line + at;
+    *value = strtoull(p, &end, 10);
+    if (end == p || (size_t)(end - line) + 9 > size || memcmp(end, ",\"total\":", 9)) return 0;
+    p = end + 9;
+    *total = strtoull(p, &end, 10);
+    if (end == p || end != line + size - 1 || *end != '}') return 0;
+    return 1;
+}
+
+static int has_built_line(const char* text) {
+    const char* p = text;
+    while (p && *p) {
+        if (!strncmp(p, "Built ", 6)) return 1;
+        p = strchr(p, '\n');
+        if (p) ++p;
+    }
+    return 0;
+}
+
+/* The JSON Lines of a recompile: input, recompile with its progress, build, then exit 0. stderr has the Built line */
+static void check_stream(const char* json, const char* human) {
+    const char* p = json;
+    int state = 0, progresses = 0, have_total = 0;
+    unsigned long long first_total = 0, last = 0, total = 0;
+    while (p && *p) {
+        const char* newline = strchr(p, '\n');
+        size_t size;
+        if (!newline) {
+            check(0, "a progress line ends with a newline");
+            return;
+        }
+        size = (size_t)(newline - p);
+        if (size && p[size - 1] == '\r') {
+            check(0, "a progress line ends with LF only");
+            return;
+        }
+        if (size < 2 || p[0] != '{' || p[size - 1] != '}') {
+            check(0, "a progress line is one JSON object");
+            return;
+        }
+        switch (state) {
+            case 0:
+                check(json_line(p, size, "{\"v\":1,\"stage\":\"input\",\"event\":\"start\"}"), "input start");
+                state = 1;
+                break;
+            case 1:
+                check(json_line(p, size, "{\"v\":1,\"stage\":\"input\",\"event\":\"done\"}"), "input done");
+                state = 2;
+                break;
+            case 2:
+                check(json_line(p, size, "{\"v\":1,\"stage\":\"recompile\",\"event\":\"start\"}"),
+                      "recompile start");
+                state = 3;
+                break;
+            case 3: {
+                unsigned long long value, sum;
+                if (progress_values(p, size, &value, &sum)) {
+                    check(value >= 1 && value <= sum, "a progress value from 1 to total");
+                    if (!have_total) {
+                        first_total = sum;
+                        have_total = 1;
+                    }
+                    check(sum == first_total, "one total for every progress line");
+                    last = value;
+                    total = sum;
+                    ++progresses;
+                } else {
+                    check(json_line(p, size, "{\"v\":1,\"stage\":\"recompile\",\"event\":\"done\"}"),
+                          "recompile done");
+                    check(progresses > 0 && last == total, "the last progress value is total");
+                    state = 4;
+                }
+                break;
+            }
+            case 4:
+                check(json_line(p, size, "{\"v\":1,\"stage\":\"build\",\"event\":\"start\"}"), "build start");
+                state = 5;
+                break;
+            case 5:
+                check(json_line(p, size, "{\"v\":1,\"stage\":\"build\",\"event\":\"done\"}"), "build done");
+                state = 6;
+                break;
+            case 6:
+                check(json_line(p, size, "{\"v\":1,\"event\":\"exit\",\"code\":0}"), "exit 0");
+                state = 7;
+                break;
+            default: check(0, "no line after the exit line"); break;
+        }
+        p = newline + 1;
+    }
+    check(state == 7, "the stream has every stage and the exit line");
+    check(has_built_line(human), "stderr has the Built line");
+}
+
+/* The driver's stream of recompile <prepared game>: driver input, then the child's stages, then one exit line */
+static void check_driver_stream(const char* json, const char* human) {
+    const char* p = json;
+    int state = 0, progresses = 0, have_total = 0;
+    unsigned long long first_total = 0, last = 0, total = 0;
+    while (p && *p) {
+        const char* newline = strchr(p, '\n');
+        size_t size;
+        if (!newline) {
+            check(0, "a driver line ends with a newline");
+            return;
+        }
+        size = (size_t)(newline - p);
+        if (size && p[size - 1] == '\r') {
+            check(0, "a progress line ends with LF only");
+            return;
+        }
+        if (size < 2 || p[0] != '{' || p[size - 1] != '}') {
+            check(0, "a progress line is one JSON object");
+            return;
+        }
+        switch (state) {
+            case 0:
+                check(json_line(p, size, "{\"v\":1,\"stage\":\"input\",\"event\":\"start\"}"), "driver input start");
+                state = 1;
+                break;
+            case 1:
+                check(json_line(p, size, "{\"v\":1,\"stage\":\"input\",\"event\":\"done\"}"), "driver input done");
+                state = 2;
+                break;
+            case 2:
+                check(json_line(p, size, "{\"v\":1,\"stage\":\"input\",\"event\":\"start\"}"), "child input start");
+                state = 3;
+                break;
+            case 3:
+                check(json_line(p, size, "{\"v\":1,\"stage\":\"input\",\"event\":\"done\"}"), "child input done");
+                state = 4;
+                break;
+            case 4:
+                check(json_line(p, size, "{\"v\":1,\"stage\":\"recompile\",\"event\":\"start\"}"),
+                      "child recompile start");
+                state = 5;
+                break;
+            case 5: {
+                unsigned long long value, sum;
+                if (progress_values(p, size, &value, &sum)) {
+                    check(value >= 1 && value <= sum, "a progress value from 1 to total");
+                    if (!have_total) {
+                        first_total = sum;
+                        have_total = 1;
+                    }
+                    check(sum == first_total, "one total for every progress line");
+                    last = value;
+                    total = sum;
+                    ++progresses;
+                } else {
+                    check(json_line(p, size, "{\"v\":1,\"stage\":\"recompile\",\"event\":\"done\"}"),
+                          "child recompile done");
+                    check(progresses > 0 && last == total, "the last progress value is total");
+                    state = 6;
+                }
+                break;
+            }
+            case 6:
+                check(json_line(p, size, "{\"v\":1,\"stage\":\"build\",\"event\":\"start\"}"), "child build start");
+                state = 7;
+                break;
+            case 7:
+                check(json_line(p, size, "{\"v\":1,\"stage\":\"build\",\"event\":\"done\"}"), "child build done");
+                state = 8;
+                break;
+            case 8:
+                check(json_line(p, size, "{\"v\":1,\"event\":\"exit\",\"code\":0}"), "exit 0");
+                state = 9;
+                break;
+            default: check(0, "no line after the exit line"); break;
+        }
+        p = newline + 1;
+    }
+    check(state == 9, "the driver stream has the driver and child stages and the exit line");
+    check(has_built_line(human), "stderr has the Built line");
 }
 
 typedef struct {
@@ -327,6 +683,7 @@ int main(int argc, char** argv) {
     static Run runs[1], want, hooked, unhooked, stale, stale_running;
     unsigned char image[IMAGE];
     char *root, *input, *self, *out[2], *module[2], *text = NULL;
+    char *stream_dir, *json = NULL, *human = NULL;
     const char* args[24];
     int b, k;
     size_t i;
@@ -383,6 +740,49 @@ int main(int argc, char** argv) {
         if (b) break;
         check(!run(module[0], image, 0, 0, 0, &runs[0]), "AOT run");
     }
+    /* the JSON Lines stream of a recompile of the same NRO: stdout only JSON, stderr the human lines */
+    stream_dir = snx_path_join(root, "llvm-stream");
+    k = 0;
+    args[k++] = argv[1];
+    args[k++] = "recompile";
+    args[k++] = input;
+    args[k++] = "Program";
+    args[k++] = "--outdir";
+    args[k++] = stream_dir;
+    args[k++] = "--repo";
+    args[k++] = argv[2];
+    args[k++] = "--runtime";
+    args[k++] = self;
+    args[k++] = "--chunk";
+    args[k++] = "4";
+    args[k++] = "--progress=jsonl";
+    args[k] = NULL;
+    check(!run_split(args, root, &json, &human), "a recompile with --progress=jsonl");
+    check_stream(json, human);
+    free(json);
+    free(human);
+    /* the driver's child path: recompile the program that the stream recompile made, a prepared game */
+    {
+#ifdef _WIN32
+        char* prepared = snx_format("%s/Program/Program.exe", stream_dir);
+#else
+        char* prepared = snx_format("%s/Program/Program", stream_dir);
+#endif
+        k = 0;
+        args[k++] = argv[1];
+        args[k++] = "recompile";
+        args[k++] = prepared;
+        args[k++] = "--repo";
+        args[k++] = argv[2];
+        args[k++] = "--progress=jsonl";
+        args[k] = NULL;
+        check(!run_split(args, root, &json, &human), "a recompile of the prepared game with --progress=jsonl");
+        check_driver_stream(json, human);
+        free(json);
+        free(human);
+        free(prepared);
+    }
+    free(stream_dir);
     /* func, which main's BL at 0x90 calls on each pass of the loop */
     check(!run(module[0], image, 0xE8, 0, 0, &unhooked) && !run(module[1], image, 0xE8, 0, 0, &hooked),
           "hooked and unhooked runs");

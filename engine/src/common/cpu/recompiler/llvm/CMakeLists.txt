@@ -22,16 +22,9 @@ endif()
 # it (the Windows zip and the AppImage come from CI runners). The LLVM backend compiles the library's bitcode for each
 # module with the module's target machine, the host CPU as for the generated code; the object below is the one the
 # runtime JIT loads (jit_service.c). A CI runner's -march=native library used AVX-512, an illegal instruction on a Ryzen 3000 the
-# first time a module called a helper using it. Android's is the phone's ABI baseline, which Clang targets by default
-if(ANDROID)
-    set(snx_rtlib_flags --target=${CMAKE_C_COMPILER_TARGET} --sysroot=${CMAKE_SYSROOT})
-elseif(APPLE) # the architecture, SDK and oldest system version (cmake/apple.cmake): iOS's are not this Mac's
-    # Apple's headers fortify an optimized compile on their own, which makes memcpy, memmove and memset macros for the
-    # __*_chk functions: libc.inc's definitions would not parse, and a module links no C library to have those
-    set(snx_rtlib_flags ${SNX_APPLE_FLAGS} -D_FORTIFY_SOURCE=0)
-else() # a Linux cross build's target and sysroot, and the CPU baseline (cmake/cross.cmake)
-    set(snx_rtlib_flags ${SNX_TARGET_FLAGS})
-endif()
+# first time a module called a helper using it.
+# A Linux cross build's target and sysroot, and the CPU baseline (cmake/cross.cmake)
+set(snx_rtlib_flags ${SNX_TARGET_FLAGS})
 list(APPEND snx_rtlib_flags -O2 -fvisibility=hidden -w -fno-semantic-interposition
     -foptimize-sibling-calls -fno-stack-protector)
 # its own flags, which no target carries (cmake/banned_flags.cmake checks those)
@@ -51,25 +44,9 @@ if(WIN32)
 else()
     list(APPEND snx_rtlib_flags -fPIC)
 endif()
-# The object is the JIT loader's (code_loader.c), which reads ELF: on macOS and iOS too, where the triple's object format
-# says so and the code stays Darwin's (ir.c's host_triple). The bitcode below keeps the Mach-O triple of the AOT modules
-set(snx_rtlib_object_flags "")
-set(snx_rtlib_object_base ${snx_rtlib_flags})
-if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$")
-    if(IOS)
-        # the triple carries the version: Clang refuses -miphoneos-version-min (SNX_APPLE_FLAGS') beside an -elf one
-        list(FILTER snx_rtlib_object_base EXCLUDE REGEX "^-m(iphoneos|ios-simulator)-version-min=")
-        if(SNX_IOS_SIMULATOR) # the simulator's loader runs it, as MAP_JIT memory like the Mac's
-            set(snx_rtlib_object_flags --target=arm64-apple-ios${CMAKE_OSX_DEPLOYMENT_TARGET}-simulator-elf)
-        else()
-            set(snx_rtlib_object_flags --target=arm64-apple-ios${CMAKE_OSX_DEPLOYMENT_TARGET}-elf)
-        endif()
-    else()
-        set(snx_rtlib_object_flags --target=arm64-apple-macos${CMAKE_OSX_DEPLOYMENT_TARGET}-elf)
-    endif()
-endif()
+# The object is the JIT loader's (code_loader.c), which reads ELF. The bitcode below is the AOT modules'
 add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/rtlib${CMAKE_C_OUTPUT_EXTENSION}"
-    COMMAND "${CMAKE_C_COMPILER}" ${snx_rtlib_object_base} ${snx_rtlib_object_flags} -I "${CMAKE_CURRENT_BINARY_DIR}"
+    COMMAND "${CMAKE_C_COMPILER}" ${snx_rtlib_flags} -I "${CMAKE_CURRENT_BINARY_DIR}"
         -I "${PROJECT_SOURCE_DIR}/src" -c "${CMAKE_CURRENT_SOURCE_DIR}/rtlib.c"
         -o "${CMAKE_CURRENT_BINARY_DIR}/rtlib${CMAKE_C_OUTPUT_EXTENSION}"
     DEPENDS rtlib.c libc.inc ${snx_rtlib_sources} VERBATIM)
@@ -135,7 +112,7 @@ add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/armlib_bitcode.c"
     DEPENDS "${snx_rtlib_gen}" "${CMAKE_CURRENT_BINARY_DIR}/armlib.bc" VERBATIM)
 
 add_library(snx_llvm STATIC ir.c ir_state.c ir_promote.c ir_emit.c ir_profile.c ir_helpers.c
-    ir_int.c ir_ldst.c ir_fpu.c ir_vec.c ir_vec_fp.c ir_vec_crypto.c ir_codegen.c link.c link_elf.c link_coff.c link_macho.c elf_object.c objects_pack.c
+    ir_int.c ir_ldst.c ir_fpu.c ir_vec.c ir_vec_fp.c ir_vec_crypto.c ir_codegen.c link.c link_elf.c link_coff.c elf_object.c objects_pack.c
     code_loader.c code_loader_coff.c gdb_jit.c jit_service.c jit_cache.c "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/exec.c"
     "${CMAKE_CURRENT_BINARY_DIR}/rtlib_object.c" "${CMAKE_CURRENT_BINARY_DIR}/rtlib_bitcode.c"
     "${CMAKE_CURRENT_BINARY_DIR}/armlib_bitcode.c")

@@ -12,23 +12,6 @@ msgstr ""
 "Language-Team: ScarletNX <https://github.com/scarletnx/ScarletNX>\n"
 "X-Language-Name: 简体中文\n"
 
-#: src/gui/android.c
-msgid "No Android activity to ask."
-msgstr "没有可调用的 Android 活动。"
-
-#: src/gui/android.c
-#, c-format
-msgid "MainActivity.%s did not run."
-msgstr "MainActivity.%s 未运行。"
-
-#: src/gui/apple.m
-msgid "The document picker did not open."
-msgstr "文档选择器未能打开。"
-
-#: src/gui/apple.m
-msgid "No window to show the picker over."
-msgstr "没有可显示选择器的窗口。"
-
 #: src/gui/apple.m
 #, c-format
 msgid "The log could not be shown: it is at %s"
@@ -213,16 +196,6 @@ msgstr "已保存到 %s"
 
 #: src/gui/main.c
 #, snx-keys
-msgid "Tap: select. Refresh. Back."
-msgstr "轻触: 选择. 更新. 返回."
-
-#: src/gui/main.c
-#, snx-keys
-msgid "Tap: select. Refresh."
-msgstr "轻触: 选择. 更新."
-
-#: src/gui/main.c
-#, snx-keys
 msgid "Tap: open. Swipe: page. Refresh. Back."
 msgstr "轻触: 打开. 滑动: 翻页. 更新. 返回."
 
@@ -233,151 +206,8 @@ msgstr "轻触: 打开. 滑动: 翻页. 更新."
 
 #: src/gui/main.c
 #, snx-keys
-msgid "Recompile."
-msgstr "重新编译."
-
-#: src/gui/main.c
-#, snx-keys
-msgid "Mods."
-msgstr "模组."
-
-#: src/gui/main.c
-#, snx-keys
-msgid "AOT pack."
-msgstr "AOT 包."
-
-#: src/gui/main.c
-#, snx-keys
-msgid "Back."
-msgstr "返回."
-
-#: src/gui/main.c
-msgid "tap the box to open the file picker"
-msgstr "轻触此框打开文件选择器"
-
-#: src/gui/main.c
-msgid "Pick a file"
-msgstr "选取文件"
-
-#: src/gui/main.c
-msgid "Tap to return to menu"
-msgstr "轻触返回菜单"
-
-#: src/gui/main.c
-msgid "Tap here to abort and return to menu"
-msgstr "轻触此处中止并返回菜单"
-
-#: src/gui/main.c
-msgid "No games in recompiled/ or dumps/: put a game's .nro in dumps/."
-msgstr "recompiled/ 或 dumps/ 中没有游戏：把游戏的 .nro 放入 dumps/。"
-
-#: src/gui/main.c
-#, snx-keys
-msgid "Tap: change. Back."
-msgstr "轻触: 更改. 返回."
-
-#: src/gui/main.c
-#, snx-keys
-msgid "Tap: change."
-msgstr "轻触: 更改."
-
-#: src/gui/main.c
-#, snx-keys
-msgid "Drag: change. Tap #RRGGBB: type. Tap outside: OK. Back: cancel."
-msgstr "拖动: 更改. 轻触 #RRGGBB: 输入. 轻触外面: 确定. 返回: 取消."
-
-#: src/gui/main.c
-#, snx-keys
-msgid "Drag: change. Tap #RRGGBB: type. Tap outside: OK."
-msgstr "拖动: 更改. 轻触 #RRGGBB: 输入. 轻触外面: 确定."
-
-#: src/gui/main.c
-#, snx-keys
-msgid "Tap: open. Back."
-msgstr "轻触: 打开. 返回."
-
-#: src/gui/main.c
-#, snx-keys
-msgid "Tap: open."
-msgstr "轻触: 打开."
-
-#: src/gui/main.c
-#, snx-keys
-msgid "Refresh. Back."
-msgstr "更新. 返回."
-
-#: src/gui/main.c
-#, snx-keys
-msgid "Refresh."
-msgstr "更新."
-
-#: src/gui/main.c
-#, snx-keys
 msgid "Tap: delete."
 msgstr "轻触: 删除."
-
-#: src/gui/main.c
-#, snx-keys
-msgid "Tap: add."
-msgstr "轻触: 添加."
-
-#: src/gui/main.c
-#, snx-keys
-msgid "Tap: reset."
-msgstr "轻触: 恢复."
-
-#: src/gui/main.c
-#, snx-keys
-msgid "Tap: select. Tap again: press. Back."
-msgstr "轻触: 选择. 再次轻触: 按下. 返回."
-
-#: src/gui/main.c
-#, snx-keys
-msgid "Tap: select. Tap again: press."
-msgstr "轻触: 选择. 再次轻触: 按下."
-
-#: src/gui/main.c
-#, snx-keys
-msgid "Tap: rename. Back."
-msgstr "轻触: 重命名. 返回."
-
-#: src/gui/main.c
-#, snx-keys
-msgid "Tap: rename."
-msgstr "轻触: 重命名."
-
-#: src/gui/main.c
-#, snx-keys
-msgid "Tap: select."
-msgstr "轻触: 选择."
-
-#: src/gui/main.c
-#, snx-keys
-msgid "Games."
-msgstr "游戏."
-
-#: src/gui/main.c
-#, snx-keys
-msgid "Take out."
-msgstr "移出."
-
-#: src/gui/main.c
-#, snx-keys
-msgid "Back: abort."
-msgstr "返回: 中止."
-
-#: src/gui/main.c
-#, snx-keys
-msgid "Tap again: play."
-msgstr "再次轻触: 运行."
-
-#: src/gui/main.c
-msgid "Back: to Games. Tap its row again: play"
-msgstr "返回: 回到游戏. 再轻触其所在行: 运行"
-
-#: src/gui/main.c
-msgid "Back: to Games"
-msgstr "返回: 回到游戏"
 
 #: src/gui/main.c
 #, snx-keys
@@ -816,16 +646,6 @@ msgstr "Tab: 切换画面. F2: 侧框."
 
 #: src/gui/main.c
 #, snx-keys
-msgid "Folders."
-msgstr "文件夹."
-
-#: src/gui/main.c
-#, snx-keys
-msgid "View."
-msgstr "视图."
-
-#: src/gui/main.c
-#, snx-keys
 msgid "P: folders."
 msgstr "P: 文件夹."
 
@@ -893,10 +713,6 @@ msgid "List the games in its subfolders too?"
 msgstr "也列出其子文件夹中的游戏吗？"
 
 #: src/gui/main.c
-msgid "Outside the app, Android checks every file access: games may run slower."
-msgstr "在应用之外，Android 会检查每次文件访问：游戏可能运行得更慢。"
-
-#: src/gui/main.c
 msgid "A compile goes: exiting ScarletNX stops it, its work lost."
 msgstr "编译正在进行：退出 ScarletNX 会停止它，其工作将丢失。"
 
@@ -915,10 +731,6 @@ msgstr "中止运行？"
 #: src/gui/main.c
 msgid "Left by older versions"
 msgstr "旧版本留下的文件"
-
-#: src/gui/main.c
-msgid "While the app is in testing, Android's Settings > Apps > ScarletNX > Storage > Clear storage takes the menu's files above, with every game, save and key in the app"
-msgstr "应用测试期间，Android 的「设置 > 应用 > ScarletNX > 存储 > 清除存储」会删除上面这些菜单文件，以及应用中的所有游戏、存档和密钥"
 
 #: src/gui/main.c
 msgid "counting"
@@ -943,10 +755,6 @@ msgstr "清理旧设置：完成 %d 项"
 #, c-format
 msgid "and %d more, which Share Log lists"
 msgstr "另有 %d 项，「分享日志」中列出"
-
-#: src/gui/main.c
-msgid "tap again"
-msgstr "再轻触一次"
 
 #: src/gui/main.c
 msgid "press again"
@@ -975,10 +783,6 @@ msgstr "仅此文件夹"
 #: src/gui/main.c
 msgid "With Subfolders"
 msgstr "包含子文件夹"
-
-#: src/gui/main.c
-msgid "Use Anyway"
-msgstr "仍然使用"
 
 #: src/gui/main.c
 msgid "Run Anyway"
@@ -1824,10 +1628,6 @@ msgid "Main"
 msgstr "主文件夹"
 
 #: src/gui/main.c
-msgid "outside the app"
-msgstr "在应用之外"
-
-#: src/gui/main.c
 msgid "custom"
 msgstr "自定义"
 
@@ -1891,10 +1691,6 @@ msgid "Not changed: %s %s"
 msgstr "未更改：%s %s"
 
 #: src/gui/main.c
-msgid "Not changed"
-msgstr "未更改"
-
-#: src/gui/main.c
 #, c-format
 msgid "They are the defaults: %s"
 msgstr "已是默认：%s"
@@ -1917,11 +1713,6 @@ msgstr "%s文件夹 %s %s。可在「设置 > 应用 > 文件夹」中另选。"
 #, c-format
 msgid "The folder picker could not open: %s"
 msgstr "文件夹选择器无法打开：%s"
-
-#: src/gui/main.c
-#, c-format
-msgid "Folders: the folder picker could not open: %s"
-msgstr "文件夹：文件夹选择器无法打开：%s"
 
 #: src/gui/main.c
 msgid "Drop it on the folder it takes the place of, or on a library's row"
@@ -2112,26 +1903,6 @@ msgstr "（没有主题文件夹）"
 #: src/gui/main.c
 msgid "was"
 msgstr "原为"
-
-#: src/gui/main.c
-#, snx-keys
-msgid "Tap: choose. Back."
-msgstr "轻触: 选择. 返回."
-
-#: src/gui/main.c
-#, snx-keys
-msgid "Tap: choose."
-msgstr "轻触: 选择."
-
-#: src/gui/main.c
-#, snx-keys
-msgid "Type the nickname. Back."
-msgstr "输入昵称. 返回."
-
-#: src/gui/main.c
-#, snx-keys
-msgid "Type the nickname."
-msgstr "输入昵称."
 
 #: src/gui/main.c
 #, snx-keys
@@ -2545,14 +2316,6 @@ msgid "The run ended with status %d."
 msgstr "运行结束，状态 %d。"
 
 #: src/gui/main.c
-msgid "Failed"
-msgstr "失败"
-
-#: src/gui/main.c
-msgid "Ready"
-msgstr "就绪"
-
-#: src/gui/main.c
 #, c-format
 msgid "%s: into which folder of the recompiled library?"
 msgstr "%s：选择放入已重编译游戏库中的文件夹"
@@ -2580,11 +2343,6 @@ msgstr "%s 已编译，位于 %s"
 #: src/gui/main.c
 msgid "That path is not a readable file. Try again or press ESC."
 msgstr "该路径不是可读的文件。请重试或按 ESC。"
-
-#: src/gui/main.c
-#, c-format
-msgid "%s is compiling (%d%%): the game plays once the queue ends"
-msgstr "%s 正在编译（%d%%）：队列结束后游戏即可运行"
 
 #: src/gui/main.c
 #, c-format
@@ -2688,14 +2446,6 @@ msgid "Recompiled in %s."
 msgstr "重新编译完成，用时 %s。"
 
 #: src/gui/main.c
-msgid "AOT pack built"
-msgstr "AOT 包已构建"
-
-#: src/gui/main.c
-msgid "Compiled"
-msgstr "已编译"
-
-#: src/gui/main.c
 msgid "SDL gave no reason"
 msgstr "SDL 未给出原因"
 
@@ -2743,11 +2493,6 @@ msgstr "JIT 缓存的级别（JIT optimization O%c）与游戏的 AOT 优化 O%c
 #: src/gui/main.c
 msgid "M opens the mods and cheats of a recompiled Switch game in focus."
 msgstr "M 打开选中的已重编译 Switch 游戏的模组和金手指。"
-
-#: src/gui/main.c
-#, c-format
-msgid "Cannot read this file by its path. Check that ScarletNX may access the device's files in Android's settings, then pick it from the device's storage (%s)."
-msgstr "无法通过路径读取此文件。请在 Android 设置中确认 ScarletNX 可以访问设备上的文件，然后从设备存储中选取它（%s）。"
 
 #: src/gui/main.c
 #, c-format
@@ -3066,10 +2811,6 @@ msgid "Cannot start the menu: out of memory"
 msgstr "无法启动菜单：内存不足"
 
 #: src/gui/main.c
-msgid "Cannot find the folder of the app's libraries"
-msgstr "找不到应用的库文件夹"
-
-#: src/gui/main.c
 msgid "No user shown: out of memory"
 msgstr "未显示用户：内存不足"
 
@@ -3100,11 +2841,6 @@ msgid "Saves the last run's output and game log to scarletnx.log and copies its 
 msgstr "把上次运行的输出和游戏日志保存到 scarletnx.log，并复制其路径"
 
 #: src/gui/process_posix.c
-#, c-format
-msgid "Cannot start the run: %s"
-msgstr "无法开始运行：%s"
-
-#: src/gui/process_posix.c
 msgid "A run is already going"
 msgstr "已有运行正在进行"
 
@@ -3112,10 +2848,6 @@ msgstr "已有运行正在进行"
 #, c-format
 msgid "Cannot launch driver: %s"
 msgstr "无法启动驱动程序：%s"
-
-#: src/gui/process_posix.c
-msgid "the driver runs on a thread of the app, at the app's priority"
-msgstr "驱动程序在应用的一个线程上运行，优先级与应用相同"
 
 #: src/gui/process_win32.c
 msgid "A driver is already running"
@@ -3736,10 +3468,6 @@ msgstr "重新编译时编译游戏代码的线程数：0 = 电脑每个核心�
 #: src/nx/runtime/settings.txt
 msgid "Unit size"
 msgstr "单元大小"
-
-#: src/nx/runtime/settings.txt
-msgid "The instructions a code unit takes, whole functions at a time, when the game is recompiled: each is compiled on its own, and a smaller one takes less memory at once, which a phone needs (Android's allocator ran out at 90000 on several threads, and iOS ends an app at its limit). A game made already keeps its units until it is recompiled"
-msgstr "重新编译时一个代码单元包含的指令数，以完整函数为单位：每个单元单独编译，较小的单元一次占用更少内存，手机需要这一点（Android 的分配器在多线程下达到 90000 时会耗尽，iOS 会在达到上限时结束应用）。已编译的游戏在重新编译前保持其单元"
 
 #: src/nx/runtime/settings.txt
 msgid "Unit cache limit"
