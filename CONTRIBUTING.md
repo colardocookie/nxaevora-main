@@ -33,7 +33,8 @@ files. The folder `game/` is in `.gitignore` for this reason. Keep your dumps an
 the repository.
 
 The check `python tools/check_game_data.py` fails when a tracked file is game data or holds a key. The check
-`python tools/check_spdx.py` fails when a tracked file has no license header. Run
+`python tools/check_spdx.py` fails when a tracked file has no license header. Each of the two header lines must be
+one complete comment line, so a multi-line block comment is not accepted. Run
 `python -m unittest discover -s tools -p "test_*.py"` for the tests of the tools. The workflow `Repository checks`
 runs the three commands for each pull request and each push to `main`.
 

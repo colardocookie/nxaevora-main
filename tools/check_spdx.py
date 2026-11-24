@@ -5,8 +5,10 @@
     python tools/check_spdx.py
 
 A file in scope needs a license line and a copyright line in the comment form of its language, within the first ten
-lines. The check prints one ``<path>: <reason>`` line for each missing part, then a one-line total. The exit code is
-0 when every header is correct, 1 when a header is missing or wrong, and 2 when the check itself fails.
+lines. A file may start with a UTF-8 byte order mark, which the check skips. Each header part must be one complete
+comment line, so a multi-line block comment is not accepted. The check prints one ``<path>: <reason>`` line for each
+missing part, then a one-line total. The exit code is 0 when every header is correct, 1 when a header is missing or
+wrong, and 2 when the check itself fails.
 """
 
 import re
@@ -27,16 +29,16 @@ LICENSE_ID = "GPL-3.0-or-later"
 
 CHECKED_SUFFIXES = frozenset({
     ".py", ".md", ".yml", ".yaml", ".sh", ".ps1", ".toml", ".cmake",
-    ".c", ".h", ".cpp", ".hpp",
+    ".c", ".h", ".cpp", ".hpp", ".patch", ".pchtxt",
 })
-CHECKED_NAMES = frozenset({"CMakeLists.txt"})
+CHECKED_NAMES = frozenset({"CMakeLists.txt", ".gitignore"})
 
 # The vendored engine keeps the upstream copyright lines. A later issue covers them.
 EXCLUDED_PREFIXES = ("engine/",)
 # Files in scope that cannot hold a correct comment header. Each entry needs its reason.
 EXCLUDED_FILES = {}
 
-HASH_SUFFIXES = frozenset({".py", ".yml", ".yaml", ".sh", ".ps1", ".toml", ".cmake"})
+HASH_SUFFIXES = frozenset({".py", ".yml", ".yaml", ".sh", ".ps1", ".toml", ".cmake", ".patch", ".pchtxt"})
 HTML_SUFFIXES = frozenset({".md"})
 SLASH_SUFFIXES = frozenset({".c", ".h", ".cpp", ".hpp"})
 
@@ -88,7 +90,7 @@ def comment_contents(path, data):
     form = comment_form(path)
     if form is None:
         return []
-    lines = data.decode("utf-8", "replace").splitlines()[:HEADER_WINDOW_LINES]
+    lines = data.decode("utf-8-sig", "replace").splitlines()[:HEADER_WINDOW_LINES]
     contents = []
     for line in lines:
         content = strip_comment(form, line)

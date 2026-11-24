@@ -39,15 +39,24 @@ FILLER = b"# filler\n"
 class GoodHeaderTest(unittest.TestCase):
 
     def test_hash_suffixes(self):
-        for suffix in (".py", ".yml", ".yaml", ".sh", ".ps1", ".toml", ".cmake"):
+        for suffix in (".py", ".yml", ".yaml", ".sh", ".ps1", ".toml", ".cmake", ".patch", ".pchtxt"):
             with self.subTest(suffix=suffix):
                 self.assertEqual(check_spdx.classify("src/a" + suffix, HASH_HEADER), [])
+
+    def test_gitignore_name(self):
+        self.assertEqual(check_spdx.classify(".gitignore", HASH_HEADER), [])
 
     def test_cmake_lists(self):
         self.assertEqual(check_spdx.classify("CMakeLists.txt", HASH_HEADER), [])
 
     def test_html_suffix(self):
         self.assertEqual(check_spdx.classify("docs/a.md", HTML_HEADER), [])
+
+    def test_bom_hash(self):
+        self.assertEqual(check_spdx.classify("src/a.py", b"\xef\xbb\xbf" + HASH_HEADER), [])
+
+    def test_bom_html(self):
+        self.assertEqual(check_spdx.classify("docs/a.md", b"\xef\xbb\xbf" + HTML_HEADER), [])
 
     def test_slash_suffixes(self):
         for suffix in (".c", ".h", ".cpp", ".hpp"):
@@ -78,7 +87,29 @@ class BadHeaderTest(unittest.TestCase):
 
     def test_wrong_license(self):
         data = b"# SPDX-License-Identifier: MIT\n# Copyright 2026 the NXAevora contributors\n"
-        self.assert_reason(check_spdx.classify("src/a.py", data), "license")
+        self.assertEqual(check_spdx.classify("src/a.py", data),
+                         ["license line does not name GPL-3.0-or-later"])
+
+    def test_wrong_copyright(self):
+        data = b"# SPDX-License-Identifier: GPL-3.0-or-later\n# Copyright 2026 someone else\n"
+        self.assertEqual(check_spdx.classify("src/a.py", data),
+                         ["copyright line is not 'Copyright <year> the NXAevora contributors'"])
+
+    def test_multiline_block_comment(self):
+        data = (
+            b"/*\n"
+            b" * SPDX-License-Identifier: GPL-3.0-or-later\n"
+            b" */\n"
+            b"// Copyright 2026 the NXAevora contributors\n"
+        )
+        self.assertEqual(check_spdx.classify("src/a.c", data),
+                         ["missing license line SPDX-License-Identifier: GPL-3.0-or-later"])
+
+    def test_missing_license_new_scope(self):
+        data = b"# Copyright 2026 the NXAevora contributors\n"
+        for path in ("recomp/patches/a.patch", "recomp/patches/a.pchtxt", ".gitignore"):
+            with self.subTest(path=path):
+                self.assert_reason(check_spdx.classify(path, data), "license")
 
     def test_missing_copyright(self):
         data = b"# SPDX-License-Identifier: GPL-3.0-or-later\n"

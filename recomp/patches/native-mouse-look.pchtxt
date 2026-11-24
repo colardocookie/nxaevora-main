@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the NXAevora contributors
 @nsobid-AEE8F150DDA1B5A838806E1A5EA6827AD9F3C51E
 
 @flag offset_shift 0x100
