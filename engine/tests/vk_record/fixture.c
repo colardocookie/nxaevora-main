@@ -62,6 +62,15 @@ int plat_thread(PThreadFn fn, void* arg, size_t stack) {
     if (r) free(s);
     return r ? -1 : 0;
 }
+/* what the perf notes in the recorder's file ask (gpu/perf_times.c is linked whole): none of them is switched on */
+u64 plat_ns(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (u64)t.tv_sec * 1000000000u + (u64)t.tv_nsec;
+}
+void plat_thread_cpu(u64* kernel_ns, u64* user_ns) { *kernel_ns = *user_ns = 0; }
+void plat_prof_label_self(const char* name) { (void)name; }
+int gpu_on_gpu_thread(void) { return 0; }
 void plat_yield(void) { sched_yield(); }
 char* snx_os_error(char* out, size_t size) {
     snprintf(out, size, "the fixture has no reason");

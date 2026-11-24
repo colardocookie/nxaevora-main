@@ -238,6 +238,7 @@ typedef struct {
     VkSwapchainKHR swapchain; /* the WSI lock's acquire (vk_wsi_acquire_locked), which no scenario calls */
 } VkState;
 extern VkState g_vk;
+int gpu_on_gpu_thread(void); /* gpu/gpu.h's, which the perf notes ask */
 void vk_lock(void);
 void vk_unlock(void);
 int vk_ok_(VkResult r, const char* what, const char* file, int line);
