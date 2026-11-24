@@ -131,7 +131,8 @@ typedef struct {
 static Entry g_store[STORE_MAX];
 static int g_nstore;
 static PMutex g_store_lock = PMUTEX_INIT;
-/* the store's copy for a reload's merge or a write: the ini thread makes it, and the two never run at once */
+/* the store's copy for a reload's merge or a write: the frontend thread (ini_poll) or the settings CLI makes it, and
+   the two never run at once */
 static Entry g_work[STORE_MAX];
 /* a key and the text a window set, kept until the game restarts */
 typedef struct {
@@ -307,14 +308,6 @@ static const char* value_of(const IniOpt* o) {
     e = store_find(o->key);
     return e ? e->value : o->def;
 }
-/* value_of with g_store_lock held by the caller, for a copy of the value under the lock */
-static const char* value_of_locked(const IniOpt* o) {
-    const char* v = override_of(o->key);
-    const Entry* e;
-    if (v) return v;
-    e = store_find_locked(o->key);
-    return e ? e->value : o->def;
-}
 /* the snapshot's values are in the file: the store's copies that still match lose the flag; one changed stays dirty */
 static void store_clear_written(const Entry* snap, int n) {
     int i;
@@ -351,7 +344,6 @@ void ini_override(const char* k, const char* v) {
 void ini_set(const char* k, const char* v) {
     size_t kn = strlen(k), vn = strlen(v);
     StorePutResult why;
-    Entry* e;
     if (override_of(k)) return; /* this run's value, not the file's */
     if (kn >= KEY_MAX || vn >= CHANGE_VALUE_MAX) {
         WARN_LIMIT(1, "settings: %s's value is too long to save\n", k);
@@ -359,10 +351,7 @@ void ini_set(const char* k, const char* v) {
     }
     pm_lock(&g_store_lock);
     why = store_put_locked(k, v);
-    if (why == STORE_PUT_DONE) {
-        e = store_find_locked(k);
-        if (e) e->dirty = 1;
-    }
+    if (why == STORE_PUT_DONE) store_find_locked(k)->dirty = 1; /* the put made the entry or found it */
     pm_unlock(&g_store_lock);
     /* the length checks above leave a full store as the only refusal */
     if (why != STORE_PUT_DONE) WARN_LIMIT(1, "settings: the store is full, %s is not saved\n", k);
@@ -423,26 +412,28 @@ int options_change(const char* key, const char* value) {
         WARN_LIMIT(1, "settings: %s=%s is not taken: %s\n", key, value, why);
         return OPTIONS_REJECTED;
     }
+    /* The store gets the new value before apply, so that a reader of the store during apply (a backend_ini handler or
+       a set hook) would see the new value. No such reader exists today; case_store_before_apply checks the order. A
+       reload cannot run in between: ini_poll and every caller of options_change run on the frontend thread. */
+    ini_set(key, value);
     apply(key, value);
     if (g_started && (o->flags & INI_STARTUP)) restart_note(key, value);
-    ini_set(key, value);
     return OPTIONS_OK;
 }
 
-/* the row's value copied out of the store or the command line, which the caller frees; NULL for none, or out of
-   memory */
-static char* row_value_copy(const IniOpt* o) {
-    const char* v;
-    char* copy;
-    size_t n;
+/* the row's value: the command line's or the row's default as they are, else the store's entry copied into buf. The
+   first two live for the whole process, so only the store needs the lock and the copy */
+static const char* row_value(const IniOpt* o, char buf[VALUE_MAX]) {
+    const char* v = override_of(o->key);
+    const Entry* e;
+    int have;
+    if (v) return v;
     pm_lock(&g_store_lock);
-    v = value_of_locked(o);
-    n = v ? strlen(v) + 1 : 0;
-    copy = n ? malloc(n) : NULL;
-    if (copy) memcpy(copy, v, n);
+    e = store_find_locked(o->key);
+    have = e != NULL;
+    if (have) memcpy(buf, e->value, strlen(e->value) + 1);
     pm_unlock(&g_store_lock);
-    if (n && !copy) WARN_LIMIT(1, "settings: out of memory, %s is not applied\n", o->key);
-    return copy;
+    return have ? buf : o->def;
 }
 /* every setting: the command line's value, else the file's, else its default; then the keys of no section the
    unattended options take */
@@ -452,11 +443,9 @@ static void apply_all(void) {
         for (t = 0; t < 3 && g_ini_sections[s].table[t]; t++) {
             const IniOpt* o;
             for (o = g_ini_sections[s].table[t]; o->key; o++) {
-                char* v = row_value_copy(o);
-                if (v) {
-                    apply(o->key, v);
-                    free(v);
-                }
+                char buf[VALUE_MAX];
+                const char* v = row_value(o, buf);
+                if (v) apply(o->key, v);
             }
         }
     for (i = 0;; i++) {
@@ -524,30 +513,44 @@ static const Entry* snapshot_find(const Entry* snap, int n, const char* key) {
         if (!strcmp(snap[i].key, key)) return &snap[i];
     return NULL;
 }
-static void put_rows(FILE* f, const IniOpt* o, const Entry* snap, int n) {
+/* the section rows with a default that the snapshot lacks: the file gets the snapshot's n keys and these */
+static int default_rows_missing(const Entry* snap, int n) {
+    int s, t, missing = 0;
+    for (s = 0; s < g_ini_sections_count; s++)
+        for (t = 0; t < 3 && g_ini_sections[s].table[t]; t++) {
+            const IniOpt* o;
+            for (o = g_ini_sections[s].table[t]; o->key; o++)
+                if (o->def && !snapshot_find(snap, n, o->key)) missing++;
+        }
+    return missing;
+}
+/* the section's rows: the store's value or else the default, and with only_store only the store's keys */
+static void put_rows(FILE* f, const IniOpt* o, const Entry* snap, int n, int only_store) {
     for (; o->key; o++) {
         const Entry* e = snapshot_find(snap, n, o->key);
-        const char* v = e ? e->value : o->def;
-        if (!v) continue; /* no default and never set */
+        const char* v = e ? e->value : only_store ? NULL : o->def;
+        if (!v) continue; /* no default and never set, or a default that the store's limit leaves out */
         if (o->help) put_help(f, o->help);
         fprintf(f, "%s=%s\n", o->key, v);
     }
 }
-/* 1 when put_rows writes a row of the section: one with a default, or set */
-static int section_set(const IniSection* section, const Entry* snap, int n) {
+/* 1 when put_rows writes a row of the section: one that the store has, or with a default unless only_store */
+static int section_set(const IniSection* section, const Entry* snap, int n, int only_store) {
     int t;
     const IniOpt* o;
     for (t = 0; t < 3 && section->table[t]; t++)
         for (o = section->table[t]; o->key; o++)
-            if (o->def || snapshot_find(snap, n, o->key)) return 1;
+            if (snapshot_find(snap, n, o->key) || (!only_store && o->def)) return 1;
     return 0;
 }
-/* the store into the file: beside it, then moved over it, so the file is always whole. 0, -1 (warned once), or 1
-   with nothing written because the last parse of the file was incomplete */
+/* The store into the file: beside it, then moved over it, so the file is always whole. A row with a default is written
+   even when the store lacks it, so above STORE_MAX keys with the sections' defaults only the store's keys are written:
+   the next parse is complete and a row left out reads as its default. 0, -1 (warned once), or 1 with nothing written
+   because the last parse of the file was incomplete */
 static int write_file(void) {
     char tmp[sizeof g_path + 8];
     FILE* f;
-    int s, t, i, n, other = 0, failed;
+    int s, t, i, n, missing, only_store, other = 0, failed;
     unsigned char* text;
     size_t size;
     const Entry* snap = g_work;
@@ -556,6 +559,11 @@ static int write_file(void) {
     memcpy(g_work, g_store, (size_t)g_nstore * sizeof *g_store);
     n = g_nstore;
     pm_unlock(&g_store_lock);
+    missing = default_rows_missing(snap, n);
+    only_store = n + missing > STORE_MAX;
+    if (only_store)
+        WARN_LIMIT(1, "settings: more than %d keys (%d in the store and %d with a default), so the file lists only "
+                      "the store's keys\n", STORE_MAX, n, missing);
     snprintf(tmp, sizeof tmp, "%s.tmp", g_path);
     f = fopen(tmp, "wb");
     if (!f) {
@@ -566,11 +574,11 @@ static int write_file(void) {
     }
     put_header(f);
     for (s = 0; s < g_ini_sections_count; s++) {
-        if (!section_set(&g_ini_sections[s], snap, n)) continue; /* [Game] of a game made from no dump */
+        if (!section_set(&g_ini_sections[s], snap, n, only_store)) continue; /* [Game] of a game made from no dump */
         fprintf(f, "\n[%s]\n", g_ini_sections[s].name);
         for (t = 0; t < 3 && g_ini_sections[s].table[t]; t++) {
             if (g_ini_sections[s].page[t]) fprintf(f, "; -- %s --\n", g_ini_sections[s].page[t]);
-            put_rows(f, g_ini_sections[s].table[t], snap, n);
+            put_rows(f, g_ini_sections[s].table[t], snap, n, only_store);
         }
     }
     for (i = 0; i < n; i++) /* a newer version's keys, typos, the unattended options: as they are */
