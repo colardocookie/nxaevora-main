@@ -108,6 +108,8 @@ void vk_defer_bytes(u64 bytes) { (void)bytes; }
 void vk_surf_add(Surf* s) { (void)s; }
 /* uploads, guest memory, the surface table and the rest texture.c calls on paths this test doesn't take */
 int g_own_any;
+/* perf_times.h's switches, which texture.c's pass-end sites read (SNX_ARCEUS_PERF_TIMES): off */
+int g_perf_times, g_perf_pass_why;
 u8* gmem_host(u64 gva, u64 size) { return (void)gva, (void)size, NULL; }
 u8* gmem_ptr(u64 gva, u64 size) { return (void)gva, (void)size, NULL; }
 int gpu_mem_dirty_since(u64 since, u64 a, u64 sz) { return (void)since, (void)a, (void)sz, 0; }
