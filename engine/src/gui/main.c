@@ -345,6 +345,7 @@ typedef struct App {
     size_t games_seen;
     Uint64 games_tick, games_last_ms;
     Uint32 picked;                    /* the event a file from the system's picker comes back as */
+    Uint32 arceus_picked;             /* the same for the launcher file the Arceus graphics page imports */
     SDL_Texture* splash;              /* the boot's splash, its drawing splash_side pixels square, until splash_until */
     const SnxSplashSvg* splash_svg;   /* the boot's pick: Wimsy, or one of dist/splash's */
     SnxSplashDrawing* splash_drawing; /* it, read once; NULL: the icon shows */
@@ -3122,6 +3123,7 @@ static void render_users(App* app) {
 }
 /* user n (1-based) picked: Settings' user, kept in settings.ini at once, and the head shows them */
 static GuiSettings* settings_of(App* app);
+static void arceus_import_pick(App* app);
 static void users_pick(App* app, int n) {
     char value[8];
     GuiSettings* settings = settings_of(app);
@@ -8230,6 +8232,10 @@ static void editor_key(App* app, GuiKey key) {
     }
     if (what == GUI_EDITOR_ACTION && app->form == GUI_FORM_GROUP) { /* a page's row opens it, an All steps its rows */
         int row = setting_of(app, app->editor.row);
+        if (app->settings.values[row].kind == GUI_SETTING_IMPORT) {
+            if (!app->editor.step) arceus_import_pick(app);
+            return;
+        }
         if (app->settings.values[row].kind == GUI_SETTING_PAGE && !strcmp(app->settings.keys[row].key, "Player")) {
             /* the player shown, round All and 1 to 8 */
             app->player = (app->player + (app->editor.step < 0 ? SNX_GUI_PLAYERS : 1)) % (SNX_GUI_PLAYERS + 1);
@@ -11633,6 +11639,24 @@ static void SDLCALL picker_done(void* userdata, const char* const* files, int fi
     SDL_PushEvent(&e);
 }
 static void picked(App* app, const char* uri);
+/* the Arceus graphics page's import: the launcher file the player picks, read and never written */
+static void arceus_import_pick(App* app) {
+    if (!app->arceus_picked) app->arceus_picked = SDL_RegisterEvents(1);
+    if (app->arceus_picked)
+        SDL_ShowOpenFileDialog(picker_done, &app->arceus_picked, app->window, NULL, 0, NULL, false);
+}
+static void arceus_imported(App* app, const char* path) {
+    size_t size = 0;
+    char* text = path ? (char*)snx_read_file(path, &size) : NULL;
+    if (!path) return; /* the picker was closed */
+    if (!text)
+        snprintf(app->message, sizeof app->message, "%s could not be read: nothing changed", path);
+    else if (gui_settings_arceus_import(settings_of(app), text, app->message, sizeof app->message)) {
+        app->editor.dirty = true;
+        keep_settings(app);
+    }
+    free(text);
+}
 static void open_picker(App* app) {
     if (!app->picked) app->picked = SDL_RegisterEvents(1);
     if (app->picked) SDL_ShowOpenFileDialog(picker_done, &app->picked, app->window, NULL, 0, NULL, false);
@@ -13322,6 +13346,11 @@ static void event_take(App* app, const SDL_Event* e) {
     }
     if (app->picked && e->type == app->picked) {
         picked(app, e->user.data1);
+        SDL_free(e->user.data1);
+        return;
+    }
+    if (app->arceus_picked && e->type == app->arceus_picked) {
+        arceus_imported(app, e->user.data1);
         SDL_free(e->user.data1);
         return;
     }

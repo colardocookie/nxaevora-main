@@ -615,6 +615,80 @@ int main(int argc, char** argv) {
                                  "not be checked"));
         gui_settings_free(&g);
     }
+    { /* the page's import of a launcher file: the import row first on the page and no option of a run, the forms of a
+         line, values read as their readers read them, and nothing changed for a file that is no choice */
+        static const char arceus[] =
+            "Arceus graphics\tarceus_upscaling\t\tint\t0\t4\tAA\tAnti-aliasing and upscaling\t0=Off|1=TAA|2=FSR|3=DLSS|"
+            "4=XeSS\n"
+            "Arceus graphics\tarceus_scene_scale\t\tint\t0\t3\tScale\tScene scale\t0=Native|1=3/4|2=2/3|3=1/2\n"
+            "Arceus graphics\tarceus_fixed_resolution\t\tint\t0\t1\tFixed\tFixed resolution\t0=Off|1=On\n";
+        static const char taa_four[] = "set SNX_ARCEUS_TEMPORAL=taa\nset SNX_ARCEUS_TEMPORAL_VECTORS=object\n"
+                                       "set SNX_ARCEUS_TEMPORAL_LINKS=1\nset SNX_ARCEUS_TEMPORAL_RECT=1\n";
+        static const struct {
+            const char* file;
+            int taken;
+            const char *aa, *scale, *fixed, *said;
+        } cases[] = {
+            {"@echo off\r\nset SNX_ARCEUS_TEMPORAL=taa\r\nset SNX_ARCEUS_TEMPORAL_VECTORS=object\r\n"
+             "set SNX_ARCEUS_TEMPORAL_LINKS=1\r\nset SNX_ARCEUS_TEMPORAL_RECT=1\r\nset SNX_ARCEUS_UPSCALER=dlss\r\n"
+             "set SNX_ARCEUS_SCENE_SCALE=0.5\r\nset SNX_ARCEUS_MOVEMENT_SITES=1ff\r\nscarletnx.exe\r\n",
+             1, "3", "3", "1", "Taken from the file: DLSS, scene scale 1/2, fixed resolution On"},
+            {"$env:SNX_ARCEUS_TEMPORAL = \"taa\"\n$env:SNX_ARCEUS_TEMPORAL_VECTORS='object'\n"
+             "export SNX_ARCEUS_TEMPORAL_LINKS=1\nset \"SNX_ARCEUS_TEMPORAL_RECT=1\"\n  set snx_arceus_upscaler=fsr  \n"
+             "SNX_ARCEUS_SCENE_SCALE=2of3\n",
+             1, "2", "2", "1", "Taken from the file: FSR, scene scale 2/3, fixed resolution On"},
+            {"SNX_ARCEUS_FIXED_RESOLUTION=0\nSNX_ARCEUS_TEMPORAL_VECTORS=object\nSNX_ARCEUS_UPSCALER=off\n", 1,
+             "0", "0", "0",
+             "Taken from the file: Off, scene scale Native, fixed resolution Off"},
+            {"SNX_ARCEUS_FIXED_RESOLUTION=1\nSNX_ARCEUS_SCENE_SCALE=1\n", 1, "0", "0", "1",
+             "Taken from the file: Off, scene scale Native, fixed resolution On"},
+            {"set SNX_ARCEUS_UPSCALER=spatial\n", 0, NULL, NULL, NULL,
+             "SNX_ARCEUS_UPSCALER=spatial has no choice on this page: nothing changed"},
+            {"set SNX_ARCEUS_TEMPORAL=taa\nset SNX_ARCEUS_FIXED_RESOLUTION=0\n", 0, NULL, NULL, NULL,
+             "The file's lines together are no choice of this page: nothing changed"},
+            {"set SNX_ARCEUS_MOVEMENT_SITES=1ff\nREM SNX_ARCEUS_UPSCALER=dlss\n", 0, NULL, NULL, NULL,
+             "The file sets none of this page's switches: nothing changed"},
+        };
+        GuiSettings g = {0};
+        const char* options[16];
+        char said[256], file[512];
+        int row;
+        assert(!gui_settings_read(&g, arceus));
+        row = at(&g, "Import from a launcher file");
+        assert(row >= 0 && g.values[row].kind == GUI_SETTING_IMPORT);
+        assert(!strcmp(g.keys[row].section, GUI_SETTINGS_ARCEUS));
+        assert(at(&g, "arceus_upscaling") == row + 1);
+        for (unsigned k = 0; k < sizeof cases / sizeof *cases; k++) {
+            assert(gui_settings_set(&g, "arceus_upscaling", "1") && gui_settings_set(&g, "arceus_scene_scale", "1") &&
+                   gui_settings_set(&g, "arceus_fixed_resolution", "1"));
+            assert(gui_settings_arceus_import(&g, cases[k].file, said, sizeof said) == cases[k].taken);
+            assert(!strcmp(said, cases[k].said));
+            assert(!strcmp(gui_settings_value(&g, "arceus_upscaling"), cases[k].taken ? cases[k].aa : "1"));
+            assert(!strcmp(gui_settings_value(&g, "arceus_scene_scale"), cases[k].taken ? cases[k].scale : "1"));
+            assert(!strcmp(gui_settings_value(&g, "arceus_fixed_resolution"), cases[k].taken ? cases[k].fixed : "1"));
+        }
+        /* the TAA set itself. Without its rectangle it is no choice. The other three without TEMPORAL do nothing in
+           the code, so that file is Off */
+        assert(gui_settings_arceus_import(&g, taa_four, said, sizeof said) == 1 &&
+               !strcmp(gui_settings_value(&g, "arceus_upscaling"), "1"));
+        const char* rect = strstr(taa_four, "set SNX_ARCEUS_TEMPORAL_RECT");
+        snprintf(file, sizeof file, "%.*s", (int)(rect - taa_four), taa_four);
+        assert(gui_settings_arceus_import(&g, file, said, sizeof said) == 0 &&
+               !strcmp(said, "The file's lines together are no choice of this page: nothing changed"));
+        assert(gui_settings_arceus_import(&g, taa_four + strlen("set SNX_ARCEUS_TEMPORAL=taa\n"), said, sizeof said) ==
+                   1 &&
+               !strcmp(gui_settings_value(&g, "arceus_upscaling"), "0"));
+        /* the import row is no option of a run */
+        const size_t n = gui_settings_options(&g, 0, options);
+        for (size_t i = 0; i < n; i++) assert(!strstr(options[i], "Import"));
+        gui_settings_free(&g);
+        /* Settings with no Arceus page take nothing */
+        assert(!gui_settings_read(&g, "Graphics\tanisotropy\t0\tint\t0\t16\tTexture filtering\t\t0=0|1=1\n"));
+        assert(at(&g, "Import from a launcher file") < 0);
+        assert(gui_settings_arceus_import(&g, taa_four, said, sizeof said) == 0 &&
+               !strcmp(said, "These Settings have no Arceus graphics page to take them"));
+        gui_settings_free(&g);
+    }
     puts("GUI settings: the runtime's list, picks and a run's options passed");
     return 0;
 }

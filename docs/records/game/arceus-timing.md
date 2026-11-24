@@ -615,3 +615,11 @@ card. It prints `arceus-capabilities: NAME: available on CARD` or `arceus-capabi
 REASON`. The launcher adds " - not available" to that choice's word, or " - not checked" when the mode gave no
 answer, and ends the row's help with each line. The choice stays selectable. The game asks again at its start either
 way. With two cards the pick can differ from the game's where only one of them can present to the window.
+
+Import. The page's first row, Import from a launcher file, takes a file the player picks in the system's picker
+and reads its lines of the seven switches, in any of the forms `NAME=VALUE`, `set NAME=VALUE`, `set "NAME=VALUE"`,
+`export NAME=VALUE` and `$env:NAME = "VALUE"`, a name in any case, the last line of a name winning. A value is taken
+as its reader takes it: `SNX_ARCEUS_FIXED_RESOLUTION=1`, an upscaler of `0` or `off`, and a scale of 1 or more read as
+unset, the three temporal options are unset without `SNX_ARCEUS_TEMPORAL`, and a scale is written as the page writes
+it (`0.5` is `1/2`). When the lines are one of the rows' sets, the three rows are set to it. Otherwise nothing changes,
+and the launcher says which line has no choice, or that the lines together are none. The file is never written.

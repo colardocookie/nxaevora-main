@@ -14,8 +14,8 @@
 #include "gui/theme.h"
 
 /* a row that is no setting: a page's, which opens the section/page rows listed after it, and its All, first on that
-   page, which steps them together */
-enum { GUI_SETTING_PAGE = 1, GUI_SETTING_ALL };
+   page, which steps them together; and the Arceus graphics page's import of a launcher file, first on its page */
+enum { GUI_SETTING_PAGE = 1, GUI_SETTING_ALL, GUI_SETTING_IMPORT };
 #define GUI_SETTING_TEXT 192 /* a typed value's room: gamepad_map's whole map (pad_map.h) is 165 at most */
 typedef struct {
     int word;                           /* a word row's: the word, 0 the .ini's */
@@ -51,6 +51,11 @@ void gui_settings_arceus_note(GuiSettings* settings);
    not checked, gets that after its word, and the row's help ends with each upscaler's line. text NULL: no answer,
    every one not checked. Again with each check, from the row's own words */
 void gui_settings_arceus_capabilities(GuiSettings* settings, const char* text);
+/* a launcher file's text (text, as the player picked it) into the Arceus page's rows: its lines of the seven switches
+   the rows stand for (NAME=VALUE, set NAME=VALUE, set "NAME=VALUE", export NAME=VALUE, $env:NAME = "VALUE"), a value
+   that reads as unset taken as unset, set the three rows only when they are one of the rows' sets. 1 when they did,
+   else 0 with nothing changed. said says which, or the line that has no row. The file is never written */
+int gui_settings_arceus_import(GuiSettings* settings, const char* text, char* said, size_t size);
 /* the row of key set to value, a word or a text as the row takes: 1 when it did */
 int gui_settings_set(GuiSettings* settings, const char* key, const char* value);
 /* the rows as they are, the launcher's own choices among them, as the values to start from */

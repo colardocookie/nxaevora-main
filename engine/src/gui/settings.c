@@ -5,6 +5,7 @@
 #include "common/utilities/ini_lines.h"
 #include "gui/i18n.h"
 #include "nx/runtime/arceus_graphics.h"
+#include "nx/runtime/arceus_scene_scale.h"
 #include "snx_settings.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -62,7 +63,7 @@ int gui_settings_read(GuiSettings* s, const char* runtime) {
     const char** free_words;
     char *line, *next, *text, *page = NULL, *list, *own_end;
     GuiSetting *link = NULL, *all = NULL, *v;
-    int w;
+    int w, import = 0;
     gui_settings_free(s);
     size = own + strlen(runtime) + 1;
     list = malloc(size);
@@ -116,6 +117,15 @@ int gui_settings_read(GuiSettings* s, const char* runtime) {
                       GUI_KEY_ACTION);
             all->kind = GUI_SETTING_ALL;
             all->first = s->count;
+        }
+        if (!import && !strcmp(field[0], GUI_SETTINGS_ARCEUS)) { /* the page's import, first on it */
+            GuiSetting* in = row(s, field[0], SNX_TR_NOOP("Import from a launcher file"), NULL,
+                                 SNX_TR_NOOP("Takes this page's switches from a launcher file you pick, when they "
+                                             "are one of its choices. The file is not changed"),
+                                 NULL, GUI_KEY_ACTION);
+            snprintf(in->text, sizeof in->text, ">");
+            in->kind = GUI_SETTING_IMPORT;
+            import = 1;
         }
         if (*field[8]) words = words_of(field[8], &free_words, &values);
         v = row(s, field[0], field[1], field[7], field[6], words, words ? GUI_KEY_WORD : GUI_KEY_TEXT);
@@ -470,4 +480,121 @@ void gui_settings_arceus_capabilities(GuiSettings* s, const char* text) {
     }
     k->words = marked;
     k->about = help;
+}
+
+/* the first n bytes of a and b the same, letters in any case: 0 */
+static int arceus_casecmp(const char* a, const char* b, size_t n) {
+    for (; n; --n, ++a, ++b) {
+        const int x = *a >= 'A' && *a <= 'Z' ? *a + 32 : *a, y = *b >= 'A' && *b <= 'Z' ? *b + 32 : *b;
+        if (x != y || !x) return x - y;
+    }
+    return 0;
+}
+/* the value of NAME in one line of a launcher file, in any of its forms, cut from its quotes: NULL when the line is
+   not NAME's. A Windows variable's name has any case */
+static const char* arceus_line_value(const char* line, const char* name, char* out, size_t size) {
+    const size_t n = strlen(name);
+    while (*line == ' ' || *line == '\t') ++line;
+    if (!arceus_casecmp(line, "set ", 4) || !strncmp(line, "export ", 7)) line += *line == 'e' ? 7 : 4;
+    else if (!arceus_casecmp(line, "$env:", 5)) line += 5;
+    while (*line == ' ') ++line;
+    const int quoted = *line == '"'; /* set "NAME=VALUE" */
+    line += quoted;
+    if (arceus_casecmp(line, name, n)) return NULL;
+    line += n;
+    while (*line == ' ') ++line;
+    if (*line != '=') return NULL;
+    ++line;
+    while (*line == ' ') ++line;
+    size_t len = strcspn(line, "\r\n");
+    while (len && (line[len - 1] == ' ' || line[len - 1] == '\t')) --len;
+    if (quoted && len && line[len - 1] == '"') --len;
+    else if (len >= 2 && (line[0] == '"' || line[0] == '\'') && line[len - 1] == line[0]) ++line, len -= 2;
+    snprintf(out, size, "%.*s", (int)len, line);
+    return out;
+}
+/* a switch's value as its reader takes it: one that reads as unset is NULL, and a scale is written as the rows
+   write it */
+static const char* arceus_as_read(int i, const char* v, const char* temporal) {
+    static const char* const fractions[3] = {"3/4", "2/3", "1/2"};
+    if (!v) return NULL;
+    switch (i) {
+    case ARCEUS_GFX_TEMPORAL: return strcmp(v, "taa") && strcmp(v, "probe") ? NULL : v; /* temporal.c temporal_on */
+    case ARCEUS_GFX_VECTORS:
+    case ARCEUS_GFX_LINKS:
+    case ARCEUS_GFX_RECT: return temporal ? v : NULL; /* read only under a temporal mode */
+    case ARCEUS_GFX_UPSCALER: return !v[0] || !strcmp(v, "0") || !strcmp(v, "off") ? NULL : v; /* device.c 122 */
+    case ARCEUS_GFX_FIXED_RESOLUTION: return strcmp(v, "1") ? v : NULL; /* on unless set to another value */
+    case ARCEUS_GFX_SCENE_SCALE: {
+        float scale, each;
+        if (arceus_scene_scale_parse(v, &scale) == ARCEUS_SCENE_SCALE_OFF) return NULL;
+        for (int k = 0; k < 3; ++k)
+            if (arceus_scene_scale_parse(fractions[k], &each) == ARCEUS_SCENE_SCALE_USED && each == scale)
+                return fractions[k];
+        return v;
+    }
+    default: return v;
+    }
+}
+static int arceus_same(const char* a, const char* b) { return a == b || (a && b && !strcmp(a, b)); }
+
+int gui_settings_arceus_import(GuiSettings* s, const char* text, char* said, size_t size) {
+    static const char* const aa_words[ARCEUS_AA_COUNT] = {"Off", "TAA", "FSR", "DLSS", "XeSS"};
+    static const char* const scale_words[ARCEUS_SCALE_COUNT] = {"Native", "3/4", "2/3", "1/2"};
+    char raw[ARCEUS_GFX_NAMES][256], value[64];
+    const char* file[ARCEUS_GFX_NAMES] = {NULL};
+    const char* read[ARCEUS_GFX_NAMES];
+    int any = 0;
+    if (size) said[0] = 0;
+    for (const char* c = text ? text : ""; *c; c += strcspn(c, "\n"), c += *c == '\n')
+        for (int i = 0; i < ARCEUS_GFX_NAMES; ++i) /* the last line of a name wins, as in the file's own run */
+            if (arceus_line_value(c, arceus_graphics_name(i), raw[i], sizeof raw[i])) file[i] = raw[i], any = 1;
+    if (!any) {
+        snprintf(said, size, "The file sets none of this page's switches: nothing changed");
+        return 0;
+    }
+    const char* temporal = arceus_as_read(ARCEUS_GFX_TEMPORAL, file[ARCEUS_GFX_TEMPORAL], NULL);
+    for (int i = 0; i < ARCEUS_GFX_NAMES; ++i) read[i] = arceus_as_read(i, file[i], temporal);
+    /* the rows whose set is the file's, the first in the page's order: a scale only under an upscaler, the fixed
+       resolution On where it is locked */
+    for (int aa = 0; aa < ARCEUS_AA_COUNT; ++aa)
+        for (int scale = 0; scale < ARCEUS_SCALE_COUNT; ++scale)
+            for (int fixed = 1; fixed >= 0; --fixed) {
+                const ArceusGraphicsRows rows = {aa, scale, fixed};
+                const char* mapped[ARCEUS_GFX_NAMES];
+                int i = 0;
+                arceus_graphics_map(&rows, mapped);
+                while (i < ARCEUS_GFX_NAMES && arceus_same(mapped[i], read[i])) ++i;
+                if (i < ARCEUS_GFX_NAMES) continue;
+                int set = 1;
+                snprintf(value, sizeof value, "%d", aa);
+                set &= gui_settings_set(s, "arceus_upscaling", value);
+                snprintf(value, sizeof value, "%d", scale);
+                set &= gui_settings_set(s, "arceus_scene_scale", value);
+                snprintf(value, sizeof value, "%d", fixed);
+                set &= gui_settings_set(s, "arceus_fixed_resolution", value);
+                if (!set) {
+                    snprintf(said, size, "These Settings have no Arceus graphics page to take them");
+                    return 0;
+                }
+                snprintf(said, size, "Taken from the file: %s, scene scale %s, fixed resolution %s", aa_words[aa],
+                         scale_words[scale], fixed ? "On" : "Off");
+                return 1;
+            }
+    /* none: the first line whose value no choice gives, else the lines together */
+    for (int i = 0; i < ARCEUS_GFX_NAMES; ++i) {
+        int found = !read[i];
+        for (int k = 0; k < 40 && !found; ++k) {
+            const ArceusGraphicsRows rows = {k / 8, k / 2 % 4, k % 2};
+            const char* mapped[ARCEUS_GFX_NAMES];
+            arceus_graphics_map(&rows, mapped);
+            found = arceus_same(mapped[i], read[i]);
+        }
+        if (!found) {
+            snprintf(said, size, "%s=%s has no choice on this page: nothing changed", arceus_graphics_name(i), file[i]);
+            return 0;
+        }
+    }
+    snprintf(said, size, "The file's lines together are no choice of this page: nothing changed");
+    return 0;
 }

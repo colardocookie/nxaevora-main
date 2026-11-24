@@ -3301,6 +3301,14 @@ msgid "Every row of this page at once"
 msgstr ""
 
 #: src/gui/settings.c
+msgid "Import from a launcher file"
+msgstr ""
+
+#: src/gui/settings.c
+msgid "Takes this page's switches from a launcher file you pick, when they are one of its choices. The file is not changed"
+msgstr ""
+
+#: src/gui/settings.c
 msgid "Mixed"
 msgstr ""
 

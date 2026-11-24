@@ -11,22 +11,6 @@ static int g_decided;
 static unsigned g_early;      /* reads before the decision */
 static char g_missing[512]; /* the upscaler the rows named, not there: its line */
 
-void arceus_graphics_map(const ArceusGraphicsRows* rows, const char* out[ARCEUS_GFX_NAMES]) {
-    static const char* const upscalers[ARCEUS_AA_COUNT] = {NULL, NULL, "fsr", "dlss", "xess"};
-    static const char* const scales[ARCEUS_SCALE_COUNT] = {NULL, "3/4", "2/3", "1/2"};
-    const int aa = rows->aa >= 0 && rows->aa < ARCEUS_AA_COUNT ? rows->aa : ARCEUS_AA_OFF;
-    const int scale = rows->scale >= 0 && rows->scale < ARCEUS_SCALE_COUNT ? rows->scale : ARCEUS_SCALE_NATIVE;
-    const int temporal = aa != ARCEUS_AA_OFF;
-    out[ARCEUS_GFX_TEMPORAL] = temporal ? "taa" : NULL;
-    out[ARCEUS_GFX_VECTORS] = temporal ? "object" : NULL;
-    out[ARCEUS_GFX_LINKS] = temporal ? "1" : NULL;
-    out[ARCEUS_GFX_RECT] = temporal ? "1" : NULL;
-    out[ARCEUS_GFX_UPSCALER] = upscalers[aa];
-    /* the scale needs an upscaler. TAA and the upscalers keep the fixed resolution on, the code's default */
-    out[ARCEUS_GFX_SCENE_SCALE] = upscalers[aa] ? scales[scale] : NULL;
-    out[ARCEUS_GFX_FIXED_RESOLUTION] = !temporal && rows->fixed == 0 ? "0" : NULL;
-}
-
 static const char* const aa_words[ARCEUS_AA_COUNT] = {"off", "TAA", "FSR", "DLSS", "XeSS"};
 
 void arceus_graphics_decide(uint64_t title_id, const ArceusGraphicsRows* rows, ArceusGraphicsPresent present) {
