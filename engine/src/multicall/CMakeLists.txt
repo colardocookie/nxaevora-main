@@ -2,23 +2,12 @@
 # Copyright 2026 the ScarletNX contributors
 # nxaevora-engine, the program, wherever the build has a driver: its main (main.c), the only one, and every driver the build
 # has, each a library of its own folder, linked by name (the folders are configured after this one), run by the name the
-# program is started under or by that name as its first argument. On Linux and macOS each driver's name is a link to it
+# program is started under or by that name as its first argument. On Linux each driver's name is a link to it
 # beside it. Windows has none: its launcher runs a driver with its name first, and its build folder alone has hard
-# links, for the tests and a developer's shell. Android's and iOS's apps start it their own way.
-if(ANDROID)
-    # the app (dist/android): its game activity loads libscarletnx.so and calls its main, as the menu does through
-    # libscarletnx-run.so (src/nx)
-    add_library(scarletnx SHARED main.c)
-    # FFmpeg's assembly reaches its tables PC-relative, as its own shared libraries allow with this
-    target_link_options(scarletnx PRIVATE -Wl,-Bsymbolic)
-    install(TARGETS scarletnx LIBRARY DESTINATION lib/${ANDROID_ABI})
-else()
-    add_executable(scarletnx main.c)
-    if(NOT APPLE)
-        # the program file of every build that is not an Apple app package
-        set_target_properties(scarletnx PROPERTIES OUTPUT_NAME nxaevora-engine)
-    endif()
-endif()
+# links, for the tests and a developer's shell.
+add_executable(scarletnx main.c)
+# the program file of every build
+set_target_properties(scarletnx PROPERTIES OUTPUT_NAME nxaevora-engine)
 # linked as C++: VMA, LLVM and the demangler need the C++ runtime. It goes in the build folder itself, where the
 # driver and CI look for it
 set_target_properties(scarletnx PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON LINKER_LANGUAGE CXX
@@ -39,7 +28,7 @@ macro(snx_multicall_driver id library name deploy)
 endmacro()
 if(SNX_BUILD_NX)
     # the menu the Switch driver opens (src/nx), told which drivers the program is (main.c)
-    if(SNX_BUILD_GUI AND NOT ANDROID)
+    if(SNX_BUILD_GUI)
         target_compile_definitions(scarletnx PRIVATE SNX_MULTICALL_GUI)
     endif()
     # a build of the host tools has the Switch's recompile, and no runtime to copy beside its games
@@ -76,21 +65,8 @@ else()
     target_link_libraries(scarletnx PRIVATE Threads::Threads ${CMAKE_DL_LIBS} m)
     # but GDB's two JIT names (gdb_jit.c), which it finds by name: kept where a strip (quick-sharun's, the AppImage's)
     # leaves no .symtab. A shared libLLVM's references to them bind to these already
-    if(NOT APPLE)
-        target_link_options(scarletnx PRIVATE "LINKER:--export-dynamic-symbol=__jit_debug_descriptor"
-                            "LINKER:--export-dynamic-symbol=__jit_debug_register_code")
-    endif()
-endif()
-if(IOS)
-    # the app (dist/apple): the menu and then the game it plays, in the one process an iOS app has. main.c's main is
-    # SDL's SDL_main there
-    target_link_libraries(scarletnx PRIVATE SDL3::SDL3)
-    set_target_properties(scarletnx PROPERTIES MACOSX_BUNDLE ON
-                          MACOSX_BUNDLE_INFO_PLIST "${PROJECT_SOURCE_DIR}/dist/apple/Info-iOS.plist"
-                          MACOSX_BUNDLE_GUI_IDENTIFIER org.scarletnx
-                          MACOSX_BUNDLE_BUNDLE_NAME ScarletNX
-                          MACOSX_BUNDLE_SHORT_VERSION_STRING 0.1
-                          MACOSX_BUNDLE_BUNDLE_VERSION 1)
+    target_link_options(scarletnx PRIVATE "LINKER:--export-dynamic-symbol=__jit_debug_descriptor"
+                        "LINKER:--export-dynamic-symbol=__jit_debug_register_code")
 endif()
 
 # a sanitized build (SNX_TEST_SANITIZERS) is a test build, its runtime instrumented: it doesn't go next to the games.
@@ -100,31 +76,27 @@ if(SNX_DEPLOY AND SNX_TEST_SANITIZERS AND BUILD_TESTING)
     message(STATUS "SNX_TEST_SANITIZERS: the runtime is not deployed to the games")
 elseif(SNX_DEPLOY AND snx_deployed)
     add_custom_command(TARGET scarletnx POST_BUILD
-        COMMAND "${CMAKE_COMMAND}" ${snx_deployed} "-DGAMES=${SNX_RECOMPILED_DIR}" "-DWINDOWS=${WIN32}" "-DMACOS=${APPLE}"
+        COMMAND "${CMAKE_COMMAND}" ${snx_deployed} "-DGAMES=${SNX_RECOMPILED_DIR}" "-DWINDOWS=${WIN32}"
                 -P "${PROJECT_SOURCE_DIR}/cmake/deploy.cmake"
         VERBATIM)
 endif()
 
 include(GNUInstallDirs)
-if(IOS) # the app itself, which cmake/apple_package.cmake packs
-    install(TARGETS scarletnx BUNDLE DESTINATION .)
-elseif(NOT ANDROID)
-    install(TARGETS scarletnx RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-    # each driver's name beside it, in place of the program of that name an older build made in this folder
-    foreach(name IN LISTS snx_names)
-        if(WIN32)
-            add_custom_command(TARGET scarletnx POST_BUILD
-                COMMAND "${CMAKE_COMMAND}" -E rm -f "${PROJECT_BINARY_DIR}/${name}.exe"
-                COMMAND "${CMAKE_COMMAND}" -E create_hardlink "$<TARGET_FILE:scarletnx>"
-                        "${PROJECT_BINARY_DIR}/${name}.exe"
-                VERBATIM)
-        else()
-            add_custom_command(TARGET scarletnx POST_BUILD
-                COMMAND "${CMAKE_COMMAND}" -E rm -f "${PROJECT_BINARY_DIR}/${name}"
-                COMMAND "${CMAKE_COMMAND}" -E create_symlink "$<TARGET_FILE_NAME:scarletnx>"
-                        "${PROJECT_BINARY_DIR}/${name}"
-                VERBATIM)
-            install(PROGRAMS "${PROJECT_BINARY_DIR}/${name}" DESTINATION ${CMAKE_INSTALL_BINDIR})
-        endif()
-    endforeach()
-endif()
+install(TARGETS scarletnx RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+# each driver's name beside it, in place of the program of that name an older build made in this folder
+foreach(name IN LISTS snx_names)
+    if(WIN32)
+        add_custom_command(TARGET scarletnx POST_BUILD
+            COMMAND "${CMAKE_COMMAND}" -E rm -f "${PROJECT_BINARY_DIR}/${name}.exe"
+            COMMAND "${CMAKE_COMMAND}" -E create_hardlink "$<TARGET_FILE:scarletnx>"
+                    "${PROJECT_BINARY_DIR}/${name}.exe"
+            VERBATIM)
+    else()
+        add_custom_command(TARGET scarletnx POST_BUILD
+            COMMAND "${CMAKE_COMMAND}" -E rm -f "${PROJECT_BINARY_DIR}/${name}"
+            COMMAND "${CMAKE_COMMAND}" -E create_symlink "$<TARGET_FILE_NAME:scarletnx>"
+                    "${PROJECT_BINARY_DIR}/${name}"
+            VERBATIM)
+        install(PROGRAMS "${PROJECT_BINARY_DIR}/${name}" DESTINATION ${CMAKE_INSTALL_BINDIR})
+    endif()
+endforeach()

@@ -69,9 +69,6 @@ ARTIFACTS = {
     'ScarletNX-linux-riscv64-{short}.AppImage': 'ScarletNX-linux-riscv64.AppImage',
     'ScarletNX-linux-loongarch64-{short}.AppImage': 'ScarletNX-linux-loongarch64.AppImage',
     'ScarletNX-windows-x86_64-{short}': 'ScarletNX-windows-x86_64.zip',
-    'ScarletNX-android-universal-{short}.apk': 'ScarletNX-android-universal.apk',
-    'ScarletNX-macos-arm64-{short}.zip': 'ScarletNX-macos-arm64.zip',
-    'ScarletNX-ios-arm64-{short}.ipa': 'ScarletNX-ios-arm64.ipa',
 }
 # The packages a run may lack and still have built everywhere: their jobs fail without failing the run
 # (continue-on-error in build.yml), so a release without them says they were not built
@@ -80,8 +77,6 @@ OPTIONAL = {
     'ScarletNX-linux-ppc64.AppImage',
     'ScarletNX-linux-riscv64.AppImage',
     'ScarletNX-linux-loongarch64.AppImage',
-    'ScarletNX-macos-arm64.zip',
-    'ScarletNX-ios-arm64.ipa',
 }
 
 

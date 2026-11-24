@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* What the linkers (link_elf.c, link_macho.c, link_coff.c), the ELF object reader (elf_object.c) and the JIT loader
+/* What the linkers (link_elf.c, link_coff.c), the ELF object reader (elf_object.c) and the JIT loader
    (code_loader.c, code_loader_coff.c) share beside link.h: their error, the keys of their GOT slots and veneers, and
    the AArch64 instruction fields their relocations write */
 #ifndef SNX_RECOMPILER_LLVM_LINK_INTERNAL_H

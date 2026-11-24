@@ -91,7 +91,7 @@ with tempfile.TemporaryDirectory() as repo:
     check('no changes from a commit that is not an ancestor', nightly.changes(repo, unmerged, sha) is None)
     check('the title', nightly.title(repo, sha) == f'Nightly 2026-10-15 ({sha[:7]})')
 
-    files = ['ScarletNX-android-universal.apk', 'ScarletNX-linux-aarch64.AppImage', 'ScarletNX-linux-x86_64.AppImage']
+    files = ['ScarletNX-linux-aarch64.AppImage', 'ScarletNX-linux-x86_64.AppImage']
     sizes = {name: 94_563_085 for name in files}
     text = nightly.notes(repo, sha, previous, 'owner/repo', files, DOWNLOAD, 'Kept.', sizes=sizes)
     check(
@@ -102,16 +102,15 @@ with tempfile.TemporaryDirectory() as repo:
     check(
         'the files in the table order',
         rows
-        == ['ScarletNX-linux-x86_64.AppImage', 'ScarletNX-linux-aarch64.AppImage', 'ScarletNX-android-universal.apk'],
+        == ['ScarletNX-linux-x86_64.AppImage', 'ScarletNX-linux-aarch64.AppImage'],
     )
     check(
         'a row each: the system, its architectures, the file by its kind, its size',
-        f'| **Linux** | ARM64 | [AppImage]({DOWNLOAD}/ScarletNX-linux-aarch64.AppImage) | 94.6 MB |' in text
-        and f'| **Android** | ARM64, x86-64 | [APK]({DOWNLOAD}/ScarletNX-android-universal.apk) | 94.6 MB |' in text,
+        f'| **Linux** | ARM64 | [AppImage]({DOWNLOAD}/ScarletNX-linux-aarch64.AppImage) | 94.6 MB |' in text,
     )
     check(
         'how to run each system built, once each, and nothing of one not built',
-        text.count('- **Linux**: ') == 1 and '- **Android**: ' in text and '- **Windows**' not in text,
+        text.count('- **Linux**: ') == 1 and '- **Windows**' not in text,
     )
     check(
         'where AppImageUpdate takes an AppImage: the newest nightly unless said otherwise',
@@ -160,7 +159,7 @@ with tempfile.TemporaryDirectory() as repo:
     )
     check(
         'the files linked from the release they are in, and what becomes of it',
-        f'[APK]({DOWNLOAD}/ScarletNX-android-universal.apk)' in text and 'committed 2026-10-15. Kept.' in text,
+        f'[AppImage]({DOWNLOAD}/ScarletNX-linux-x86_64.AppImage)' in text and 'committed 2026-10-15. Kept.' in text,
     )
 
     # two more than the list holds, on top of the two above

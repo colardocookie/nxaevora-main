@@ -14,9 +14,15 @@ char g_statedir[1024], g_exename[256];
 static u64 g_clock;
 static jmp_buf g_exit_jump;
 static char g_box[256];
+static char g_early_error[256];
+static unsigned g_fatal_calls;
 u64 plat_ns(void) { return g_clock += 10000000u; }
 void plat_exit_now(int code) { longjmp(g_exit_jump, code + 1); }
 void win_fatal_box(const char* msg) { snprintf(g_box, sizeof g_box, "%s", msg); }
+void win_fatal_log(const char* msg) {
+    g_fatal_calls++;
+    snprintf(g_early_error, sizeof g_early_error, "%s", msg);
+}
 
 static unsigned checks, failures;
 #define CHECK(c, what)                                                                                                 \
@@ -85,6 +91,20 @@ int main(int argc, char** argv) {
     /* before the module: stderr only, and kept for the log (60-byte lines: they don't all fit in the 4 KiB) */
     for (i = 0; i < 100; i++) LOG("early %02d ..........................................\n", i);
     CHECK(!strcmp(slurp(log), "the run before\n"), "the log was written before the module is loaded");
+    /* before the module: a warning writes no early error file; a fatal writes it once, exits 5 and shows no box */
+    g_fatal_calls = 0;
+    g_early_error[0] = g_box[0] = 0;
+    WARN("early error line\n");
+    CHECK(g_fatal_calls == 0 && !g_early_error[0], "an early warning wrote the early error file");
+    g_fatal_calls = 0;
+    g_early_error[0] = g_box[0] = 0;
+    code = setjmp(g_exit_jump);
+    if (!code) fatal("early fatal before the module");
+    CHECK(code == 6, "an early fatal before the module did not exit with 5");
+    CHECK(g_fatal_calls == 1, "an early fatal before the module wrote the early error file twice");
+    CHECK(strstr(g_early_error, "early fatal before the module") != NULL,
+          "an early fatal before the module did not write an error");
+    CHECK(!g_box[0], "an early fatal before the module showed a box");
     g_mod = &mod;
     snprintf(g_statedir, sizeof g_statedir, "%s/", dir);
     snprintf(g_exename, sizeof g_exename, "LogTest");
@@ -192,14 +212,27 @@ int main(int argc, char** argv) {
         g_settings.log_size_limit = 16;
     }
 
-    /* fatal: the log, the box, and an exit with 1, even with a redirect set */
+    /* Before the window, fatal exits with 5 and does not show a box; win_fatal_log writes the early error file once */
+    g_fatal_calls = 0;
+    g_early_error[0] = g_box[0] = 0;
+    code = setjmp(g_exit_jump);
+    if (!code) fatal("early failure");
+    CHECK(code == 6, "early fatal did not exit with 5");
+    CHECK(!g_box[0], "early fatal showed a box");
+    CHECK(g_fatal_calls == 1 && strstr(g_early_error, "early failure") != NULL,
+          "early fatal did not write the early error file once");
+    plat_window_ready();
+    /* After the window, fatal logs, shows the box and exits with 6. */
+    g_fatal_calls = 0;
+    g_early_error[0] = g_box[0] = 0;
     r = fopen(redir, "w");
     tls_log_redirect = r;
     code = setjmp(g_exit_jump);
     if (!code) fatal("boom %d", 42);
     fclose(r);
-    CHECK(code == 2, "fatal did not exit with 1");
+    CHECK(code == 7, "fatal did not exit with 6");
     CHECK(!strcmp(g_box, "boom 42"), "fatal did not show its box");
+    CHECK(g_fatal_calls == 1, "a fatal after the window wrote the early error file twice");
     CHECK(strstr(slurp(log), "] FATAL: boom 42\n") != NULL, "fatal's line is not in the log");
 
     log_crash_mode();

@@ -3,7 +3,9 @@
 #include "nx/runtime/driver/driver.h"
 #include "common/utilities/common.h"
 #include "common/utilities/demangle.h"
+#include "common/utilities/exit_codes.h"
 #include "common/utilities/logscan.h"
+#include "common/utilities/progress.h"
 #include "nx/runtime/driver/game_name.h"
 #include "nx/runtime/driver/recompile.h"
 #include "nx/runtime/driver/setup.h"
@@ -27,7 +29,18 @@
 #endif
 
 static void usage(void) {
-    puts("Usage: nxaevora-engine [OPTIONS] INPUT [-- GAME_ARGUMENTS...]\n"
+    puts("Usage: nxaevora-engine <command> [OPTIONS]\n"
+         "  recompile INPUT        Recompile a decrypted game folder or an NRO, without playing\n"
+         "  run PROGRAM            Run a recompiled game (its arguments go after --)\n"
+         "  settings list          List the settings, tab-separated (--scope=game|recompile)\n"
+         "  settings schema        Print the settings definition as one JSON document\n"
+         "  settings get KEY --game=PROGRAM\n"
+         "                         Print one value of the game's .ini, or its default\n"
+         "  settings set KEY VALUE --game=PROGRAM\n"
+         "                         Write one value of the game's .ini\n"
+         "  settings check KEY VALUE\n"
+         "                         Check one value against the settings definition, with no file");
+    puts("The old options are aliases:\n"
          "  INPUT                  A game made already, or an NRO; a decrypted game folder with -r\n"
          "  -r, --recompile        Recompile a decrypted game folder or an NRO, without playing\n"
          "  -H, --headless         Run without a window or swapchain");
@@ -49,8 +62,6 @@ static void usage(void) {
          "                         else the user's data folder,\n"
 #ifdef _WIN32
          "                         %APPDATA%\\nxaevora)");
-#elif defined(__APPLE__)
-         "                         ~/Library/Application Support/nxaevora)");
 #else
          "                         ~/.local/share/nxaevora)");
 #endif
@@ -88,22 +99,6 @@ static int same_bytes(const char* a, const char* b) {
     if (y) fclose(y);
     return same;
 }
-/* 1 when the runtime a game runs carries a Vulkan driver its folder has not (snx_vulkan_driver): the deploy puts it
-   there, and a folder that lost it gets it again (docs/APPLE.md) */
-static int driver_missing(const char* run, const char* game) {
-#if defined(__APPLE__) && !defined(SNX_IOS)
-    char* carried = snx_vulkan_driver(run);
-    char* there = carried ? snx_vulkan_driver(game) : NULL;
-    int missing = carried && !there;
-    free(carried);
-    free(there);
-    return missing;
-#else
-    (void)run;
-    (void)game;
-    return 0;
-#endif
-}
 /* A game made by another build of this ABI runs the code it was recompiled into (stamped), with its folder's copy of
    that build's runtime: replaced by this build's when the two differ, so its fixes reach the games made before it. 0,
    or nonzero with a line saying why */
@@ -113,15 +108,14 @@ static int refresh_runtime(const SnxPaths* paths, const char* game) {
     /* a build without the runtime deploys one it builds, not itself: there is nothing here to hold the copy to */
     if (!run) return 0;
     same = same_bytes(run, game);
-    /* the library beside the runtime is deployed with it (snx_deploy_runtime): a folder that lost it gets it back */
-    if (!same || driver_missing(run, game)) {
+    /* the library beside the runtime is deployed with it (snx_deploy_runtime) */
+    if (!same) {
         rc = snx_deploy_runtime(run, game);
         if (!rc && !same) printf("%s ran another build's runtime: it runs %s now\n", game, run);
     }
     free(run);
     return rc;
 }
-#ifndef SNX_IOS /* the pack of an app has no stamp: the loader checks its ABI */
 /* whether this build made the game at base (<folder>/<name>, a game's or its update's), with the mods its game plays
    now (mods.h's snx_game_stamp_is) */
 static int stamped(const char* base) {
@@ -131,7 +125,6 @@ static int stamped(const char* base) {
     free(made);
     return same;
 }
-#endif
 /* a game the recompile made, named by its folder (recompiled/<id>) or its program there (recompiled/<id>/<id>, .exe on
    Windows): 1 with its folder and name, owned when asked for. A game an older version laid out beside the others is not
    one */
@@ -262,9 +255,10 @@ static int play_dump(const char* input, const SnxPaths* paths, unsigned flags, c
     SnxU64 addon = 0;
     const char** command =
         (const char**)snx_alloc((size_t)(game_argc + settings + recompiling + 24) * sizeof(*command));
-    int rc = 1, nro = is_nro_path(input), prepared = prepared_game(input, &folder, &name), named = 0;
-    int n, j;
+    int rc = SNX_EXIT_INTERNAL, nro = is_nro_path(input), prepared = prepared_game(input, &folder, &name), named = 0;
+    int n, j, child_started = 0;
     SnxNpdm npdm;
+    snx_progress_stage(SNX_PROGRESS_STAGE_INPUT);
     command[0] = paths->executable;
     command[1] = "--data";
     command[2] = paths->repo;
@@ -273,6 +267,7 @@ static int play_dump(const char* input, const SnxPaths* paths, unsigned flags, c
     if (prepared) {
         if (outdir) {
             snx_error("--outdir cannot go with %s: it is a game made already", input);
+            rc = SNX_EXIT_USAGE;
             goto done;
         }
         games = snx_dirname(folder);
@@ -297,16 +292,22 @@ static int play_dump(const char* input, const SnxPaths* paths, unsigned flags, c
     if (prepared_addon(input, &folder, &name, &addon)) {
         snx_error("%s is an update's program made from a dump: recompile the game from its decrypted folder with -r",
                   input);
+        rc = SNX_EXIT_GAME_FILES;
         goto done;
     }
-    if (snx_refuse_encrypted_dump(input)) goto done;
+    if (snx_refuse_encrypted_dump(input)) {
+        rc = SNX_EXIT_GAME_FILES;
+        goto done;
+    }
     if (!nro || !snx_is_file(input)) {
         snx_error("%s is not a file", input);
+        rc = SNX_EXIT_GAME_FILES;
         goto done;
     }
     games = outdir ? snx_absolute(outdir) : snx_recompiled_dir(paths->repo);
     if (snx_load_npdm(input, &npdm, error, sizeof error)) {
-        rc = snx_error("%s", error);
+        snx_error("%s", error);
+        rc = SNX_EXIT_GAME_FILES;
         goto done;
     }
     name = snx_game_name(NULL, &npdm, input);
@@ -320,24 +321,17 @@ made:
         rc = snx_error("cannot resolve the game's folder for %s", input);
         goto done;
     }
+    snx_progress_done(SNX_PROGRESS_STAGE_INPUT);
 #ifdef _WIN32
     code = snx_format("%s_code.dll", base);
     game = snx_format("%s.exe", base);
-#elif defined(SNX_IOS)
-    /* the app is the runtime: a game is its pack of objects, made on the device (--target ios) */
-    code = snx_format("%s_code.snxobj", base);
-    game = snx_strdup(code);
 #else
     code = snx_format("%s_code.so", base);
     game = snx_strdup(base);
 #endif
     {
         /* Always restage an NRO: a same-named cached game may belong to another input or an older build. */
-#ifdef SNX_IOS
-        if (nro || (flags & SNX_RECOMP) || !snx_is_file(code)) {
-#else
         if (nro || (flags & SNX_RECOMP) || !snx_is_file(game) || !snx_is_file(code) || !stamped(base)) {
-#endif
             command[5] = "-r";
             command[6] = "--outdir";
             command[7] = games;
@@ -347,36 +341,30 @@ made:
                 command[n++] = opt;
             }
             for (j = 0; j < recompiling; ++j) command[n++] = recompile[j];
-#ifdef SNX_IOS
-            command[n++] = "--target";
-            command[n++] = "ios";
-#endif
+            if (snx_progress_mode() == SNX_PROGRESS_JSONL) command[n++] = "--progress=jsonl-stage";
             command[n++] = "--";
             command[n++] = source;
             if (named) command[n++] = name;
             command[n] = NULL;
-            rc = snx_run_stage(command, NULL, "Recompilation");
+            snx_progress_child_redirect();
+            rc = snx_run_stage(command, NULL, "Recompilation", &child_started);
+            snx_progress_child_restore(child_started);
             if (rc) goto done;
             if (!snx_is_file(game)) {
-                rc = snx_error("recompilation finished without creating %s", game);
+                snx_error("recompilation finished without creating %s", game);
+                rc = SNX_EXIT_RECOMPILE;
                 goto done;
             }
         }
     }
     /* the game is made: the recompile ran, or its stamp is this build's */
-    rc = 0;
+    rc = SNX_EXIT_OK;
     if (flags & SNX_RECOMP) goto done;
     /* the game may start with another environment than this run's (its copy outside an AppImage, a shortcut) */
     if (snx_record_folders(folder, name)) {
-        rc = 1;
+        rc = SNX_EXIT_INTERNAL;
         goto done;
     }
-#if defined(__ANDROID__) || defined(SNX_IOS)
-    /* an app's child process has no window to play in: the app runs the game this names (docs/ANDROID.md) */
-    printf("Ready %s\n", name);
-    rc = 0;
-    goto done;
-#endif
     rc = refresh_runtime(paths, game);
     if (rc) goto done;
     n = 0;
@@ -391,11 +379,15 @@ made:
         command[n++] = "-S";
     if (flags & SNX_TRACY_CLIENT) command[n++] = "--tracy";
     if (flags & SNX_TRACY_CAPTURE) command[n++] = "--tracy-capture";
+    if (snx_progress_mode() == SNX_PROGRESS_JSONL) command[n++] = "--progress=jsonl-stage";
     /* Keep the boundary so the deployed launcher cannot interpret game arguments as another request. */
     if (game_argc) command[n++] = "--";
     for (j = 0; j < game_argc; ++j) command[n++] = game_argv[j];
     command[n] = NULL;
-    rc = (flags & SNX_GDB) ? snx_run_debug_stage(command, folder, "Game") : snx_run_stage(command, folder, "Game");
+    snx_progress_child_redirect();
+    rc = (flags & SNX_GDB) ? snx_run_debug_stage(command, folder, "Game", &child_started)
+                           : snx_run_stage(command, folder, "Game", &child_started);
+    snx_progress_child_restore(child_started);
 done:
     free(name);
     free(games);
@@ -434,13 +426,26 @@ static int setting_known(const char* option) {
     key[n] = 0;
     return snx_setting_known(key);
 }
+/* The exit code of a failed dump: a program that cannot be loaded is the game's files, a failed write or a failure of
+   the host is inside the runtime */
+int dump_exit_code(SnxDumpResult result) {
+    return result == SNX_DUMP_INPUT ? SNX_EXIT_GAME_FILES : SNX_EXIT_INTERNAL;
+}
 /* --dump-modules PROGRAM DIR: each module's image and symbols, at the bases the runtime gives them (loader.h's
    snx_dump_program has the format). Tools read game code through it */
 static int dump_modules(int argc, char** argv) {
     char error[1024];
-    if (argc != 4) return snx_error("--dump-modules takes a program (an extracted game or an NRO) and a folder");
-    if (snx_dump_program(argv[2], argv[3], error, sizeof error)) return snx_error("%s", error);
-    return 0;
+    SnxDumpResult result;
+    if (argc != 4) {
+        snx_error("--dump-modules takes a program (an extracted game or an NRO) and a folder");
+        return SNX_EXIT_USAGE;
+    }
+    result = snx_dump_program(argv[2], argv[3], error, sizeof error);
+    if (result != SNX_DUMP_OK) {
+        snx_error("%s", error);
+        return dump_exit_code(result);
+    }
+    return SNX_EXIT_OK;
 }
 /* the setup in the terminal for the program at argv0: all of it, or what setup.ini has left. 0 once done */
 static int setup_run(const char* argv0, int all) {
@@ -459,9 +464,6 @@ int snx_driver(int argc, char** argv) {
     unsigned flags = 0;
     int i, n = 0, separator = argc, result = -1, tool_paths = 0, help = 0, parsed, automatic;
     int repo_given = 0, settings = 0, recompiling = 0, taken = 0;
-#ifdef SNX_IOS
-    snx_set_stage_runner(snx_driver); /* no child process there: the stages are this driver again, on this thread */
-#endif
     if (argc <= 1 && snx_setup_again) {
         result = setup_run(argv[0], 1); /* scarletnx --setup */
         goto done;
@@ -491,7 +493,8 @@ int snx_driver(int argc, char** argv) {
             int is_repo = strcmp(argv[i], "--build-dir") != 0;
             tool_paths = 1;
             if (++i == argc) {
-                result = snx_error("%s requires a folder", argv[i - 1]);
+                snx_error("%s requires a folder", argv[i - 1]);
+                result = SNX_EXIT_USAGE;
                 goto done;
             }
             if (is_repo) {
@@ -503,12 +506,14 @@ int snx_driver(int argc, char** argv) {
         }
         parsed = snx_cli_flag(argv[i], &flags);
         if (parsed < 0) {
-            result = snx_error("unknown option: %s", argv[i]);
+            snx_error("unknown option: %s", argv[i]);
+            result = SNX_EXIT_USAGE;
             goto done;
         }
 #ifdef _WIN32
         if (!strcmp(argv[i], "-s") || !strcmp(argv[i], "-S")) {
-            result = snx_error("the GDB stub is UNIX only");
+            snx_error("the GDB stub is UNIX only");
+            result = SNX_EXIT_USAGE;
             goto done;
         }
 #endif
@@ -517,7 +522,8 @@ int snx_driver(int argc, char** argv) {
             /* LLVM is the only code generator: older scripts name it */
             const char* backend = argv[i][9] ? argv[i] + 10 : i + 1 < argc ? argv[++i] : "";
             if (strcmp(backend, "llvm")) {
-                result = snx_error("--backend %s: LLVM is the only backend", backend);
+                snx_error("--backend %s: LLVM is the only backend", backend);
+                result = SNX_EXIT_USAGE;
                 goto done;
             }
             continue;
@@ -530,17 +536,17 @@ int snx_driver(int argc, char** argv) {
     if (help && !(flags & SNX_RECOMP)) {
         snx_tool_console();
         usage();
-        result = 0;
+        result = SNX_EXIT_OK;
         goto done;
     }
     /* a game made already is played or, with -r, recompiled where it is */
     automatic = input && (!(flags & SNX_RECOMP) ||
                           ((flags & SNX_RECOMP) && (prepared_game(input, NULL, NULL) || addon_program(input))));
     if (input && (automatic || (flags & SNX_RECOMP)) && left_beside(input)) {
-        result =
-            snx_error("%s was laid out by an older version: move its files as docs/DEPRECATIONS.md says, or run it "
-                      "as it is with --game=%s",
-                      input, input);
+        snx_error("%s was laid out by an older version: move its files as docs/DEPRECATIONS.md says, or run it "
+                  "as it is with --game=%s",
+                  input, input);
+        result = SNX_EXIT_GAME_FILES;
         goto done;
     }
     /* played, a --key=value that is not the driver's own is a setting of the recompile, passed on to it when the game is
@@ -553,12 +559,24 @@ int snx_driver(int argc, char** argv) {
                 memcpy(key, rest[i] + 2, length);
                 key[length] = 0;
             }
-            int recompiles = length < sizeof key && snx_recompile_setting(key), plays = setting_known(rest[i] + 2);
-            if (!recompiles && !plays) {
-                result = snx_error("unknown option: %s", rest[i]);
+            const IniOpt* recompiled = length < sizeof key ? snx_recompile_setting(key) : NULL;
+            int plays = setting_known(rest[i] + 2);
+            if (!recompiled && !plays) {
+                snx_error("unknown option: %s", rest[i]);
+                result = SNX_EXIT_USAGE;
                 goto done;
             }
-            if (recompiles) recompile[recompiling++] = rest[i];
+            if (recompiled) {
+                /* the recompile path's own check (recompile.c), before the stamp decides that the game is made and the
+                   recompile is skipped */
+                char why[256];
+                if (!snx_recompile_value_taken(recompiled, strchr(rest[i], '=') + 1, why, sizeof why)) {
+                    snx_error("%s", why);
+                    result = SNX_EXIT_USAGE;
+                    goto done;
+                }
+                recompile[recompiling++] = rest[i];
+            }
             if (plays) setting[settings++] = rest[i]; /* both for one both take (slp_vectorizer) */
             ++taken;
         } else
@@ -568,7 +586,8 @@ int snx_driver(int argc, char** argv) {
     for (i = 0; automatic && i < n; ++i)
         if (!strcmp(rest[i], "--outdir")) {
             if (i + 1 == n) {
-                result = snx_error("%s requires a directory", rest[i]);
+                snx_error("%s requires a directory", rest[i]);
+                result = SNX_EXIT_USAGE;
                 goto done;
             }
             outdir = rest[i + 1];
@@ -581,12 +600,14 @@ int snx_driver(int argc, char** argv) {
         if (!strncmp(rest[i], "-O", 2)) {
             int own = rest[i][2] == 0; /* its value the next token */
             if (own && i + 1 == n) {
-                result = snx_error("-O requires a level");
+                snx_error("-O requires a level");
+                result = SNX_EXIT_USAGE;
                 goto done;
             }
             opt = own ? rest[i + 1] : rest[i] + 2;
             if (strlen(opt) != 1 || !strchr("0123sz", opt[0])) {
-                result = snx_error("-O %s: not 0, 1, 2, 3, s or z", opt);
+                snx_error("-O %s: not 0, 1, 2, 3, s or z", opt);
+                result = SNX_EXIT_USAGE;
                 goto done;
             }
             memmove(rest + i, rest + i + 1 + own, (size_t)(n - i - 1 - own) * sizeof(*rest));
@@ -598,7 +619,8 @@ int snx_driver(int argc, char** argv) {
     for (i = 0; automatic && (flags & SNX_RECOMP) && i < n; ++i) {
         if (!strcmp(rest[i], "--jit-cache")) {
             if (i + 1 == n) {
-                result = snx_error("--jit-cache requires a file");
+                snx_error("--jit-cache requires a file");
+                result = SNX_EXIT_USAGE;
                 goto done;
             }
             recompile[recompiling++] = rest[i];
@@ -623,40 +645,48 @@ int snx_driver(int argc, char** argv) {
             /* the runtime's own, which it reads after: the settings' list and the game to play; as a game's copy is
                started, a setting it knows and -v too */
             if (!strcmp(rest[i], "--settings") || !strncmp(rest[i], "--settings=", 11) ||
-                !strncmp(rest[i], "--game=", 7))
+                !strncmp(rest[i], "--game=", 7) || !strncmp(rest[i], "--progress=", 11) ||
+                !strcmp(rest[i], "--progress"))
                 continue;
             if (!input && (!strcmp(rest[i], "-v") ||
                            (!strncmp(rest[i], "--", 2) && strchr(rest[i], '=') && setting_known(rest[i] + 2))))
                 continue;
             if (rest[i][0] == '-' && rest[i][1] && strcmp(rest[i], "-h") && strcmp(rest[i], "--help") &&
                 strcmp(rest[i], "--hook-direct-calls")) {
-                result = snx_error("unknown option: %s (nxaevora-engine --help lists them)", rest[i]);
+                snx_error("unknown option: %s (nxaevora-engine --help lists them)", rest[i]);
+                result = SNX_EXIT_USAGE;
                 goto done;
             }
         }
     if (automatic && (n != 1 || help)) {
-        result = help ? snx_error("-h goes with -r, or alone (nxaevora-engine --help)")
-                      : snx_error("one input at a time, and %s is a second: the game's own arguments go after --",
-                                  rest[n - 1]);
+        if (help)
+            snx_error("-h goes with -r, or alone (nxaevora-engine --help)");
+        else
+            snx_error("one input at a time, and %s is a second: the game's own arguments go after --", rest[n - 1]);
+        result = SNX_EXIT_USAGE;
         goto done;
     }
     if ((flags & SNX_RECOMP) &&
         (flags & (SNX_HEADLESS | SNX_GDB | SNX_TRACY_CLIENT | SNX_TRACY_CAPTURE | SNX_FULLSCREEN | SNX_WINDOWED))) {
-        result =
-            snx_error("%s plays a game, and -r only prepares one", flags & SNX_HEADLESS        ? "--headless"
-                                                                  : flags & SNX_GDB           ? "-S"
-                                                                  : flags & SNX_TRACY_CLIENT  ? "--tracy"
-                                                                  : flags & SNX_TRACY_CAPTURE ? "--tracy-capture"
-                                                                  : flags & SNX_FULLSCREEN ? "--fullscreen"
-                                                                                           : "--fullscreen=0");
+        snx_error("%s plays a game, and -r only prepares one", flags & SNX_HEADLESS        ? "--headless"
+                                                              : flags & SNX_GDB           ? "-S"
+                                                              : flags & SNX_TRACY_CLIENT  ? "--tracy"
+                                                              : flags & SNX_TRACY_CAPTURE ? "--tracy-capture"
+                                                              : flags & SNX_FULLSCREEN ? "--fullscreen"
+                                                                                       : "--fullscreen=0");
+        result = SNX_EXIT_USAGE;
         goto done;
     }
     if (!automatic && !(flags & SNX_RECOMP)) {
-        if (tool_paths) result = snx_error("expected a game or -r");
+        if (tool_paths) {
+            snx_error("expected a game or -r");
+            result = SNX_EXIT_USAGE;
+        }
         goto done;
     }
     if (automatic && (flags & SNX_RECOMP) && separator < argc) {
-        result = snx_error("game arguments require game execution");
+        snx_error("game arguments require game execution");
+        result = SNX_EXIT_USAGE;
         goto done;
     }
     /* Explicit tool modes retain their positional -- escape (including names
@@ -674,7 +704,8 @@ int snx_driver(int argc, char** argv) {
     if (!repo_given) {
         data = snx_data_dir(exe);
         if (data && snx_mkdirs(data)) {
-            result = snx_error("cannot create the data folder %s", data);
+            snx_error("cannot create the data folder %s", data);
+            result = SNX_EXIT_INTERNAL;
             goto done;
         }
         repo = data ? data : ".";
@@ -686,14 +717,15 @@ int snx_driver(int argc, char** argv) {
     if (data) snx_recompiled_left(data);
     /* what the setup has left, before the first run a terminal makes and the first after an update, or all of it */
     if (!snx_setup_skip && (snx_setup_again || snx_terminal()) && setup_run(argv[0], snx_setup_again)) {
-        result = 1;
+        result = SNX_EXIT_INTERNAL;
         goto done;
     }
     r = snx_absolute(repo);
     b = snx_absolute(build);
     exe = snx_executable(argv[0]);
     if (!r || !b || !exe) {
-        result = snx_error("cannot resolve %s", !r ? repo : !b ? build : argv[0]);
+        snx_error("cannot resolve %s", !r ? repo : !b ? build : argv[0]);
+        result = SNX_EXIT_INTERNAL;
         goto done;
     }
     paths.repo = r;

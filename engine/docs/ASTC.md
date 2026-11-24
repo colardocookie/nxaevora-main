@@ -182,7 +182,7 @@ holds the words. `src/nx/gpu/texture/astc_spv.h` declares them (`astc_spv` and `
 depfile makes an edit to `astc_decode.glsl` rebuild it too.
 
 glslangValidator is KhronosGroup's glslang 16.6.0 release for the host, a CPM package pinned by its SHA-256, on Linux
-x86-64, Windows x86-64 and macOS. Other hosts (FreeBSD, Linux on ARM) use the one on `PATH`, from the system's glslang
+x86-64 and Windows x86-64. Other hosts (FreeBSD, Linux on ARM) use the one on `PATH`, from the system's glslang
 package, and `-DSNX_GLSLANG=path` picks any. The release has the SPIR-V validator and optimizer built in, so no
 separate SPIRV-Tools is needed.
 

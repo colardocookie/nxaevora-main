@@ -50,9 +50,7 @@ int snx_code_commit(SnxCodeLoader* loader, uint64_t end, char* error, size_t err
 /* the code in [start, end) visible to instruction fetch on every core, before any address of it goes out. 0, or -1
    with the reason in error, the code then never to run */
 int snx_code_publish(const SnxCodeLoader* loader, uint64_t start, uint64_t end, char* error, size_t error_size);
-/* 1 before a load writes the arena, 0 after: on macOS, where the code and read-only data are MAP_JIT memory written
-   in place (code_loader.c's apple_arena), whether this thread sees them writable instead of executable, which no code
-   loaded may run meanwhile on this thread. Nothing elsewhere, where a load writes through the read-write views */
+/* 1 before a load writes the arena, 0 after: nothing elsewhere, where a load writes through the read-write views */
 void snx_code_writable(int writable);
 /* code_loader_coff.c's snx_code_load, for a loader of SNX_CODE_COFF_X64 */
 int snx_code_load_coff(SnxCodeLoader* loader, const SnxLinkInput* inputs, size_t count, const char* const* names,

@@ -41,7 +41,7 @@ int snx_setup_read(const char* path, SnxSetup* setup, char* why, size_t why_size
 /* setup.ini at path once this version's steps and notices are done, a newer file's version kept: 0, else -1 with why */
 int snx_setup_done(const char* path, const SnxSetup* setup, char* why, size_t why_size);
 int snx_setup_asks(const SnxSetup* setup, int step); /* 1 for a step newer than setup.ini */
-int snx_setup_here(int step); /* 1 for a step this system has: an app (Android, iOS) has no install to pick */
+int snx_setup_here(int step); /* 1 for a step this system has: all of them */
 int snx_setup_shows(const SnxSetup* setup, int notice); /* 1 for this system's notice not shown yet */
 int snx_setup_due(const SnxSetup* setup);               /* 1 while a step or a notice is left */
 
