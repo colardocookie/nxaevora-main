@@ -1,8 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the NXAevora contributors */
 /* The .ini's store (src/nx/runtime/options.c): an in-game change written to the file and its flag cleared, a change
-   that a full store cannot save, a write blocked by an incomplete parse, and a reload that keeps the value made in
-   the game over the file's */
+   that a full store cannot save, a write blocked by an incomplete parse, a reload that keeps the value made in the
+   game over the file's, the store's limit on the keys a write puts in the file, a write that fails and stays dirty,
+   and a change that is in the store before apply reads it */
 #include "common/utilities/common.h"
 #include "nx/runtime/options.h"
 #include <assert.h>
@@ -10,11 +11,16 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* the store's limit, STORE_MAX in options.c */
+#define TEST_STORE_MAX 256
+
 extern char g_test_log[8192];
 extern size_t g_test_log_len;
 extern int g_test_warn_count;
 extern char g_test_mem[64];
 extern char g_test_new[64];
+extern char g_test_backend[64];
+extern char g_test_backend_store[64];
 extern const IniOpt g_test_table[];
 
 static void log_clear(void) {
@@ -58,6 +64,119 @@ static void assert_same(const char* path, const char* before, size_t n) {
     assert(now == n && !memcmp(text, before, n));
     free(text);
 }
+static void assert_lacks(const char* path, const char* line) {
+    size_t n;
+    char* text = read_all(path, &n);
+    if (strstr(text, line)) {
+        fprintf(stderr, "unexpected %s in %s:\n%s", line, path, text);
+        free(text);
+        assert(0);
+    }
+    free(text);
+}
+/* the file's key rows: a line with a '=' that is not a comment and not a section header */
+static int count_key_rows(const char* path) {
+    size_t n;
+    char* text = read_all(path, &n);
+    const char* line = text;
+    int count = 0;
+    while (*line) {
+        const char* nl = strchr(line, '\n');
+        size_t len = nl ? (size_t)(nl - line) : strlen(line);
+        if (len && line[0] != ';' && line[0] != '[' && memchr(line, '=', len)) count++;
+        if (!nl) break;
+        line = nl + 1;
+    }
+    free(text);
+    return count;
+}
+/* a file of zz_test_000 to zz_test_(keys - 1), keys that no section knows */
+static char* make_keys_text(int keys) {
+    size_t cap = (size_t)keys * 24 + 1;
+    char* text = malloc(cap);
+    size_t at = 0;
+    int i;
+    assert(text);
+    for (i = 0; i < keys; i++) at += (size_t)snprintf(text + at, cap - at, "zz_test_%03d=1\n", i);
+    assert(at < cap);
+    return text;
+}
+/* #86: a store of TEST_STORE_MAX unknown keys beside a section's default row writes at most TEST_STORE_MAX key rows,
+   keeps every key, and the next start parses the file whole and writes a change */
+static void case_full_store(const char* root) {
+    char* path = snx_path_join(root, "full.ini");
+    char line[32];
+    char* text;
+    int i;
+    assert(path);
+    text = make_keys_text(TEST_STORE_MAX);
+    put(path, text);
+    free(text);
+    ini_open(path);
+    assert(count_key_rows(path) <= TEST_STORE_MAX);
+    assert_lacks(path, "def_key=");
+    for (i = 0; i < TEST_STORE_MAX; i++) {
+        snprintf(line, sizeof line, "zz_test_%03d=1\n", i);
+        assert_has(path, line);
+    }
+    ini_open(path);
+    ini_set("zz_test_000", "2");
+    ini_poll(1);
+    assert_has(path, "zz_test_000=2\n");
+    free(path);
+}
+/* #86: a small store still gets the default rows of the keys that it lacks */
+static void case_defaults_kept(const char* root) {
+    char* path = snx_path_join(root, "small.ini");
+    assert(path);
+    put(path, "mem_key=x\n");
+    ini_open(path);
+    assert_has(path, "mem_key=x\n");
+    assert_has(path, "def_key=dflt\n");
+    free(path);
+}
+/* #88: ini_set before the first ini_open does not crash. The store keeps the value as a dirty entry, so the next
+   ini_open keeps it over the file's value and writes it */
+static void case_set_before_open(const char* root) {
+    char* path = snx_path_join(root, "early.ini");
+    assert(path);
+    ini_set("mem_key", "early");
+    put(path, "mem_key=file\n");
+    ini_open(path);
+    assert_has(path, "mem_key=early\n");
+    free(path);
+}
+/* #88: a write that fails keeps the value dirty, and the next poll writes it */
+static void case_write_failed_keeps_dirty(const char* root) {
+    char* path = snx_path_join(root, "retry.ini");
+    char tmp[4096];
+    assert(path);
+    snprintf(tmp, sizeof tmp, "%s.tmp", path);
+    put(path, "mem_key=one\n");
+    ini_open(path);
+    assert(!snx_mkdirs(tmp));
+    ini_set("mem_key", "two");
+    ini_poll(0);
+    assert_has(path, "mem_key=one\n");
+    assert(!snx_remove_empty_dir(tmp));
+    ini_poll(0);
+    assert_has(path, "mem_key=two\n");
+    free(path);
+}
+/* #89: the store holds the new value when apply runs, and the value is written at the next poll */
+static void case_store_before_apply(const char* root) {
+    char* path = snx_path_join(root, "order.ini");
+    assert(path);
+    put(path, "mem_key=x\n");
+    ini_open(path);
+    snprintf(g_test_backend_store, sizeof g_test_backend_store, "(unset)");
+    assert(options_change("back_key", "fresh") == OPTIONS_OK);
+    assert(!strcmp(g_test_backend, "fresh"));
+    assert(!strcmp(g_test_backend_store, "fresh"));
+    ini_poll(1);
+    assert_has(path, "back_key=fresh\n");
+    free(path);
+}
 
 int main(void) {
     char* root = snx_temp_dir(NULL);
@@ -71,6 +190,9 @@ int main(void) {
     path = snx_path_join(root, "game.ini");
     assert(path);
     snprintf(tmp, sizeof tmp, "%s.tmp", path);
+
+    /* before the first ini_open of the run, as the game's menu can set a value there */
+    case_set_before_open(root);
 
     /* a full store: a change of a key in the file is written, and its flag clears */
     text = make_text(255, "one");
@@ -145,7 +267,12 @@ int main(void) {
     ini_poll(0);
     assert(!strcmp(g_test_mem, "ingame"));
     assert(!strcmp(snx_settings_value(&g_test_table[0]), "ingame"));
-    assert_has(path, "mem_key=ingame");
+    assert_has(path, "mem_key=ingame\n");
+
+    case_full_store(root);
+    case_defaults_kept(root);
+    case_write_failed_keeps_dirty(root);
+    case_store_before_apply(root);
 
     free(path);
     free(root);
