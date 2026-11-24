@@ -587,6 +587,10 @@ add_executable(snx-test-nvn-objtab nvn/nvn_objtab.c "${PROJECT_SOURCE_DIR}/src/n
 snx_test_target(snx-test-nvn-objtab 11)
 add_test(NAME nvn_objtab COMMAND snx-test-nvn-objtab)
 
+add_executable(snx-test-arceus-shot arceus_shot.c)
+snx_test_target(snx-test-arceus-shot 11)
+add_test(NAME arceus_shot COMMAND snx-test-arceus-shot)
+
 add_executable(snx-test-arceus-timing arceus_timing.c)
 snx_test_target(snx-test-arceus-timing 11)
 target_link_libraries(snx-test-arceus-timing PRIVATE m)
