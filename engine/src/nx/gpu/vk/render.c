@@ -17,7 +17,6 @@
 #include "nx/hle/services/nvdrv.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/gpu/vk/vk.h"
-#include "nx/gpu/nvn/diag/perf_reuse.h"
 #include "nx/gpu/vk/scale.h"
 #include "nx/gpu/vk/pass_guest.h"
 #include "nx/gpu/vk/pending_pages.h"
@@ -1808,7 +1807,6 @@ static VkDescriptorSet stage_set_(GpuChannel* ch, int stage, VkSh* s, Surf** rt,
         u32 sz = cb_range(ch, stage, s, i);
         VkBuffer b;
         u64 o;
-        PERF_REUSE_NOTE(ch->cbind[stage][i], sz, PERF_REUSE_CB);
         if (!cb_get(ch, stage, i, sz, &b, &o)) return VK_NULL_HANDLE;
         dw_buffer(&d, set, SNX_VKB_CB + i, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, b, o, sz);
     }
@@ -2919,7 +2917,6 @@ retry:
         vq[nvq].base = base;
         nvq++;
     }
-    for (u32 q = 0; q < nvq; q++) PERF_REUSE_NOTE(vq[q].gva, vq[q].len, PERF_REUSE_VERTEX);
     for (u32 q = 0; q < nvq; q++) vk_buf_prefetch(vq[q].gva, vq[q].len, 0);
     for (u32 q = 0; q < nvq; q++) vk_buf_prefetch(vq[q].gva, vq[q].len, 1);
     for (u32 q = 0; q < nvq; q++) {
@@ -3028,7 +3025,6 @@ retry:
         LOG_LIMIT(1, "vulkan: a draw of %u vertices converted on the CPU (cut to %u)\n", count, 1u << 24);
         count = 1u << 24;
     }
-    if (indexed == 1) PERF_REUSE_NOTE(ia + (u64)first * isz, (u64)count * isz, PERF_REUSE_INDEX);
     /* Vulkan restarts at all ones of the index type, in strips and fans; the guest's restart index is 0x592 */
     int restart =
         r[0x591] && topo != VK_PRIMITIVE_TOPOLOGY_POINT_LIST && topo != VK_PRIMITIVE_TOPOLOGY_LINE_LIST &&

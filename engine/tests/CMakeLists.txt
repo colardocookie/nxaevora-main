@@ -666,10 +666,6 @@ add_executable(snx-test-nvn-measure nvn/nvn_measure.c "${PROJECT_SOURCE_DIR}/src
 snx_test_target(snx-test-nvn-measure 11)
 add_test(NAME nvn_measure COMMAND snx-test-nvn-measure)
 
-add_executable(snx-test-perf-reuse nvn/perf_reuse.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/diag/perf_reuse_calc.c")
-snx_test_target(snx-test-perf-reuse 11)
-add_test(NAME perf_reuse COMMAND snx-test-perf-reuse)
-
 # SNX_ARCEUS_PASS_GUEST's switch, draw rule and line (gpu/vk/pass_guest.c), with a stand-in for the log
 add_executable(snx-test-pass-guest pass_guest.c)
 snx_test_target(snx-test-pass-guest 11)
