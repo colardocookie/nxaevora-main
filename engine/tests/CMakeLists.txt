@@ -600,6 +600,10 @@ add_executable(snx-test-arceus-clock arceus_clock.c)
 snx_test_target(snx-test-arceus-clock 11)
 target_link_libraries(snx-test-arceus-clock PRIVATE m)
 add_test(NAME arceus_clock COMMAND snx-test-arceus-clock)
+# the Arceus graphics page's map of its three rows and the one reader of the seven names they stand for
+add_executable(snx-test-arceus-graphics arceus_graphics.c)
+snx_test_target(snx-test-arceus-graphics 11)
+add_test(NAME arceus_graphics COMMAND snx-test-arceus-graphics)
 
 add_executable(snx-test-discord-presence discord_presence.c)
 snx_test_target(snx-test-discord-presence 11)
