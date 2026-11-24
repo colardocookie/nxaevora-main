@@ -37,12 +37,15 @@ void snx_command_print(const char* text) {
 }
 
 int snx_command_help(int argc, char** argv, int first, const char* name, const char* usage) {
-    int i, found = 0;
+    int i, help_at = -1;
     for (i = first; i < argc; ++i)
-        if (!strcmp(argv[i], "--help")) found = 1;
-    if (!found) return -1;
+        if (!strcmp(argv[i], "--help")) {
+            help_at = i;
+            break;
+        }
+    if (help_at < 0) return -1;
     if (argc - first != 1) {
-        snx_command_error("%s: --help takes no other argument", name);
+        snx_command_error("%s: --help takes no other word: %s", name, argv[help_at == first ? first + 1 : first]);
         return SNX_EXIT_USAGE;
     }
     snx_command_print(usage);

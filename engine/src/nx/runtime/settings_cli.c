@@ -28,10 +28,12 @@ static const char* const USAGE_SCHEMA =
     "  Print the settings definition as one JSON document on stdout";
 static const char* const USAGE_GET =
     "Usage: nxaevora-engine settings get KEY --game=PATH\n"
-    "  Print KEY's value in the game's .ini, or its default; it writes nothing";
+    "  Print KEY's value in the game's .ini, or its default; it writes nothing\n"
+    "  Exit 1: the .ini cannot be read, or it has a key that the store cannot keep; exit 2: a bad argument or a key that is not a setting; exit 3: no game or no .ini at PATH";
 static const char* const USAGE_SET =
     "Usage: nxaevora-engine settings set KEY VALUE --game=PATH\n"
-    "  Write one value in the game's .ini; a value the settings refuse is exit 7";
+    "  Write one value in the game's .ini; a value the settings refuse is exit 7\n"
+    "  Exit 1: the .ini cannot be read or written, or it has a key that the store cannot keep; exit 2: a bad argument or a key that is not a setting; exit 3: no game or no .ini at PATH";
 static const char* const USAGE_CHECK =
     "Usage: nxaevora-engine settings check KEY VALUE\n"
     "  Check one value against the settings definition, with no file";
@@ -60,7 +62,7 @@ static void parse_args(int argc, char** argv, int first, Args* a) {
     }
 }
 
-/* the file's keys into the store, or the exit code that stops the command: 0 */
+/* the file's keys into the store, or the exit code that stops the command; 0 means success */
 static int load_file(const char* name, const char* path) {
     char why[256];
     int status = snx_settings_load(path, why, sizeof why);
