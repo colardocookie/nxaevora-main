@@ -104,6 +104,9 @@ typedef struct {
         separateStencilMaskRef, shaderSampleRateInterpolationFunctions, tessellationIsolines, tessellationPointMode,
         triangleFans, vertexAttributeAccessBeyondStride;
 } PortabilityFeatures;
+/* set when SNX_ARCEUS_UPSCALER named an adapter but the backend listed too many instance extensions for the copy
+   they are added to: the instance has none of the adapter's, so the device does not ask the adapter either */
+static int g_upscaler_instance_skipped;
 /* MoltenVK (macOS, iOS) is a portability driver: the loader lists it only for an instance that asks for those */
 static int create_instance(void) {
     u32 nbe = 0;
@@ -113,8 +116,14 @@ static int create_instance(void) {
     const char* upscaler = getenv("SNX_ARCEUS_UPSCALER");
     const char* with[64];
     u32 nwith = 0;
-    const int asks = upscaler && upscaler[0] && strcmp(upscaler, "0") && strcmp(upscaler, "off") &&
-                     strcmp(upscaler, "spatial") && (!be || nbe <= 32);
+    const int named = upscaler && upscaler[0] && strcmp(upscaler, "0") && strcmp(upscaler, "off") &&
+                      strcmp(upscaler, "spatial");
+    const int asks = named && (!be || nbe <= 32);
+    g_upscaler_instance_skipped = named && !asks;
+    if (g_upscaler_instance_skipped)
+        WARN("arceus-upscaler: %s is not available: the window system asks for %u instance extensions, more than "
+             "the 32 the adapter's are added to\n",
+             upscaler, nbe);
     if (asks) {
         for (u32 i = 0; be && i < nbe; i++) with[nwith++] = be[i];
         const u32 room = (u32)(sizeof with / sizeof with[0]);
@@ -605,7 +614,7 @@ static int create_device(void) {
     const u32 room = (u32)(sizeof g_vk.dev_ext / sizeof g_vk.dev_ext[0]);
     u32 with_count = next;
     int accepted = 0;
-    if (upscaler && upscaler[0] && strcmp(upscaler, "0") && strcmp(upscaler, "off")) {
+    if (upscaler && upscaler[0] && strcmp(upscaler, "0") && strcmp(upscaler, "off") && !g_upscaler_instance_skipped) {
         /* the core bits the physical device has, as its own 1.0 and 1.2 questions answered, and its 1.3 features
            asked here alone, with the switch on */
         VkPhysicalDeviceVulkan13Features q13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
