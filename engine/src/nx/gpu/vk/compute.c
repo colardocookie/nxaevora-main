@@ -977,6 +977,7 @@ void vk_dispatch(GpuChannel* ch, const u32* q, u64 code) {
         ss[i] = vk_gbuf_desc(ST_CS, p->si.gbuf_cbuf_off[i], v, &sa[i]);
         need += ss[i] + vk_stage_align();
     }
+    vk_pass_census_dispatch(code, sa, ss, ng);
     for (int i = 0; i < 8; i++)
         if (p->si.cbuf_mask & (1u << i)) need += g_cbn[i] + vk_stage_align();
     /* buffer images: their headers from the compute engine's texture pool, handles from its texture bank */
@@ -1212,6 +1213,7 @@ rebind:
                 return;
             }
             Surf* t = st->flags & 1 ? vk_tex_from_tic_raw(tic) : vk_tex_from_tic(tic);
+            vk_temporal_watch_bound(t);
             if ((st->flags & 1) && !t) {
                 LOG_LIMIT(4, "vulkan: raw surface load requires a 32-bit color format (skipped)\n");
                 g_cs_skips[CS_SKIP_TEXTURE]++;
@@ -1267,6 +1269,7 @@ rebind:
             }
             vk_gmem_words(tic_base + (h & 0xFFFFF) * 32ull, tic, 8);
             Surf* t = vk_tex_from_tic_storage(tic);
+            vk_temporal_watch_bound(t);
             u64 image_bytes;
             VkImageView view = vk_storage_image_view(t, &p->si, i, &image_bytes);
             if (!view) {

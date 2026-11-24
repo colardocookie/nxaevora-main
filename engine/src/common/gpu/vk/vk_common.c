@@ -47,22 +47,76 @@ bool snx_vk_has_instance_extension(const char* name) {
     return found;
 }
 
-/* the extension, of the layer itself */
-static bool layer_has_extension(const char* layer, const char* name) {
+int snx_vk_layer_search(const char* name, VkResult* result) {
+    VkLayerProperties* list = NULL;
     uint32_t n = 0;
-    if (vkEnumerateInstanceExtensionProperties(layer, &n, NULL) != VK_SUCCESS || !n) return false;
-    VkExtensionProperties* e = calloc(n, sizeof *e);
-    if (!e) return false;
-    bool found = false;
-    if (vkEnumerateInstanceExtensionProperties(layer, &n, e) >= 0)
-        for (uint32_t i = 0; i < n && !found; i++) found = !strcmp(e[i].extensionName, name);
-    free(e);
-    return found;
+    VkResult r = VK_INCOMPLETE;
+    int found = 0, why = SNX_VK_LAYER_PART;
+    /* as snx_vk_layer_extension: an incomplete list is asked again, three times at most */
+    for (int tries = 0; tries < 3 && r == VK_INCOMPLETE; tries++) {
+        free(list);
+        list = NULL;
+        n = 0;
+        r = vkEnumerateInstanceLayerProperties(&n, NULL);
+        if (r < 0) {
+            why = SNX_VK_LAYER_COUNT_FAILED;
+            break;
+        }
+        list = calloc(n ? n : 1, sizeof *list);
+        if (!list) { /* the list's call is not made: r stays the count's result, and why says what happened */
+            why = SNX_VK_LAYER_NO_MEMORY;
+            break;
+        }
+        r = vkEnumerateInstanceLayerProperties(&n, list);
+        if (r < 0) {
+            why = SNX_VK_LAYER_LIST_FAILED;
+            break;
+        }
+        for (uint32_t i = 0; i < n; i++) found |= !strcmp(list[i].layerName, name);
+        if (found || r == VK_SUCCESS) break;
+    }
+    free(list);
+    *result = r;
+    if (found) return SNX_VK_LAYER_HAS;
+    return r == VK_SUCCESS && why != SNX_VK_LAYER_NO_MEMORY ? SNX_VK_LAYER_LACKS : why;
+}
+int snx_vk_layer_extension(const char* layer, const char* name, VkResult* result) {
+    VkExtensionProperties* list = NULL;
+    uint32_t n = 0;
+    VkResult r = VK_INCOMPLETE;
+    int found = 0, why = SNX_VK_LAYER_PART;
+    /* the count can change between the two calls: an incomplete list is asked again, three times at most */
+    for (int tries = 0; tries < 3 && r == VK_INCOMPLETE; tries++) {
+        free(list);
+        list = NULL;
+        n = 0;
+        r = vkEnumerateInstanceExtensionProperties(layer, &n, NULL);
+        if (r < 0) {
+            why = SNX_VK_LAYER_COUNT_FAILED;
+            break;
+        }
+        list = calloc(n ? n : 1, sizeof *list);
+        if (!list) { /* the list's call is not made: r stays the count's result, and why says what happened */
+            why = SNX_VK_LAYER_NO_MEMORY;
+            break;
+        }
+        r = vkEnumerateInstanceExtensionProperties(layer, &n, list);
+        if (r < 0) {
+            why = SNX_VK_LAYER_LIST_FAILED;
+            break;
+        }
+        for (uint32_t i = 0; i < n; i++) found |= !strcmp(list[i].extensionName, name);
+        if (found || r == VK_SUCCESS) break;
+    }
+    free(list);
+    *result = r;
+    if (found) return SNX_VK_LAYER_HAS;
+    return r == VK_SUCCESS && why != SNX_VK_LAYER_NO_MEMORY ? SNX_VK_LAYER_LACKS : why;
 }
 VkResult snx_vk_instance_create(const SnxVkInstanceInfo* info, SnxVkInstance* out) {
     *out = (SnxVkInstance){0};
-    /* the window's, then debug utils, validation features (only when asked for) and portability enumeration */
-    const char** ext = calloc((size_t)info->extension_count + (info->sync_validation ? 3 : 2), sizeof *ext);
+    /* the window's, then debug utils, the validation features, the layer's settings and portability enumeration */
+    const char** ext = calloc((size_t)info->extension_count + 4, sizeof *ext);
     if (!ext) return VK_ERROR_OUT_OF_HOST_MEMORY;
     uint32_t next = 0;
     bool asked = false; /* the window system may ask for portability enumeration itself */
@@ -72,20 +126,55 @@ VkResult snx_vk_instance_create(const SnxVkInstanceInfo* info, SnxVkInstance* ou
     }
     const char* layers[1];
     uint32_t nlayers = 0;
-    if (info->validation && snx_vk_has_layer("VK_LAYER_KHRONOS_validation")) {
+    /* One look at the loader's list decides, and its answer is kept: a list that failed, or that stayed
+       incomplete without the layer, is not a layer that is not installed. */
+    if (info->validation)
+        out->validation_why = snx_vk_layer_search("VK_LAYER_KHRONOS_validation", &out->validation_result);
+    if (info->validation && out->validation_why == SNX_VK_LAYER_HAS) {
         layers[nlayers++] = "VK_LAYER_KHRONOS_validation";
         ext[next++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
         out->validation = true;
-        if (info->sync_validation &&
-            layer_has_extension("VK_LAYER_KHRONOS_validation", VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME)) {
-            ext[next++] = VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME;
-            out->sync_validation = true;
+    }
+    /* The synchronisation checks are a feature of the layer, asked for through an extension the layer itself
+       lists. Found in the list, also in a part of it, is found. Not found in a list that stays incomplete is
+       not resolved: that, a list that cannot be read and a whole list without it ask for nothing. */
+    const VkValidationFeatureEnableEXT enables[1] = {VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT};
+    VkValidationFeaturesEXT checks = {.sType = VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT,
+                                      .enabledValidationFeatureCount = 1,
+                                      .pEnabledValidationFeatures = enables};
+    const void* chain = NULL;
+    if (out->validation && info->synchronization) {
+        out->synchronization_why = snx_vk_layer_extension("VK_LAYER_KHRONOS_validation",
+                                                          VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME,
+                                                          &out->synchronization_result);
+        out->synchronization = out->synchronization_why == SNX_VK_LAYER_HAS;
+        if (out->synchronization) ext[next++] = VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME;
+    }
+    /* By its default the layer stops reporting a rule after ten repeats. Asked off through the layer's own
+       settings, with the same care: only when the layer lists the extension for them. */
+#ifdef VK_EXT_layer_settings
+    const VkBool32 limit = VK_FALSE;
+    const VkLayerSettingEXT setting = {"VK_LAYER_KHRONOS_validation", "enable_message_limit",
+                                       VK_LAYER_SETTING_TYPE_BOOL32_EXT, 1, &limit};
+    const VkLayerSettingsCreateInfoEXT settings = {
+        .sType = VK_STRUCTURE_TYPE_LAYER_SETTINGS_CREATE_INFO_EXT, .settingCount = 1, .pSettings = &setting};
+    out->limit_built = true;
+    if (out->validation && info->message_limit_off) {
+        out->limit_why = snx_vk_layer_extension("VK_LAYER_KHRONOS_validation", VK_EXT_LAYER_SETTINGS_EXTENSION_NAME,
+                                                &out->limit_result);
+        out->limit_asked = out->limit_why == SNX_VK_LAYER_HAS;
+        if (out->limit_asked) {
+            ext[next++] = VK_EXT_LAYER_SETTINGS_EXTENSION_NAME;
+            chain = &settings;
         }
     }
-    const VkValidationFeatureEnableEXT enables[] = {VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT};
-    const VkValidationFeaturesEXT features = {.sType = VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT,
-                                              .enabledValidationFeatureCount = 1,
-                                              .pEnabledValidationFeatures = enables};
+#endif
+    /* The two nodes go into the chain together: the checks' in front of the settings', neither in place of the
+       other. */
+    if (out->synchronization) {
+        checks.pNext = chain;
+        chain = &checks;
+    }
     out->portability = asked;
     if (info->portability && !asked && snx_vk_has_instance_extension(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME)) {
         ext[next++] = VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME;
@@ -96,7 +185,7 @@ VkResult snx_vk_instance_create(const SnxVkInstanceInfo* info, SnxVkInstance* ou
                              .pEngineName = "ScarletNX",
                              .apiVersion = VK_API_VERSION_1_3};
     VkInstanceCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
-                               .pNext = out->sync_validation ? &features : NULL,
+                               .pNext = chain,
                                .flags = out->portability ? VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR : 0,
                                .pApplicationInfo = &app,
                                .enabledLayerCount = nlayers,
@@ -119,6 +208,8 @@ VkResult snx_vk_instance_create(const SnxVkInstanceInfo* info, SnxVkInstance* ou
                                                                 VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,
                                                  .pfnUserCallback = info->debug};
         r = vkCreateDebugUtilsMessengerEXT(out->instance, &di, NULL, &out->messenger);
+        out->messenger_asked = true;
+        out->messenger_result = r;
         if (r != VK_SUCCESS) out->messenger = VK_NULL_HANDLE; /* the instance stands without it */
     }
     return VK_SUCCESS;

@@ -270,7 +270,10 @@ static void timeline_wait(u64 value, int site) {
     gpu_wait_note("a graphics submission", value);
     SNX_ZONE_V(z, "timeline wait", value);
     const u64 w0 = g_perf_probes ? plat_ns() : 0; /* PERF-32 */
-    VK_OK(vkWaitSemaphores(g_vk.dev, &wi, UINT64_MAX));
+    /* A wait that failed says nothing of the submission: whether it completed is not known. The recorder's mark
+       is set, and only that: whoever frees what a submission may use reads it first (a frame's recycle frees
+       right after this wait). */
+    if (!VK_OK(vkWaitSemaphores(g_vk.dev, &wi, UINT64_MAX))) vk_rec_mark_failed();
     if (w0) perf_wait_note(PW_VKWAIT, __builtin_return_address(0), plat_ns() - w0);
     if (g_perf_times) perf_sub_seen(&g_perf, value, plat_ns());
     SNX_ZONE_END(z);
@@ -296,10 +299,13 @@ static void frame_recycle(Frame* f) {
         f->hold = 0;
     }
     vk_gpuprof_frame_done((u32)(f - g_fr)); /* its timestamps, read before the slot records again */
+    vk_temporal_gputime_poll();
+    vk_temporal_upscaler_poll(); /* it only notes: nothing may be queued from a recycle */
     dead_free(f);
     g_dead_bytes -= f->dead_bytes;
     f->dead_bytes = 0;
-    vkResetCommandPool(g_vk.dev, f->pool, 0);
+    /* a pool that could not be reset: what is recorded into its buffers next is not what runs (the mark only) */
+    if (vkResetCommandPool(g_vk.dev, f->pool, 0) != VK_SUCCESS) vk_rec_mark_failed();
     /* the pools stay, reset: a frame's draws fill several, and making them again every frame costs */
     for (int i = 0; i < f->npool; i++) vkResetDescriptorPool(g_vk.dev, f->pool_d[i], 0);
     f->ipool = 0;
@@ -602,6 +608,11 @@ void vk_submit_progress(u64* submitted, u64* done) {
     *done = 0;
     if (g_gsem) VK_OK(vkGetSemaphoreCounterValue(g_vk.dev, g_gsem, done));
     if (g_perf_times && *done) perf_sub_seen(&g_perf, *done, plat_ns());
+}
+/* the last submission the timeline says is done, read without waiting: 0 when it could not be read */
+int vk_submit_completed(u64* done) {
+    *done = 0;
+    return g_gsem && vkGetSemaphoreCounterValue(g_vk.dev, g_gsem, done) == VK_SUCCESS;
 }
 void vk_wait_submit(u64 value) { timeline_wait(value, PT_TL_SUBMIT); }
 void vk_land_through(u64 value) { land_through(value < g_gval ? value : g_gval); }

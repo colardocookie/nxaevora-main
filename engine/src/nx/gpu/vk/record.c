@@ -17,6 +17,7 @@
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/upscaler.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/tracy.h"
 #include "nx/gpu/perf_times.h"
@@ -176,10 +177,22 @@ void vk_rec_queue(VkQueue q) {
 }
 
 /* ------------------------------------------------------------ beginning and submitting */
+/* Set, and never cleared, when a command buffer could not be begun or ended, a submission was refused, or a
+   frame's command pool could not be reset: commands recorded there did not run as recorded, although their
+   submission's number on the timeline is reached (the host signals a refused one in submit_run). It is set
+   before that signal, so whoever reads the timeline and then this sees it. */
+static u32 g_submit_failed;
+int vk_rec_submit_failed(void) { return (int)__atomic_load_n(&g_submit_failed, __ATOMIC_ACQUIRE); }
+/* set under vk_lock before vk_rec_direct returns UNKNOWN: no command buffer is submitted after it */
+static int g_rec_unknown;
+int vk_rec_unknown(void) { return __atomic_load_n(&g_rec_unknown, __ATOMIC_ACQUIRE); }
+/* the run ends at once, nothing released: after a state a library left undefined (temporal.c upscaler_stop) */
+void vk_rec_end_run(int code) { plat_exit_now(code); }
+void vk_rec_mark_failed(void) { __atomic_store_n(&g_submit_failed, 1, __ATOMIC_RELEASE); }
 static void begin_run(const void* p) {
     VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
                                    .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
-    VK_OK(vkBeginCommandBuffer(*(const VkCommandBuffer*)p, &bi));
+    if (!VK_OK(vkBeginCommandBuffer(*(const VkCommandBuffer*)p, &bi))) vk_rec_mark_failed();
 }
 void vk_rec_begin(VkCommandBuffer cb) {
     g_rec_cb = cb;
@@ -199,8 +212,9 @@ typedef struct {
 } Submit;
 static void submit_run(const void* p) {
     const Submit* x = p;
+    if (vk_rec_unknown()) return; /* queued before the latch and run after it: not submitted either */
     const u64 e0 = g_perf_probes ? plat_ns() : 0; /* PERF-32 */
-    VK_OK(vkEndCommandBuffer(x->cb));
+    if (!VK_OK(vkEndCommandBuffer(x->cb))) vk_rec_mark_failed();
     if (e0) perf_wait_note(PW_ENDCB, NULL, plat_ns() - e0);
     VkCommandBufferSubmitInfo c = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = x->cb};
     VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
@@ -219,6 +233,7 @@ static void submit_run(const void* p) {
         perf_tail_handed(&g_perf, x->value, now);
         perf_sub_handed(&g_perf, x->value, now);
     }
+    if (r != VK_SUCCESS) vk_rec_mark_failed();
     if (r == VK_ERROR_DEVICE_LOST) fatal("vulkan: the GPU device was lost (driver reset or crash)");
     VK_OK(r);
     /* a timeline of FFmpeg's never reaching its value would hang its decoder for good */
@@ -232,6 +247,8 @@ static void submit_run(const void* p) {
 }
 void vk_rec_submit(VkCommandBuffer cb, const VkSemaphoreSubmitInfo* w, u32 nw, const VkSemaphoreSubmitInfo* s,
                    u32 ns) {
+    /* a library left the frame's buffer in a state not known: it is never submitted, nor any after it */
+    if (vk_rec_unknown()) return;
     Submit x = {.cb = cb, .nw = nw, .ns = ns, .timeline = s[0].semaphore, .value = s[0].value};
     memcpy(x.w, w, nw * sizeof *w);
     memcpy(x.s, s, ns * sizeof *s);
@@ -242,6 +259,33 @@ void vk_rec_submit(VkCommandBuffer cb, const VkSemaphoreSubmitInfo* w, u32 nw, c
     }
     *(Submit*)rec_push(submit_run, sizeof x) = x;
     publish(); /* the timeline value is waited for by whoever needs the work done */
+}
+
+/* ------------------------------------------------------------ a library records at once */
+/* The one way a library outside the runtime (an upscaler's prepare and evaluate) gets the frame's command buffer.
+   All under vk_lock, so nobody else adds a command: before queues what must come first, the ring is drained,
+   direct records at once on cb, and all bound state then counts as lost. cb must be the frame's buffer, begun
+   and not submitted, also after before. When direct is not called, what before queued is recorded all the same. */
+int vk_rec_direct(VkCommandBuffer cb, VkRecBefore before, VkRecDirect direct, void* user) {
+    int r = VK_REC_DIRECT_NO_BUFFER;
+    vk_lock();
+    if (cb != VK_NULL_HANDLE && cb == g_rec_cb) {
+        if (before) before(cb, user);
+        vk_rec_sync();
+        /* once a begin, an end or a submission has failed, what cb holds does not run as recorded */
+        if (cb != g_rec_cb) r = VK_REC_DIRECT_NO_BUFFER;
+        else if (vk_rec_submit_failed()) r = VK_REC_DIRECT_FAILED;
+        else {
+            const int answer = direct(cb, user);
+            if (answer == SNX_UPSCALER_UNKNOWN) __atomic_store_n(&g_rec_unknown, 1, __ATOMIC_RELEASE);
+            r = answer == SNX_UPSCALER_OK        ? VK_REC_DIRECT_OK
+                : answer == SNX_UPSCALER_UNKNOWN ? VK_REC_DIRECT_UNKNOWN
+                                                 : VK_REC_DIRECT_REFUSED;
+        }
+        vk_render_forget_state();
+    }
+    vk_unlock();
+    return r;
 }
 
 /* A present, after the frame's submission. The GPU thread waited for the ring to drain before presenting, and so
@@ -877,9 +921,12 @@ void rec_CmdPipelineBarrier2(VkCommandBuffer cb, const VkDependencyInfo* d) {
     u8* q = (u8*)x + h;
     *x = (BarrierArgs){cb, d->dependencyFlags, d->memoryBarrierCount, d->bufferMemoryBarrierCount,
                        d->imageMemoryBarrierCount};
-    memcpy(q, d->pMemoryBarriers, d->memoryBarrierCount * sizeof(VkMemoryBarrier2));
-    memcpy(q + mn, d->pBufferMemoryBarriers, d->bufferMemoryBarrierCount * sizeof(VkBufferMemoryBarrier2));
-    memcpy(q + mn + bn, d->pImageMemoryBarriers, d->imageMemoryBarrierCount * sizeof(VkImageMemoryBarrier2));
+    /* an empty array may be NULL, which is not to be handed to memcpy even for no bytes */
+    if (d->memoryBarrierCount) memcpy(q, d->pMemoryBarriers, d->memoryBarrierCount * sizeof(VkMemoryBarrier2));
+    if (d->bufferMemoryBarrierCount)
+        memcpy(q + mn, d->pBufferMemoryBarriers, d->bufferMemoryBarrierCount * sizeof(VkBufferMemoryBarrier2));
+    if (d->imageMemoryBarrierCount)
+        memcpy(q + mn + bn, d->pImageMemoryBarriers, d->imageMemoryBarrierCount * sizeof(VkImageMemoryBarrier2));
     rec_commit();
 }
 

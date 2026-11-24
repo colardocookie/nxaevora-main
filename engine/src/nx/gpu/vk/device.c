@@ -11,6 +11,8 @@
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/perf_times.h"
+#include "nx/gpu/vk/upscaler_needs.h"
+#include "nx/gpu/vk/validation_lines.h"
 #include "common/gpu/vk/swapchain.h"
 #include "common/gpu/vk/vk_common.h"
 
@@ -64,16 +66,37 @@ int vk_ok_(VkResult r, const char* what, const char* file, int line) {
 }
 
 u32 g_vk_validation_messages;
+/* With the validation option, log only: what a report of a run keeps, under a prefix of its own
+   (validation_lines.h). The lock is a word beside the state. It covers the tables, the counters and the
+   counter above, which goes up under it. A callback can come before the status lines are written. */
+_Static_assert(VALIDATION_LIST_HAS == SNX_VK_LAYER_HAS && VALIDATION_LIST_LACKS == SNX_VK_LAYER_LACKS &&
+                   VALIDATION_LIST_PART == SNX_VK_LAYER_PART &&
+                   VALIDATION_LIST_COUNT_FAILED == SNX_VK_LAYER_COUNT_FAILED &&
+                   VALIDATION_LIST_LIST_FAILED == SNX_VK_LAYER_LIST_FAILED &&
+                   VALIDATION_LIST_NO_MEMORY == SNX_VK_LAYER_NO_MEMORY,
+               "the states of a list's reading, as the status lines take them");
+static ValidationLines g_validation;
+static int g_validation_lock;
+static void validation_line(void* user, const char* line) {
+    (void)user;
+    /* what was not got and what was lost are warnings, the rest are plain lines */
+    if (strstr(line, "NOT ") || !strncmp(line, "LIMIT MET", 9) || !strncmp(line, "no message callback", 19))
+        WARN("arceus-validation: %s\n", line);
+    else
+        LOG("arceus-validation: %s\n", line);
+}
 static VKAPI_ATTR VkBool32 VKAPI_CALL debug_cb(VkDebugUtilsMessageSeverityFlagBitsEXT sev,
                                                VkDebugUtilsMessageTypeFlagsEXT type,
                                                const VkDebugUtilsMessengerCallbackDataEXT* d, void* user) {
     (void)type;
     (void)user;
-    g_vk_validation_messages++;
+    /* the inherited line, as it was */
     if (sev & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)
         WARN("vulkan validation: %s\n", d->pMessage);
     else
         LOG("vulkan validation: %s\n", d->pMessage);
+    validation_lines_said(&g_validation_lock, &g_validation, &g_vk_validation_messages, d->pMessageIdName,
+                          d->messageIdNumber, d->pMessage, validation_line, NULL);
     return VK_FALSE;
 }
 
@@ -87,15 +110,39 @@ typedef struct {
         separateStencilMaskRef, shaderSampleRateInterpolationFunctions, tessellationIsolines, tessellationPointMode,
         triangleFans, vertexAttributeAccessBeyondStride;
 } PortabilityFeatures;
+/* set when SNX_ARCEUS_UPSCALER named an adapter but the backend listed too many instance extensions for the copy
+   they are added to: the instance has none of the adapter's, so the device does not ask the adapter either */
+static int g_upscaler_instance_skipped;
 /* MoltenVK (macOS, iOS) is a portability driver: the loader lists it only for an instance that asks for those */
 static int create_instance(void) {
     u32 nbe = 0;
     const char* const* be = g_opt_headless ? NULL : backend_vk_extensions(&nbe);
+    /* With SNX_ARCEUS_UPSCALER naming an adapter: its instance extensions behind the backend's, on a copy, each
+       only when the instance lists it (DL2). Without the switch the backend's list is used as it is. */
+    const char* upscaler = getenv("SNX_ARCEUS_UPSCALER");
+    const char* with[64];
+    u32 nwith = 0;
+    const int named = upscaler && upscaler[0] && strcmp(upscaler, "0") && strcmp(upscaler, "off") &&
+                      strcmp(upscaler, "spatial");
+    const int asks = named && (!be || nbe <= 32);
+    g_upscaler_instance_skipped = named && !asks;
+    if (g_upscaler_instance_skipped)
+        WARN("arceus-upscaler: %s is not available: the window system asks for %u instance extensions, more than "
+             "the 32 the adapter's are added to\n",
+             upscaler, nbe);
+    if (asks) {
+        for (u32 i = 0; be && i < nbe; i++) with[nwith++] = be[i];
+        const u32 room = (u32)(sizeof with / sizeof with[0]);
+        if (!vk_upscaler_instance_ask(upscaler, with, &nwith, room)) nwith = be ? nbe : 0;
+    }
     SnxVkInstanceInfo info = {.app_name = "ScarletNX",
-                              .extensions = be,
-                              .extension_count = be ? nbe : 0,
+                              .extensions = asks ? (nwith ? with : NULL) : be,
+                              .extension_count = asks ? nwith : be ? nbe : 0,
                               .validation = g_settings.vulkan_validation_layer != 0,
-                              .sync_validation = g_vk_sync_validation != 0,
+                              /* main asks for the synchronisation checks with every validation run;
+                                 SNX_ARCEUS_VK_VALIDATION=2 asks for them as well */
+                              .synchronization = g_settings.vulkan_validation_layer != 0 || g_vk_sync_validation != 0,
+                              .message_limit_off = g_settings.vulkan_validation_layer != 0,
                               .portability = true,
                               .debug = debug_cb};
     SnxVkInstance made;
@@ -103,9 +150,33 @@ static int create_instance(void) {
     if (info.validation && !made.validation)
         WARN("vulkan: validation was asked for (vk_validation), but "
              "VK_LAYER_KHRONOS_validation is not installed\n");
-    if (info.sync_validation && made.validation)
-        LOG("vulkan: synchronization validation %s\n",
-            made.sync_validation ? "on" : "asked for, but the layer has no VK_EXT_validation_features: off");
+    /* With the validation option: what a run with it really has, each in a line of its own under the prefix a
+       report keeps. That no warning above is printed says nothing about a callback that works. */
+    if (info.validation) {
+        /* each way of not having the synchronisation checks has its own words */
+        static const char* const why[] = {"",
+                                          "the layer's list of extensions, read whole, does not hold it",
+                                          "the layer's list stayed incomplete after three tries, so whether it "
+                                          "holds it is not known",
+                                          "the call for the count of the layer's extensions failed",
+                                          "the call for the list of the layer's extensions failed",
+                                          "there was no memory for the list of the layer's extensions, so the "
+                                          "call for it was not made"};
+        /* a result is printed only for a call that was made: with no memory for the list none was */
+        validation_lines_lock(&g_validation_lock);
+        validation_lines_status(made.validation_why, snx_vk_result_str(made.validation_result),
+                                (int)made.validation_result, made.synchronization, why[made.synchronization_why],
+                                made.synchronization_why != SNX_VK_LAYER_NO_MEMORY,
+                                snx_vk_result_str(made.synchronization_result), (int)made.synchronization_result,
+                                !made.messenger_asked ? -1 : made.messenger_result == VK_SUCCESS,
+                                snx_vk_result_str(made.messenger_result), (int)made.messenger_result,
+                                validation_line, NULL);
+        if (made.validation)
+            validation_lines_limit(made.limit_asked, made.limit_built, made.limit_why,
+                                   snx_vk_result_str(made.limit_result), (int)made.limit_result, validation_line,
+                                   NULL);
+        validation_lines_unlock(&g_validation_lock);
+    }
     g_vk.instance = made.instance;
     g_vk.debug = made.messenger;
     return 1;
@@ -543,14 +614,87 @@ static int create_device(void) {
                                               .queueFamilyIndex = g_vk.video_family,
                                               .queueCount = 1,
                                               .pQueuePriorities = prio};
+    /* Only with SNX_ARCEUS_UPSCALER naming an adapter: what that adapter needs of the device, checked and copied
+       by the host (upscaler_host.c). The additions stand behind the game's own count and in front of its own
+       chain head, on copies: neither is changed in place, and without the switch nothing here runs. */
+    const char* upscaler = getenv("SNX_ARCEUS_UPSCALER");
+    VkUpscalerDeviceAsk ask;
+    const u32 room = (u32)(sizeof g_vk.dev_ext / sizeof g_vk.dev_ext[0]);
+    u32 with_count = next;
+    int accepted = 0;
+    if (upscaler && upscaler[0] && strcmp(upscaler, "0") && strcmp(upscaler, "off") && !g_upscaler_instance_skipped) {
+        /* the core bits the physical device has, as its own 1.0 and 1.2 questions answered, and its 1.3 features
+           asked here alone, with the switch on */
+        VkPhysicalDeviceVulkan13Features q13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+        VkPhysicalDeviceFeatures2 a13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &q13};
+        vkGetPhysicalDeviceFeatures2(g_vk.phys, &a13);
+        const u32 has = (q12.separateDepthStencilLayouts ? SNX_NEEDS_CORE_SEPARATE_DEPTH_STENCIL : 0) |
+                        (q12.bufferDeviceAddress ? SNX_NEEDS_CORE_BUFFER_DEVICE_ADDRESS : 0) |
+                        (f2.features.shaderStorageImageWriteWithoutFormat ? SNX_NEEDS_CORE_STORAGE_WRITE_WITHOUT_FORMAT
+                                                                          : 0) |
+                        (q12.shaderInt8 ? SNX_NEEDS_CORE_SHADER_INT8 : 0) |
+                        (q12.scalarBlockLayout ? SNX_NEEDS_CORE_SCALAR_BLOCK_LAYOUT : 0) |
+                        (q13.shaderIntegerDotProduct ? SNX_NEEDS_CORE_INTEGER_DOT_PRODUCT : 0);
+        accepted = vk_upscaler_device_ask(upscaler, g_vk.instance, g_vk.phys, vkGetInstanceProcAddr, has, &ask) &&
+                   vk_upscaler_device_names(&ask, ext, &with_count, room);
+    }
+    /* the host's structures in front of the game's chain: the derivatives', then the mutable descriptor type's */
+    void* head = chain;
+    if (accepted && ask.mutable_have) {
+        ask.mutable_desc.pNext = head;
+        head = &ask.mutable_desc;
+    }
+    if (accepted && ask.have) {
+        ask.derivatives.pNext = head;
+        head = &ask.derivatives;
+    }
+    /* A core bit the adapter needs goes into the game's OWN 1.0, 1.2 or 1.3 structure, for the creation with the
+       additions only: the game's own value is kept and put back before a creation without them. */
+    const VkBool32 own_separate = f12.separateDepthStencilLayouts, own_address = f12.bufferDeviceAddress;
+    const VkBool32 own_storage = g_vk.feat.shaderStorageImageWriteWithoutFormat, own_int8 = f12.shaderInt8,
+                   own_dot = f13.shaderIntegerDotProduct, own_scalar = f12.scalarBlockLayout;
+    const u32 bits = accepted ? ask.core : 0;
+    f12.separateDepthStencilLayouts =
+        (VkBool32)snx_needs_core_bit(own_separate != 0, accepted, bits, SNX_NEEDS_CORE_SEPARATE_DEPTH_STENCIL);
+    f12.bufferDeviceAddress =
+        (VkBool32)snx_needs_core_bit(own_address != 0, accepted, bits, SNX_NEEDS_CORE_BUFFER_DEVICE_ADDRESS);
+    g_vk.feat.shaderStorageImageWriteWithoutFormat =
+        (VkBool32)snx_needs_core_bit(own_storage != 0, accepted, bits, SNX_NEEDS_CORE_STORAGE_WRITE_WITHOUT_FORMAT);
+    f12.shaderInt8 = (VkBool32)snx_needs_core_bit(own_int8 != 0, accepted, bits, SNX_NEEDS_CORE_SHADER_INT8);
+    f12.scalarBlockLayout =
+        (VkBool32)snx_needs_core_bit(own_scalar != 0, accepted, bits, SNX_NEEDS_CORE_SCALAR_BLOCK_LAYOUT);
+    f13.shaderIntegerDotProduct =
+        (VkBool32)snx_needs_core_bit(own_dot != 0, accepted, bits, SNX_NEEDS_CORE_INTEGER_DOT_PRODUCT);
+    const SnxNeedsPlan plan = snx_needs_plan(next, chain, accepted, with_count, head);
     VkDeviceCreateInfo dci = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-                              .pNext = chain,
+                              .pNext = plan.head,
                               .queueCreateInfoCount = nq,
                               .pQueueCreateInfos = qci,
-                              .enabledExtensionCount = next,
+                              .enabledExtensionCount = plan.count,
                               .ppEnabledExtensionNames = ext,
                               .pEnabledFeatures = &g_vk.feat};
-    if (!VK_OK(vkCreateDevice(g_vk.phys, &dci, NULL, &g_vk.dev))) return 0;
+    int made_with = 0;
+    if (plan.augmented) {
+        const VkResult with = vkCreateDevice(g_vk.phys, &dci, NULL, &g_vk.dev);
+        made_with = with == VK_SUCCESS;
+        if (!made_with) vk_upscaler_device_failed(&ask, (int)with);
+    }
+    if (!made_with) {
+        /* as without the switch: the game's own count and chain head, and no name of an adapter behind them */
+        for (u32 i = next; i < room; i++) ext[i] = NULL;
+        f12.separateDepthStencilLayouts = own_separate;
+        f12.bufferDeviceAddress = own_address;
+        g_vk.feat.shaderStorageImageWriteWithoutFormat = own_storage;
+        f12.shaderInt8 = own_int8;
+        f12.scalarBlockLayout = own_scalar;
+        f13.shaderIntegerDotProduct = own_dot;
+        dci.pNext = chain;
+        dci.enabledExtensionCount = next;
+        if (!VK_OK(vkCreateDevice(g_vk.phys, &dci, NULL, &g_vk.dev))) return 0;
+    } else {
+        next = plan.count;
+        vk_upscaler_device_made(&ask);
+    }
     g_vk.gfx_queues = second ? 2 : 1;
     g_vk.dev_ext_n = next;
     g_vk.feat11 = f11;
