@@ -1045,7 +1045,9 @@ setting Arceus upscaling
     words Off|TAA (experimental)|FSR (experimental)|DLSS (experimental)|XeSS (experimental)
     help For Pokemon Legends: Arceus only, which other games leave out. Off = the game's own picture. TAA = temporal
     help anti-aliasing over several frames. FSR, DLSS and XeSS = an upscaler, which also smooths edges and can draw the
-    help scene smaller (Scene scale). A choice the PC cannot run falls back to Off at start, with a line in the log.
+    help scene smaller (Scene scale). When an upscaler's library is not beside the program, the run uses TAA at native
+    help size, with a line in the log. When the graphics card refuses it later at start, the upscaler is left out and
+    help the scene stays at its chosen size, which the game then stretches over the screen.
     help The page is not used for a run whose environment sets SNX_ARCEUS_UPSCALER, _SCENE_SCALE, _FIXED_RESOLUTION,
     help _TEMPORAL, _TEMPORAL_VECTORS, _TEMPORAL_LINKS or _TEMPORAL_RECT, or SNX_ARCEUS_MENU=0
 setting Arceus scene scale

@@ -596,7 +596,11 @@ start. A read before it gets the environment's value and is counted.
 Start lines. `arceus-graphics: anti-aliasing X, scene scale Y, fixed resolution Z from the settings` says what the
 rows set. `arceus-graphics: the environment sets SNX_ARCEUS_X: the settings' rows are not used` and
 `arceus-graphics: SNX_ARCEUS_MENU=0: ...` say that rows which set something were left out. Neither is written when the
-rows set nothing. A count of reads before the decision has a line of its own. A refusal line that names a switch's
+rows set nothing. A count of reads before the decision has a line of its own. When the rows name an upscaler whose
+adapter or library is not there (`vk_upscaler_present`, asked before any Vulkan instance, and only when the rows are
+used), the rows become TAA at native size with `arceus-graphics: NAME is not available (REASON): TAA at native size is
+used`. The lines of that lookup are written to the log as they come. An upscaler the graphics card refuses later, when
+the device is made, is left out as before, and the scene stays at its chosen size. A refusal line that names a switch's
 value, such as the temporal code's lines about `SNX_ARCEUS_FIXED_RESOLUTION=0`, can come from the page's rows: the
 start line says which. While the environment sets one of the seven, the launcher's help for each row and the in-game
 window's lock say so.

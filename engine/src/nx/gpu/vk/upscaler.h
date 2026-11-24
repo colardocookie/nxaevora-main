@@ -188,6 +188,10 @@ extern "C" {
 void* vk_upscaler_library_beside(const char* file, char* tried, size_t tried_size);
 /* a function of a library from vk_upscaler_library_beside, or NULL */
 void* vk_upscaler_library_symbol(void* library, const char* name);
+/* Whether the adapter of name and its SDK library are there, asked before any Vulkan instance: the adapter's lookup
+   and its question of the instance's needs, which loads the library. The lines they log are caught, then written to
+   the log again in their order, and why gets the last arceus-upscaler line's words. 1 when it is there */
+int vk_upscaler_present(const char* name, char* why, size_t size);
 #ifdef __cplusplus
 }
 #endif

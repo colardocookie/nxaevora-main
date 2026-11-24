@@ -28,6 +28,16 @@ static void clear_all(void) {
     clear("SNX_ARCEUS_TEMPORAL_SHARPEN");
 }
 static int same(const char* a, const char* b) { return a == b || (a && b && !strcmp(a, b)); }
+/* the stand-in for vk_upscaler_present: dlss is missing, every other upscaler is there. Each question counted */
+static unsigned present_calls;
+static const char* present_name;
+static int present_stub(const char* upscaler, char* why, size_t size) {
+    present_calls++;
+    present_name = upscaler;
+    if (strcmp(upscaler, "dlss")) return 1;
+    snprintf(why, size, "snx_upscaler_dlss.dll is not beside the program");
+    return 0;
+}
 
 /* the design's table, written out per row 1 choice: TEMPORAL, VECTORS, LINKS, RECT, UPSCALER */
 static const char* const want_aa[ARCEUS_AA_COUNT][5] = {
@@ -103,7 +113,7 @@ int main(void) {
     assert(!arceus_graphics("SNX_ARCEUS_SCENE_SCALE"));
     assert(!arceus_graphics("SNX_ARCEUS_TEMPORAL_SHARPEN")); /* not one of the seven: not counted */
     clear("SNX_ARCEUS_UPSCALER");
-    char line[320];
+    char line[1024]; /* as main.c has it */
     static const char early[] = "arceus-graphics: 2 reads of the graphics page's switches came before the settings "
                                 "were decided and took the environment's values";
     assert(arceus_graphics_line(line, sizeof line) && !strcmp(line, early));
@@ -115,14 +125,14 @@ int main(void) {
     /* another game: its rows are the defaults, so nothing, and the line has only the early reads */
     const ArceusGraphicsRows defaults_too = ARCEUS_GRAPHICS_ROWS_DEFAULT;
     const ArceusGraphicsRows dlss_half = {ARCEUS_AA_DLSS, ARCEUS_SCALE_1_2, 0};
-    arceus_graphics_decide(UINT64_C(0x0100000000010000), &dlss_half);
+    arceus_graphics_decide(UINT64_C(0x0100000000010000), &dlss_half, NULL);
     check_rows_used(&defaults_too);
     assert(arceus_graphics_line(line, sizeof line) && !strcmp(line, early));
     /* the game: the rows' values, and the update's program the same. A name of the TEMPORAL family that is not one
        of the seven is getenv's, and being set takes nothing from the rows */
-    arceus_graphics_decide(ARCEUS_GRAPHICS_TITLE + 0x800, &dlss_half);
+    arceus_graphics_decide(ARCEUS_GRAPHICS_TITLE + 0x800, &dlss_half, NULL);
     check_rows_used(&dlss_half);
-    arceus_graphics_decide(ARCEUS_GRAPHICS_TITLE, &dlss_half);
+    arceus_graphics_decide(ARCEUS_GRAPHICS_TITLE, &dlss_half, NULL);
     check_rows_used(&dlss_half);
     assert(!strcmp(arceus_graphics("SNX_ARCEUS_SCENE_SCALE"), "1/2"));
     static const char second[] = "\narceus-graphics: anti-aliasing DLSS, scene scale 1/2, fixed resolution on from the "
@@ -137,19 +147,19 @@ int main(void) {
     clear("SNX_ARCEUS_TEMPORAL_SHARPEN");
     assert(!arceus_graphics("SNX_ARCEUS_TEMPORAL_SHARPEN"));
     const ArceusGraphicsRows off_free = {ARCEUS_AA_OFF, ARCEUS_SCALE_2_3, 0};
-    arceus_graphics_decide(ARCEUS_GRAPHICS_TITLE, &off_free);
+    arceus_graphics_decide(ARCEUS_GRAPHICS_TITLE, &off_free, NULL);
     assert(!strcmp(arceus_graphics("SNX_ARCEUS_FIXED_RESOLUTION"), "0") && !arceus_graphics("SNX_ARCEUS_SCENE_SCALE"));
     assert(arceus_graphics_line(line, sizeof line) &&
            !strcmp(strchr(line, '\n') + 1,
                    "arceus-graphics: anti-aliasing off, scene scale native, fixed resolution off from the settings"));
     /* rows that hand the code nothing: no line of their own (Off with a scale, or the defaults) */
     const ArceusGraphicsRows off_scaled = {ARCEUS_AA_OFF, ARCEUS_SCALE_1_2, 1};
-    arceus_graphics_decide(ARCEUS_GRAPHICS_TITLE, &off_scaled);
+    arceus_graphics_decide(ARCEUS_GRAPHICS_TITLE, &off_scaled, NULL);
     assert(arceus_graphics_line(line, sizeof line) && !strcmp(line, early));
-    arceus_graphics_decide(ARCEUS_GRAPHICS_TITLE, &defaults_too);
+    arceus_graphics_decide(ARCEUS_GRAPHICS_TITLE, &defaults_too, NULL);
     assert(arceus_graphics_line(line, sizeof line) && !strcmp(line, early));
     /* one of the seven in the environment: all seven from the environment, never a mix */
-    arceus_graphics_decide(ARCEUS_GRAPHICS_TITLE, &dlss_half);
+    arceus_graphics_decide(ARCEUS_GRAPHICS_TITLE, &dlss_half, NULL);
     for (int i = 0; i < ARCEUS_GFX_NAMES; i++) {
         put(arceus_graphics_name(i), "x");
         check_env_used(arceus_graphics_name(i));
@@ -184,6 +194,42 @@ int main(void) {
         put("SNX_ARCEUS_MENU", not_off[k]);
         check_rows_used(&dlss_half);
     }
+    /* an upscaler of the rows that is not there: TAA at native size, with its line. One that is: the rows as they are.
+       The question is asked only for the rows' own upscaler, never with the environment's, nor for another game */
+    present_calls = 0;
+    clear("SNX_ARCEUS_MENU");
+    arceus_graphics_decide(ARCEUS_GRAPHICS_TITLE, &dlss_half, present_stub);
+    assert(present_calls == 1 && !strcmp(present_name, "dlss"));
+    assert(!strcmp(arceus_graphics("SNX_ARCEUS_TEMPORAL"), "taa") && !arceus_graphics("SNX_ARCEUS_UPSCALER") &&
+           !arceus_graphics("SNX_ARCEUS_SCENE_SCALE") && !arceus_graphics("SNX_ARCEUS_FIXED_RESOLUTION"));
+    assert(arceus_graphics_line(line, sizeof line));
+    {
+        static const char missing[] = "arceus-graphics: DLSS is not available (snx_upscaler_dlss.dll is not beside the "
+                                      "program): TAA at native size is used\n";
+        const char* second_line = strchr(line, '\n') + 1;
+        assert(!strncmp(second_line, missing, sizeof missing - 1));
+        assert(!strcmp(second_line + sizeof missing - 1, "arceus-graphics: anti-aliasing TAA, scene scale native, "
+                                                          "fixed resolution on from the settings"));
+    }
+    const ArceusGraphicsRows fsr_half = {ARCEUS_AA_FSR, ARCEUS_SCALE_1_2, 1};
+    arceus_graphics_decide(ARCEUS_GRAPHICS_TITLE, &fsr_half, present_stub);
+    assert(present_calls == 2 && !strcmp(present_name, "fsr"));
+    check_rows_used(&fsr_half);
+    assert(arceus_graphics_line(line, sizeof line) && !strstr(line, "is not available"));
+    const ArceusGraphicsRows taa_only = {ARCEUS_AA_TAA, ARCEUS_SCALE_1_2, 0};
+    arceus_graphics_decide(ARCEUS_GRAPHICS_TITLE, &taa_only, present_stub);
+    arceus_graphics_decide(UINT64_C(0x0100000000010000), &dlss_half, present_stub);
+    assert(present_calls == 2);
+    put("SNX_ARCEUS_UPSCALER", "dlss");
+    arceus_graphics_decide(ARCEUS_GRAPHICS_TITLE, &dlss_half, present_stub);
+    assert(present_calls == 2 && !strcmp(arceus_graphics("SNX_ARCEUS_UPSCALER"), "dlss"));
+    clear("SNX_ARCEUS_UPSCALER");
+    put("SNX_ARCEUS_MENU", "0");
+    arceus_graphics_decide(ARCEUS_GRAPHICS_TITLE, &dlss_half, present_stub);
+    assert(present_calls == 2);
+    clear("SNX_ARCEUS_MENU");
+    arceus_graphics_decide(ARCEUS_GRAPHICS_TITLE, &dlss_half, NULL);
+    check_rows_used(&dlss_half);
     /* MENU=0 and one of the seven: that name is the one the start line gives */
     put("SNX_ARCEUS_MENU", "0");
     put("SNX_ARCEUS_UPSCALER", "off");

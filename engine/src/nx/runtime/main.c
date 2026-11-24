@@ -24,6 +24,7 @@
 #include "nx/gpu/renderer.h"
 #include "nx/gpu/vk/upscaler_selftest.h"
 #include "nx/gpu/vk/imgui_settings.h"
+#include "nx/gpu/vk/upscaler.h"
 #include "nx/hle/filesystem/fs.h"
 #include "nx/hle/hle.h"
 #include "nx/hle/kernel/kernel.h"
@@ -881,8 +882,8 @@ int snx_main(int argc, char** argv) {
          switches, and for that game's title only */
         const ArceusGraphicsRows rows = {g_settings.arceus_upscaling, g_settings.arceus_scene_scale,
                                          g_settings.arceus_fixed_resolution};
-        char line[320];
-        arceus_graphics_decide(g_hle.kernel.title_id, &rows);
+        char line[1024];
+        arceus_graphics_decide(g_hle.kernel.title_id, &rows, vk_upscaler_present);
         imgui_settings_title(g_hle.kernel.title_id); /* the in-game window's page for the same title */
         if (arceus_graphics_line(line, sizeof line)) LOG("%s\n", line);
     }

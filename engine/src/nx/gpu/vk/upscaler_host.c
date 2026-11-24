@@ -142,6 +142,36 @@ void* vk_upscaler_library_symbol(void* library, const char* name) {
 #endif
     return p;
 }
+int vk_upscaler_present(const char* name, char* why, size_t size) {
+    static const char prefix[] = "arceus-upscaler: ";
+    FILE* caught = tmpfile();
+    FILE* const was = tls_log_redirect;
+    SnxUpscalerExtensions more = {0};
+    int there = 0;
+    if (size) why[0] = 0;
+    if (caught) tls_log_redirect = caught; /* this thread's lines alone */
+    if (name && !vk_upscaler_not_in_game(name)) {
+        const SnxUpscalerApi* api = vk_upscaler_adapter(name);
+        there = api && api->abi == SNX_UPSCALER_ABI && api->instance_extensions &&
+                api->instance_extensions(&more) == SNX_UPSCALER_OK;
+    }
+    tls_log_redirect = was;
+    if (caught) {
+        char line[4096];
+        rewind(caught);
+        while (fgets(line, sizeof line, caught)) {
+            LOG("%s", line);
+            if (!there && size && !strncmp(line, prefix, sizeof prefix - 1)) {
+                line[strcspn(line, "\r\n")] = 0;
+                snprintf(why, size, "%s", line + sizeof prefix - 1);
+            }
+        }
+        fclose(caught);
+    }
+    if (!there && size && !why[0])
+        snprintf(why, size, "%s", caught ? "the adapter gave no reason" : "its reason could not be kept");
+    return there;
+}
 /* The self-test's lookup: the same as the game's */
 const SnxUpscalerApi* vk_upscaler_adapter_selftest(const char* name) { return vk_upscaler_adapter(name); }
 

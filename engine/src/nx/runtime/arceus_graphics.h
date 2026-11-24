@@ -61,11 +61,15 @@ void arceus_graphics_map(const ArceusGraphicsRows* rows, const char* out[ARCEUS_
 static inline int arceus_graphics_title(uint64_t title_id) {
     return (title_id & ~UINT64_C(0xfff)) == ARCEUS_GRAPHICS_TITLE;
 }
+/* whether an upscaler's adapter and library are there (gpu/vk/upscaler.h vk_upscaler_present): 1, else 0 with why */
+typedef int (*ArceusGraphicsPresent)(const char* upscaler, char* why, size_t size);
 /* The one decision, at start before any of the seven is read and before any thread starts: the rows for this game's
-   title, or the defaults for any other title. Until it is made, a read gives the environment's value and is counted */
-void arceus_graphics_decide(uint64_t title_id, const ArceusGraphicsRows* rows);
+   title, or the defaults for any other title. Until it is made, a read gives the environment's value and is counted.
+   When the rows are used and name an upscaler that present says is not there, they become TAA at Native. present is
+   asked only then, never when the environment sets the switches, and may be NULL */
+void arceus_graphics_decide(uint64_t title_id, const ArceusGraphicsRows* rows, ArceusGraphicsPresent present);
 /* the start line of the decision, without its newline: 0 when there is none to say (the rows at their defaults, no read
-   before the decision, or another game). Two lines at most, a newline between */
+   before the decision, or another game). Three lines at most, a newline between */
 int arceus_graphics_line(char* out, size_t size);
 /* in place of getenv for the seven names. Any other name is getenv's */
 const char* arceus_graphics(const char* name);
