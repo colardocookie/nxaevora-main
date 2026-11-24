@@ -11,7 +11,6 @@ if(Python3_Interpreter_FOUND) # tests/CMakeLists.txt looked it up
             ${snx_architecture_sanitizers})
     set_tests_properties(runtime_architecture PROPERTIES TIMEOUT 180)
     add_test(NAME architecture_checker COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/architecture_test.py")
-    add_test(NAME gnuabi_differential_harness COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/gnuabi_diff_test.py")
     if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY AND SNX_TEST_VULKAN)
         add_test(NAME nx_runtime_homebrew
             COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/nx_runtime_smoke.py"
@@ -32,7 +31,7 @@ if(Python3_Interpreter_FOUND) # tests/CMakeLists.txt looked it up
                 --artifact-dir "${PROJECT_BINARY_DIR}/nx-arm32-failures")
         set_tests_properties(nx_runtime_arm32 PROPERTIES TIMEOUT 300)
     endif()
-    if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY AND UNIX AND NOT APPLE)
+    if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY AND UNIX)
         add_test(NAME xdg_layout
             COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/xdg_layout.py" --driver $<TARGET_FILE:scarletnx>)
         set_tests_properties(xdg_layout PROPERTIES TIMEOUT 240)

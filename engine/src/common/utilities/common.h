@@ -17,12 +17,8 @@ typedef struct {
     const char* source; /* the checkout the build came from (snx_checkout), to build tools in; NULL without one */
 } SnxPaths;
 
-/* The program's file name, as CMake sets it: nxaevora-engine unless APPLE or ANDROID (src/multicall/CMakeLists.txt) */
-#if defined(__APPLE__) || defined(__ANDROID__)
-#define SNX_PROGRAM_FILE "scarletnx"
-#else
+/* The program's file name, as CMake sets it (src/multicall/CMakeLists.txt) */
 #define SNX_PROGRAM_FILE "nxaevora-engine"
-#endif
 /* The Switch driver's name and link (src/multicall) */
 #define SNX_SWITCH_DRIVER "nxaevora-engine-switch"
 /* The AppImage name prefix of scripts/make-appimage.sh (ScarletNX-linux-<arch>) */
@@ -52,8 +48,8 @@ int snx_path_format(char* out, size_t size, const char* fmt, ...);
 int snx_error(const char* fmt, ...);
 /* an option given by the name an older version had, old (a literal), said once a run with its name now */
 void snx_option_renamed(const char* old, const char* now);
-/* where snx_error's lines go from now on instead of stderr (the runtime's log, which a game's process on Android has
-   no other way to keep them in), NULL for stderr again. Set before the threads that say errors start */
+/* where snx_error's lines go from now on instead of stderr (the runtime's log), NULL for stderr again. Set before the
+   threads that say errors start */
 void snx_error_sink(void (*sink)(const char* line));
 /* the system's reason for the file or folder call that just failed, into out: strerror(errno), or on Windows the
    text of GetLastError, which its calls set instead of errno */
@@ -78,6 +74,9 @@ int snx_is_dir(const char* path);
 int snx_is_link(const char* path);
 /* Any existing directory entry, including dangling symlinks and special files. */
 int snx_path_exists(const char* path);
+/* 1 when path does not exist: lstat fails with ENOENT or ENOTDIR, or on Windows the attribute call fails with
+   ERROR_FILE_NOT_FOUND or ERROR_PATH_NOT_FOUND. Every other failure is not missing */
+int snx_path_missing(const char* path);
 int snx_mkdirs(const char* path);
 int snx_remove_tree(const char* path);
 /* the folder at path taken away when it is empty, and only then (0); nonzero, and nothing touched, when it is not */
@@ -92,14 +91,6 @@ int snx_link_file(const char* src, const char* dst);
 /* link a symbolic link to target, which it names as given: nonzero when it cannot be made (on Windows, without the
    right to make one: developer mode or an administrator) */
 int snx_symlink(const char* target, const char* link);
-/* on Apple, the Vulkan driver a program's own folders carry, for SDL to load instead of the system's loader: the
-   MoltenVK beside it (a game's runtime copy), the app bundle's Frameworks, or the framework in an iOS app. NULL
-   elsewhere, and when its folders have none (the system's loader, which the app's own bundle finds by itself) */
-char* snx_vulkan_driver(const char* program);
-/* put the Vulkan driver program carries in folder, beside the program a game runs there: its copy of the runtime is
-   outside the app's bundle, where neither SDL's search nor a system's loader reaches the library. 0, or 1 with the
-   reason said. Nothing to do, and 0, where the system's loader serves or the program carries none */
-int snx_deploy_vulkan_driver(const char* program, const char* folder);
 int snx_path_within(const char* path, const char* parent);
 int snx_replace(const char* src, const char* dst);
 int snx_list_dir(const char* path, char*** names, size_t* count);
@@ -111,13 +102,17 @@ unsigned char* snx_read_file(const char* path, size_t* size);
 int snx_file_has_record(const char* path, const void* magic, size_t magic_size, size_t size,
                         int (*accept)(const unsigned char* record, const void* context), const void* context);
 int snx_write_file(const char* path, const void* data, size_t size);
+/* Writes size bytes to a file that must not be there yet: the file is made exclusively, so two writers cannot take one
+   name. A failed write deletes the file, and when that delete also fails the file stays and the error says so. 0; 1
+   when path is there already; -1 otherwise, error with the path and the reason. The handle is closed on every path */
+int snx_write_new_file(const char* path, const void* data, size_t size, char* error, size_t error_size);
 int snx_write_changed(const char* path, const void* data, size_t size);
 char* snx_temp_dir(const char* parent);
 /* the system's folder for temporary files: TMPDIR, else /tmp; on Windows GetTempPath's */
 char* snx_temp_root(void);
 char* snx_user_data_dir(void);
 /* Systems that follow the XDG Base Directory spec, where settings, state and caches have folders of their own */
-#if !defined(_WIN32) && !defined(__APPLE__) && !defined(__ANDROID__)
+#if !defined(_WIN32)
 #define SNX_XDG 1
 #endif
 enum { SNX_USER_DATA, SNX_USER_CONFIG, SNX_USER_STATE, SNX_USER_CACHE };
@@ -128,20 +123,11 @@ enum { SNX_USER_DATA, SNX_USER_CONFIG, SNX_USER_STATE, SNX_USER_CACHE };
 #define SNX_PORTABLE_DIR ".nxaevora"
 /* The old name of SNX_PORTABLE_DIR, kept only to find what an older version left */
 #define SNX_OLD_PORTABLE_DIR ".scarletnx"
-/* iOS: the app (dist/apple), which starts no other process and keeps its data in its Documents folder */
-#ifdef __APPLE__
-#include <TargetConditionals.h>
-#if TARGET_OS_IPHONE
-#define SNX_IOS 1
-#endif
-#endif
-/* An older version's data folder on Android, the shared storage's: a game there still runs as one of a data folder */
-#define SNX_ANDROID_DIR "/sdcard/ScarletNX"
 /* The user's folder for one kind of file: $XDG_CONFIG_HOME/nxaevora (~/.config), $XDG_STATE_HOME/nxaevora
    (~/.local/state) or $XDG_CACHE_HOME/nxaevora (~/.cache), a relative path ignored. Without SNX_XDG config/, state/
    and cache/ of the data folder. NULL when the environment names no home */
 char* snx_user_dir(int kind);
-/* 1 for a data folder that keeps each kind of file apart: the user's, a portable copy's (SNX_PORTABLE_DIR), Android's.
+/* 1 for a data folder that keeps each kind of file apart: the user's, a portable copy's (SNX_PORTABLE_DIR).
    Another folder's games (--repo, --outdir) keep their files in their folders */
 int snx_app_dir(const char* folder);
 /* Such a data folder's folder for one kind of file: for SNX_USER_STATE and SNX_USER_CACHE the one its config folder's
@@ -200,15 +186,15 @@ char* snx_portable_dir(const char* program_dir);
 /* The checkout a program run from its build tree (build; NULL: any program) was built from, for what only a checkout
    has: its sources, and what an older version kept in it. NULL for any other program */
 char* snx_checkout(const char* checkout, const char* build, const char* program_dir);
-/* What an older version kept in the checkout of a build tree's program, its data folder then: games/, work/, the
-   keys and scarletnx-gnuabi's sysroot, linux/. snx_checkout_now names where this one keeps each for the data folder data; snx_checkout_left says so on
+/* What an older version kept in the checkout of a build tree's program, its data folder then: games/ and work/.
+   snx_checkout_now names where this one keeps each for the data folder data; snx_checkout_left says so on
    stderr for each still there. Nothing is moved: the player does that (docs/DEPRECATIONS.md) */
-#define SNX_CHECKOUT_FILES 3
+#define SNX_CHECKOUT_FILES 2
 extern const char* const snx_checkout_files[SNX_CHECKOUT_FILES];
 char* snx_checkout_now(const char* data, int file);
 void snx_checkout_left(const char* checkout, const char* data);
 /* A dump file's name without its extension, kept to letters, digits, UTF-8, spaces, '-' and '_', trailing spaces cut;
-   "Game" when nothing is left (the 3DS target names its games by it) */
+   "Game" when nothing is left (the launcher names its games by it) */
 char* snx_dump_name(const char* input);
 /* 0 for a name that is not an encrypted Switch dump (.nsp, .xci, .dnsp, .dxci, any case), else 1 with the line that
    says so: such a dump is no longer read, the decrypted game folder is (-r <folder>) */
@@ -242,14 +228,13 @@ size_t snx_vm_page_size(void);
    asking: the player's abort sets this, and the long loops (the recompiler's units) end early once it is set */
 void snx_abort_request(int on);
 int snx_abort_requested(void);
-/* the memory this process is charged for now, in bytes: its footprint on macOS and iOS, its resident set on Linux,
-   Android and FreeBSD, its working set on Windows; 0 where the system does not tell */
+/* the memory this process is charged for now, in bytes: its resident set on Linux and FreeBSD, its working set on
+   Windows; 0 where the system does not tell */
 SnxU64 snx_footprint(void);
 /* the processor time this process has used, every thread's together, in ns; 0 where the system does not tell */
 SnxU64 snx_process_cpu_ns(void);
-/* the memory the system can still give this process, in bytes, into *bytes: what iOS lets the app take before it ends
-   it, the memory available on Linux and Android (MemAvailable), on macOS (free, inactive and purgeable pages) and on
-   Windows (available physical memory); whether the system told it */
+/* the memory the system can still give this process, in bytes, into *bytes: the memory available on Linux
+   (MemAvailable) and on Windows (available physical memory); whether the system told it */
 int snx_memory_available(SnxU64* bytes);
 void* snx_vm_reserve(size_t size); /* NULL when the system refuses */
 int snx_vm_protect(void* p, size_t size, int access);
@@ -270,13 +255,11 @@ int snx_run(const char* const* argv, const char* cwd, const char* home, char** o
 int snx_run_ticking(const char* const* argv, const char* cwd, const char* home, char** output, void (*tick)(void*),
                     void* data);
 /* Foreground workflow stage with inherited stdio, interruption forwarding and diagnostics.
-   A stopped POSIX child is aborted so a rerun can restart that stage. Not thread safe. */
-int snx_run_stage(const char* const* argv, const char* cwd, const char* stage);
-/* iOS starts no process: a stage then calls run(argc, argv) in this one, argv[0] being the program a child would be.
-   Set once by the driver, whose own main it is */
-void snx_set_stage_runner(int (*run)(int argc, char** argv));
+   A stopped POSIX child is aborted so a rerun can restart that stage. Not thread safe.
+   child_started, when not NULL, receives 1 when the child process started, 0 when it did not. */
+int snx_run_stage(const char* const* argv, const char* cwd, const char* stage, int* child_started);
 /* As above, but intentional debugger stops do not abort the game. */
-int snx_run_debug_stage(const char* const* argv, const char* cwd, const char* stage);
+int snx_run_debug_stage(const char* const* argv, const char* cwd, const char* stage, int* child_started);
 FILE* snx_fopen(const char* path, const char* mode);
 /* The launcher's logs, in its state folder (docs/USAGE.md#folders): what it says, a file a day named after this one
    (gui/log.h's gui_log_console_name; this name the versions before wrote, kept), and a fatal error of it or of a game

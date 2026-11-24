@@ -2,7 +2,7 @@
 
 This is an initial ARMv8-A AArch32 **user-mode CPU backend**, not an AArch32 guest OS or a complete Cortex-A57 emulator. It emits native LLVM IR, not calls to an instruction interpreter. The `snx_arm_llvm` CMake target is built alongside, and linked by, the existing LLVM backend.
 
-The NX runtime runs 32-bit programs with it. The recompiler compiles a 32-bit program's blocks ahead of time into its game module (`src/nx/loader/module_arm.c`, an `SnxArmModule`), and the runtime's threads run them one after another (`src/nx/runtime/arm.c`), compiling a block it reaches that the recompiler didn't find and recording it in the hints file for the next recompile. Their SVCs go through the same handlers as 64-bit ones, with the registers moved into the 64-bit SVC ABI's places (`snx_svc32` in `src/nx/hle/svc/svc.c`). The GNU ABI runner (`src/gnuabi/runtime/arm_exec.c`) and the recompiler library (`snx_recompile32`) compile blocks on first use. Never pass an A64 `CPU*` to an A32 block.
+The NX runtime runs 32-bit programs with it. The recompiler compiles a 32-bit program's blocks ahead of time into its game module (`src/nx/loader/module_arm.c`, an `SnxArmModule`), and the runtime's threads run them one after another (`src/nx/runtime/arm.c`), compiling a block it reaches that the recompiler didn't find and recording it in the hints file for the next recompile. Their SVCs go through the same handlers as 64-bit ones, with the registers moved into the 64-bit SVC ABI's places (`snx_svc32` in `src/nx/hle/svc/svc.c`). The recompiler library (`snx_recompile32`) compiles blocks on first use. Never pass an A64 `CPU*` to an A32 block.
 
 ## Files and API
 
@@ -90,8 +90,8 @@ Ordinary unaligned scalar RAM transfers model alignment checking disabled and
 ARMv6 unaligned support enabled; CP15 alignment/legacy rotated-load modes are
 not emulated. None of these changes affect A57's original flat-memory path.
 
-The A9 profile (`SNX_ARM_PROFILE_A9`, the Vita's Cortex-A9 MPCore) is A57's
-ARMv7-A subset with the UNPREDICTABLE forms Vita games rely on given the
+The A9 profile (`SNX_ARM_PROFILE_A9`, Cortex-A9 MPCore) is A57's
+ARMv7-A subset with the UNPREDICTABLE forms its games rely on given the
 Cortex-A9's behavior. So far that is a store with writeback into the register
 it stores (`STR r0, [r0, #28]!`, A32 STR/STRB/STRH and Thumb's imm8 forms): the
 register is stored as it was, then the base is written back. `profile.c` decodes
@@ -127,35 +127,28 @@ closed. ABI layouts and existing operations are unchanged. A57 checked exclusive
 acquire/release, vectors and Thumb table branches remain explicitly unsupported.
 The A57 flat path, including its existing atomic operations, is unchanged.
 
-Asset-free native tests (LLVM SDK required, and SDL3, which the 3DS driver uses and CMake fetches):
+Asset-free native tests (LLVM SDK required, and SDL3, which CMake fetches):
 
 ```sh
-cmake -S . -B build/arm11 -DSNX_BUILD_NX=OFF -DSNX_BUILD_GNUABI=OFF \
+cmake -S . -B build/arm11 -DSNX_BUILD_NX=OFF \
   -DSNX_BUILD_GUI=OFF -DSNX_TEST_ARM_AOT=ON
 cmake --build build/arm11
 ctest --test-dir build/arm11 --output-on-failure
 ```
 
 The build-time generator emits verified native `.o` files at O0/O2; the witness
-executables link only the CTR CPU/memory adapters, **not LLVM or MCJIT**. The bus
+executables link only the checked CPU/memory adapters, **not LLVM or MCJIT**. The bus
 matrix compares checked and flat AOT across 1,059 integer encodings and 13 states
 for both profiles at both optimization levels (55,068 comparisons). With
 `SNX_TEST_ARM_DIFF=ON` and Python `unicorn==2.1.4`, the isolated build also runs
 independent ARM11 MPCore integer comparisons and the existing A57 integer,
 VFP/NEON and Thumb regression suites. ARM11 Thumb BL halves have C golden tests,
-not a claimed independent differential oracle. The CTR pipeline, built with
-`SNX_BUILD_3DS`, supplies process setup, offline conservative CFG discovery/chunking
-and native module loading/dispatch under `src/3ds/`; see `docs/3DS.md`. The pinned
-external SuperTux bootstrap retains the first-SVC CPU-only gate, continues through
-real kernel initialization to ConnectToPort and APT lookup, and runs on past main. Differential tests compare GPRs,
-CPSR and RAM at both boundaries. The second CPU reference uses a test-scripted
-HLE transcript, not independent hardware validation of kernel policy. Neither
-reference is an execution fallback. Broader target coverage, full ARM11 semantics and
-cache/resume still need work; none of these are shared A57 defaults.
+not a claimed independent differential oracle. Broader target coverage, full ARM11
+semantics and cache/resume still need work; none of these are shared A57 defaults.
 
 ## Opt-in ARM7TDMI profile
 
-`SNX_ARM_PROFILE_ARM7TDMI` is the AGB board's CPU (`src/agb/cpu/recomp.c`), on flat memory only. It decodes as A57
+`SNX_ARM_PROFILE_ARM7TDMI` is a flat-memory profile. It decodes as A57
 does, but for an MSR that writes the control or extension byte (a mode switch, with its banked registers), which is
 UNDEFINED; what the board's runtime refuses there it interprets. Its blocks follow the ARM7TDMI where ARMv8-A differs:
 a misaligned load reads the aligned unit and rotates it (a misaligned LDRSH reads the byte, sign extended), a
@@ -236,7 +229,7 @@ Thumb16 and Thumb32 are supported (see `thumb_decode.c`, `llvm_thumb.inc`): inte
 With Clang and LLVM development files installed:
 
 ```sh
-cmake -S . -B build/a32 -DSNX_TOOLS_ONLY=ON -DSNX_BUILD_GNUABI=OFF
+cmake -S . -B build/a32 -DSNX_TOOLS_ONLY=ON
 cmake --build build/a32 --target snx-test-arm-decode snx-test-arm-emit
 ctest --test-dir build/a32 -R '^arm_' --output-on-failure
 ```
@@ -246,7 +239,7 @@ Optional differential suite, using a local Python environment:
 ```sh
 python3 -m venv .venv
 .venv/bin/pip install unicorn==2.1.4
-cmake -S . -B build/a32 -DSNX_TOOLS_ONLY=ON -DSNX_BUILD_GNUABI=OFF \
+cmake -S . -B build/a32 -DSNX_TOOLS_ONLY=ON \
   -DSNX_TEST_ARM_DIFF=ON -DPython3_EXECUTABLE="$PWD/.venv/bin/python"
 ctest --test-dir build/a32 -R 'arm_|thumb_' --output-on-failure
 ```

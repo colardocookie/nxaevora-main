@@ -6,22 +6,20 @@
 * [Use](#use)
 * [Limits](#limits)
 
-The recompiler can be used on its own, without the Switch runtime (HLE, GPU) or the
-GNU ABI runtime: a program hands it ARM64 (A64) machine code in memory, gets host
-code loaded into its own process, and runs that code on CPU states it owns, with its
-own SVC handler. AArch32 (A32 and Thumb) code runs through the block compiler the same
-way. The interface is `src/common/cpu/recompiler/snx_recompiler.h` and the library is
-`libscarletnx-recompiler.a` (issue #171).
+The recompiler can be used on its own, without the Switch runtime (HLE, GPU): a program hands it ARM64 (A64) machine
+code in memory, gets host code loaded into its own process, and runs that code on CPU states it owns, with its own SVC
+handler. AArch32 (A32 and Thumb) code runs through the block compiler the same way. The interface is
+`src/common/cpu/recompiler/snx_recompiler.h` and the library is `libscarletnx-recompiler.a`.
 
 ## Build and install
 
 The library is built with the recompiler, in every configuration that has it. The
-smallest one leaves out both runtimes:
+smallest one leaves out the runtime:
 
 ```sh
-cmake -S . -B build/tools -DSNX_TOOLS_ONLY=ON -DSNX_BUILD_GNUABI=OFF
+cmake -S . -B build/tools -DSNX_TOOLS_ONLY=ON
 cmake --build build/tools --target scarletnx-recompiler
-cmake --install build/tools --prefix /opt/scarletnx
+cmake --install build/tools --prefix /opt/nxaevora
 ctest --test-dir build/tools -R recompiler_library --output-on-failure
 ```
 
@@ -39,28 +37,28 @@ target_link_libraries(my_emulator PRIVATE ScarletNX::recompiler)
 A project can also build the library in its own tree, fetched with
 [CPM.cmake](https://github.com/cpm-cmake/CPM.cmake) (or added with `add_subdirectory`).
 With every driver off, the configure needs LLVM and nothing else: no third-party
-package is downloaded and no font or other asset of the runtimes is fetched. ScarletNX's
+package is downloaded and no font or other asset of the runtimes is fetched. NXAevora Engine's
 tests are left out when another project includes it (`SNX_BUILD_TESTING`, on only at the
 top level), without changing that project's `BUILD_TESTING`:
 
 ```cmake
 CPMAddPackage(NAME ScarletNX
-              GIT_REPOSITORY https://github.com/scarletnx/ScarletNX.git
+              GIT_REPOSITORY https://github.com/nxaevora/nxaevora-main.git
+              SOURCE_SUBDIR engine
               GIT_TAG main   # a commit, for a reproducible build
               GIT_SHALLOW YES
               EXCLUDE_FROM_ALL YES
-              OPTIONS "SNX_BUILD_NX OFF" "SNX_BUILD_GNUABI OFF" "SNX_BUILD_3DS OFF"
-                      "SNX_BUILD_VITA OFF" "SNX_BUILD_AGB OFF" "SNX_DEPLOY OFF")
+              OPTIONS "SNX_BUILD_NX OFF" "SNX_DEPLOY OFF")
 target_link_libraries(my_emulator PRIVATE ScarletNX::recompiler)
 ```
 
 `EXCLUDE_FROM_ALL` builds only what the project links. The project builds with Clang,
-as ScarletNX does, and finds LLVM the same way (`llvm-config` on the PATH,
+as NXAevora Engine does, and finds LLVM the same way (`llvm-config` on the PATH,
 `SNX_LLVM_CONFIG` or `LLVM_DIR`, `cmake/llvm.cmake`).
 
 The archive carries the function discovery, the LLVM emitters, the linker and
 the prebuilt runtime library every module gets. Its link line adds LLVM, which the
-package records. The backend generates code for the machine it runs on, as the `scarletnx`
+package records. The backend generates code for the machine it runs on, as the `nxaevora-engine`
 command does: build the library on the machine that will use it, or one with the
 same instruction set extensions.
 
@@ -164,7 +162,7 @@ already, and splits a function longer than 4096 instructions into pieces. Its mo
 table covers just what it found. `snx_recompiled_function` gives the function a module
 has for an address (NULL for any other), for the caller's own dispatch table. A caller with
 its own table also gives `RtAPI.miss` its own handler, which compiles the code at that
-address and runs it, as the Linux runtime (`src/gnuabi/runtime/jit.c`) does. A caller that
+address and runs it. A caller that
 keeps `snx_runtime_defaults`' miss can instead name that handler with
 `snx_recompiled_set_fallback`, which the module's misses then run instead of its own JIT. `snx_recompiler_set_cache` names a
 folder that keeps linked modules (LLVM) by a hash of everything they are made from, and

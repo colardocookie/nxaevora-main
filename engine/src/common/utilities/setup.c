@@ -26,6 +26,8 @@ const SnxNotice snx_notices[SNX_NOTICES] = {
      SNX_TR_NOOP("the config and state folders"), "The menu's `gui/`", SNX_NOTICE_ALL},
     {SNX_TR_NOOP("A portable copy"), SNX_TR_NOOP("games/ beside the program"),
      SNX_TR_NOOP(".scarletnx/ beside the program"), "A portable copy's `games/`", SNX_NOTICE_ALL},
+    /* No system shows this notice now that the Android arm went. Its place stays: setup.ini counts the notices
+       shown by position (snx_setup_shows), so a later notice must not move. */
     {SNX_TR_NOOP("The launcher's files"), SNX_TR_NOOP("the app's own files"),
      SNX_TR_NOOP("the data folder's config/ and state/"), "Android: the menu's", SNX_NOTICE_ANDROID},
     {SNX_TR_NOOP("A build tree's files"), SNX_TR_NOOP("games/, work/ and the keys in its checkout"),
@@ -52,9 +54,7 @@ const SnxNotice snx_notices[SNX_NOTICES] = {
      SNX_TR_NOOP("1x to 4x: the number Auto gave that screen"), "`ui_scale = auto`", SNX_NOTICE_ALL}};
 int snx_notice_here(int notice) {
     int systems = snx_notices[notice].systems;
-#if defined(__ANDROID__)
-    return systems == SNX_NOTICE_ALL || systems == SNX_NOTICE_ANDROID;
-#elif defined(SNX_XDG)
+#if defined(SNX_XDG)
     return systems == SNX_NOTICE_ALL || systems == SNX_NOTICE_LINUX;
 #else
     return systems == SNX_NOTICE_ALL;
@@ -129,12 +129,8 @@ int snx_setup_done(const char* path, const SnxSetup* setup, char* why, size_t wh
 }
 int snx_setup_asks(const SnxSetup* setup, int step) { return snx_setup_since[step] > setup->version; }
 int snx_setup_here(int step) {
-#if defined(__ANDROID__) || defined(SNX_IOS)
-    return step != SNX_SETUP_INSTALL;
-#else
     (void)step;
     return 1;
-#endif
 }
 int snx_setup_shows(const SnxSetup* setup, int notice) { return notice >= setup->notices && snx_notice_here(notice); }
 int snx_setup_due(const SnxSetup* setup) {

@@ -34,15 +34,10 @@ function(snx_component name)
 endfunction()
 
 snx_component(core runtime/main.c runtime/arm.c runtime/loader.c runtime/rtapi.c runtime/clock.c runtime/pause.c runtime/state.c runtime/state_fns.c runtime/state_file.c runtime/crash.c runtime/options.c
-              runtime/startup.c runtime/gdbstub.c runtime/present.c runtime/guest_jit.c
-              runtime/cheats.c runtime/arceus_clock.c)
+              runtime/settings_cli.c runtime/maintenance_cli.c runtime/startup.c runtime/gdbstub.c runtime/present.c runtime/guest_jit.c
+              runtime/cheats.c runtime/arceus_clock.c runtime/discord_presence.c)
 target_link_libraries(snx_core PRIVATE snx_driver snx_lz4 snx_zstd snx_build_info)
 target_link_libraries(snx_core PUBLIC snx_settings_runtime) # the game's .ini's tables (cmake/settings.cmake)
-if(APPLE)
-    # main.c's weak snx_module_static, which no build defines yet: ld64 refuses an undefined symbol, weak or not,
-    # unless told it is resolved at run time
-    target_link_options(snx_core INTERFACE "LINKER:-U,_snx_module_static")
-endif()
 snx_component(kernel hle/hle.c hle/kernel/kernel.c hle/kernel/thread.c hle/kernel/sync.c hle/svc/svc.c hle/svc/svc_mem.c hle/kernel/debug.c
               memory/mem.c memory/own.c hle/kernel/ipc.c)
 # the SVC dispatch, generated from hle/svc/hos.svc
@@ -104,7 +99,7 @@ snx_shaderdec(snx_shader)
 snx_component(vk gpu/vk/renderer.c gpu/vk/device.c gpu/vk/cmd.c gpu/vk/record.c gpu/vk/format.c gpu/vk/surface.c gpu/vk/rt_group.c gpu/vk/texture.c
                  gpu/vk/buffer.c gpu/vk/writeback.c gpu/vk/pipeline.c gpu/vk/pipeline_file.c gpu/vk/render.c gpu/vk/release.c gpu/vk/query.c gpu/vk/compute.c
                  gpu/vk/pending_pages.c gpu/vk/memory.c gpu/vk/renderdoc.c gpu/vk/astc.c gpu/vk/blocklinear.c gpu/vk/texconv.c gpu/vk/owned.c gpu/vk/nvdec.c gpu/vk/dma.c gpu/vk/blit.c gpu/vk/ui.c gpu/texture/blocklinear.c gpu/texture/depth.c gpu/vk/vic.c gpu/vk/vma.cpp gpu/vk/gpuprof.c
-                 gpu/vk/ftz_probe.c gpu/vk/postfx.c gpu/vk/temporal.c gpu/vk/scene_scale.c gpu/vk/upscaler.c gpu/vk/upscaler_host.c gpu/vk/upscaler_module.c gpu/vk/upscaler_selftest.c gpu/vk/imgui.c gpu/vk/imgui_glue.cpp gpu/vk/imgui_style.cpp gpu/vk/imgui_input.c gpu/vk/imgui_text.c gpu/vk/imgui_events.cpp gpu/vk/imgui_ui.cpp gpu/vk/imgui_settings.c gpu/vk/debug_stats.c
+                 gpu/vk/ftz_probe.c gpu/vk/pass_guest.c gpu/vk/postfx.c gpu/vk/temporal.c gpu/vk/scene_scale.c gpu/vk/upscaler.c gpu/vk/upscaler_host.c gpu/vk/upscaler_module.c gpu/vk/upscaler_selftest.c gpu/vk/imgui.c gpu/vk/imgui_glue.cpp gpu/vk/imgui_style.cpp gpu/vk/imgui_input.c gpu/vk/imgui_text.c gpu/vk/imgui_events.cpp gpu/vk/imgui_ui.cpp gpu/vk/imgui_settings.c gpu/vk/debug_stats.c
                  "${volk_SOURCE_DIR}/volk.c"
                  "${imgui_SOURCE_DIR}/imgui.cpp" "${imgui_SOURCE_DIR}/imgui_draw.cpp"
                  "${imgui_SOURCE_DIR}/imgui_tables.cpp" "${imgui_SOURCE_DIR}/imgui_widgets.cpp"
@@ -130,7 +125,7 @@ target_compile_definitions(snx_vk PRIVATE IMGUI_USE_WCHAR32)
 # built twice: for word aligned rows, and for the rest
 # (gpu/video/vic_compose.glsl)
 include("${PROJECT_SOURCE_DIR}/cmake/glsl.cmake")
-# vk_hash (gpu/vk/cmd.c); the device setup the 3DS and the Vita share (src/common/gpu/vk)
+# vk_hash (gpu/vk/cmd.c); the device setup the Vulkan frontend shares (src/common/gpu/vk)
 target_link_libraries(snx_vk PUBLIC snx_xxhash snx_vk_common)
 snx_glsl_spirv(snx_vk SOURCE gpu/texture/astc.comp NAME astc_spv HEADER nx/gpu/texture/astc_spv.h)
 snx_glsl_spirv(snx_vk SOURCE gpu/texture/blocklinear.comp NAME blocklinear_spv HEADER nx/gpu/texture/blocklinear_spv.h)
@@ -183,24 +178,15 @@ set_source_files_properties("${imgui_SOURCE_DIR}/imgui.cpp" "${imgui_SOURCE_DIR}
                             "${imgui_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp" PROPERTIES COMPILE_OPTIONS
                             "${snx_third_party_flags}" COMPILE_DEFINITIONS IMGUI_IMPL_VULKAN_USE_VOLK)
 
-if(ANDROID)
-    # the menu runs the program (src/multicall's libscarletnx.so) as libscarletnx-run.so, an executable named for the
-    # app's libraries folder, which takes only lib*.so
-    add_executable(scarletnx-run runtime/platform/android_run.c)
-    set_target_properties(scarletnx-run PROPERTIES OUTPUT_NAME libscarletnx-run.so RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}")
-    target_link_libraries(scarletnx-run PRIVATE ${CMAKE_DL_LIBS})
-    install(TARGETS scarletnx-run RUNTIME DESTINATION lib/${ANDROID_ABI})
-endif()
 list(TRANSFORM components PREPEND snx_)
 add_library(scarletnx-nx STATIC)
 set_target_properties(scarletnx-nx PROPERTIES LINKER_LANGUAGE CXX)
 target_link_libraries(scarletnx-nx PUBLIC snx_nx_flags ${components} snx_driver)
 # The Switch driver's entry (runtime/entry.c's snx_switch_main), which scarletnx runs (src/multicall). Started with
-# nothing to run it opens the menu (src/gui), which runs games with it; Android's app has the menu as a library of its
-# own
+# nothing to run it opens the menu (src/gui), which runs games with it
 add_library(snx_switch_program STATIC runtime/entry.c)
 target_link_libraries(snx_switch_program PUBLIC scarletnx-nx SDL3::SDL3)
-if(TARGET scarletnx-gui AND NOT ANDROID)
+if(TARGET scarletnx-gui)
     target_link_libraries(snx_switch_program PUBLIC scarletnx-gui)
     target_compile_definitions(snx_switch_program PRIVATE SNX_WITH_GUI)
 endif()
@@ -233,6 +219,19 @@ if(BUILD_TESTING)
     add_test(NAME shader_direct_regressions COMMAND $<TARGET_FILE:snx-test-shader-direct-regressions>)
     add_test(NAME runtime_settings_list COMMAND "${CMAKE_COMMAND}" -DRUNTIME=$<TARGET_FILE:scarletnx>
              -P "${PROJECT_SOURCE_DIR}/tests/settings_list.cmake")
+    add_test(NAME runtime_cli_commands COMMAND "${CMAKE_COMMAND}" -DRUNTIME=$<TARGET_FILE:scarletnx>
+             -P "${PROJECT_SOURCE_DIR}/tests/cli_commands.cmake")
+    add_test(NAME runtime_progress_commands COMMAND "${CMAKE_COMMAND}" -DRUNTIME=$<TARGET_FILE:scarletnx>
+             -P "${PROJECT_SOURCE_DIR}/tests/progress_commands.cmake")
+    add_test(NAME runtime_settings_commands COMMAND "${CMAKE_COMMAND}" -DRUNTIME=$<TARGET_FILE:scarletnx>
+             "-DSETTINGS_TXT=${snx_settings_spec}"
+             -P "${PROJECT_SOURCE_DIR}/tests/settings_commands.cmake")
+    add_test(NAME runtime_maintenance_commands COMMAND "${CMAKE_COMMAND}" -DRUNTIME=$<TARGET_FILE:scarletnx>
+             -P "${PROJECT_SOURCE_DIR}/tests/maintenance_commands.cmake")
+    add_executable(snx-test-logzip "${PROJECT_SOURCE_DIR}/tests/logzip.c")
+    snx_test_target(snx-test-logzip 11)
+    target_link_libraries(snx-test-logzip PRIVATE scarletnx-common)
+    add_test(NAME logzip COMMAND snx-test-logzip)
     add_test(NAME runtime_unknown_option COMMAND "${CMAKE_COMMAND}" -DRUNTIME=$<TARGET_FILE:scarletnx>
              -P "${PROJECT_SOURCE_DIR}/tests/unknown_option.cmake")
     add_test(NAME runtime_recompile_settings COMMAND "${CMAKE_COMMAND}" -DRUNTIME=$<TARGET_FILE:scarletnx>

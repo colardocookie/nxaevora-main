@@ -2,8 +2,9 @@
 # Copyright 2026 the ScarletNX contributors
 add_library(scarletnx-common STATIC
     utilities/common.c utilities/process.c utilities/font.c utilities/ini_lines.c utilities/game_ini.c utilities/pad_map.c
-    utilities/pad_screen.c utilities/users.c utilities/logscan.c utilities/language_tag.c utilities/mods.c utilities/patches.c utilities/cheat_list.c utilities/state_header.c
-    utilities/spirv_emit.c utilities/script.c memory/host.c
+    utilities/progress.c
+    utilities/pad_screen.c utilities/users.c utilities/logscan.c utilities/logzip.c utilities/language_tag.c utilities/mods.c utilities/patches.c utilities/cheat_list.c utilities/state_header.c
+    utilities/spirv_emit.c
     cpu/aarch64/a64_decoder.c cpu/recompiler/codegen.c cpu/recompiler/variants.c runtime/cas128.c)
 target_compile_definitions(scarletnx-common PRIVATE _CRT_SECURE_NO_WARNINGS
     SNX_HOST_COMPILER="${CMAKE_C_COMPILER}"
@@ -14,7 +15,7 @@ target_compile_options(scarletnx-common PRIVATE -Wall -Wextra -Werror=missing-pr
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
     set_source_files_properties(runtime/cas128.c PROPERTIES COMPILE_OPTIONS -mcx16)
 endif()
-target_link_libraries(scarletnx-common PUBLIC Threads::Threads ${CMAKE_DL_LIBS})
+target_link_libraries(scarletnx-common PUBLIC Threads::Threads ${CMAKE_DL_LIBS} snx_miniz)
 # the menus' icons, beside the VGA font (utilities/font.c): the launcher's font and the game menu's atlas draw them
 include("${PROJECT_SOURCE_DIR}/cmake/gui_icons.cmake")
 target_sources(scarletnx-common PRIVATE "${snx_gui_icons_c}")
@@ -33,14 +34,12 @@ add_library(snx_demangle STATIC utilities/demangle.c)
 set_target_properties(snx_demangle PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
 target_compile_options(snx_demangle PRIVATE -pedantic-errors -Wall -Wextra -Werror -Werror=missing-prototypes)
 # snx-logscan: the log summary (utilities/logscan.h) as a program, as scarletnx --scan-log, for the game reports
-# workflow and the tests: only the C library and the demangler. Not for the phones, which run no programs of their own
-if(NOT ANDROID AND NOT IOS)
-    add_executable(snx-logscan utilities/logscan_main.c utilities/logscan.c)
-    set_target_properties(snx-logscan PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
-                                                 LINKER_LANGUAGE CXX RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}")
-    target_compile_options(snx-logscan PRIVATE -pedantic-errors -Wall -Wextra -Werror -Werror=missing-prototypes)
-    target_link_libraries(snx-logscan PRIVATE snx_demangle)
-endif()
+# workflow and the tests: only the C library and the demangler
+add_executable(snx-logscan utilities/logscan_main.c utilities/logscan.c)
+set_target_properties(snx-logscan PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
+                                             LINKER_LANGUAGE CXX RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}")
+target_compile_options(snx-logscan PRIVATE -pedantic-errors -Wall -Wextra -Werror -Werror=missing-prototypes)
+target_link_libraries(snx-logscan PRIVATE snx_demangle)
 
 # The setup a first start goes through (utilities/setup.h), the launcher's and the driver's: OpenSSL for the first
 # user's random uid
@@ -51,24 +50,22 @@ if(TARGET OpenSSL::Crypto)
     target_link_libraries(snx_setup PUBLIC scarletnx-common OpenSSL::Crypto)
 endif()
 
-# The same indexed host filesystem and shared immutable file views serve NX
-# and CTR. No guest ABI or runtime/platform dependency enters this target.
+# The same indexed host filesystem and shared immutable file views serve NX. No guest ABI or runtime/platform
+# dependency enters this target.
 add_library(scarletnx-filesystem STATIC filesystem/tree.c filesystem/host.c)
 set_target_properties(scarletnx-filesystem PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON POSITION_INDEPENDENT_CODE ON)
 target_compile_definitions(scarletnx-filesystem PRIVATE _GNU_SOURCE _FILE_OFFSET_BITS=64 _CRT_SECURE_NO_WARNINGS)
 target_compile_options(scarletnx-filesystem PRIVATE -Wall -Wextra -Werror=missing-prototypes)
 target_link_libraries(scarletnx-filesystem PUBLIC Threads::Threads)
 
-# The emulated network stack (network/net.h), shared by nx's bsd and sfdnsres and the GNU ABI's socket syscalls. A
-# library of its own so the C99 tools don't link Winsock
+# The emulated network stack (network/net.h), shared by nx's bsd and sfdnsres. A library of its own so the C99 tools
+# don't link Winsock
 add_library(scarletnx-net STATIC network/net.c network/net_icmp.c network/net_event.c network/net_dns.c
     network/net_iface.c)
 target_compile_options(scarletnx-net PRIVATE -Wall -Wextra -Werror=missing-prototypes)
 target_link_libraries(scarletnx-net PUBLIC Threads::Threads)
 if(WIN32)
     target_link_libraries(scarletnx-net PUBLIC ws2_32 iphlpapi)
-elseif(APPLE) # the system resolver's DNS servers (network/net_iface.c)
-    target_link_libraries(scarletnx-net PUBLIC resolv)
 endif()
 
 # Local wireless for nx's ldn and bsd (network/net_ldn.h): over the LAN, or through an Eden room (network/net_room.h),
@@ -79,11 +76,10 @@ if(TARGET snx_enet)
     target_link_libraries(scarletnx-ldn PUBLIC scarletnx-net PRIVATE snx_enet snx_zstd)
 endif()
 
-# What the Vulkan frontends (src/nx/gpu/vk, src/3ds/gpu/vk, src/vita/gpu) share of a device: the instance, queries,
-# the device's choice, the submission ring, the swapchain and the SDL window (gpu/vk/). Each frontend compiles volk.c,
-# whose functions these call
+# What the Vulkan frontend (src/nx/gpu/vk) shares of a device: the instance, queries, the device's choice and the
+# swapchain (gpu/vk/). The frontend compiles volk.c, whose functions these call
 if(TARGET Vulkan::Headers AND TARGET SDL3::SDL3)
-    add_library(snx_vk_common STATIC gpu/vk/vk_common.c gpu/vk/ring.c gpu/vk/swapchain.c gpu/vk/window.c)
+    add_library(snx_vk_common STATIC gpu/vk/vk_common.c gpu/vk/swapchain.c)
     set_target_properties(snx_vk_common PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
     target_compile_options(snx_vk_common PRIVATE -pedantic-errors -Wall -Wextra -Werror=missing-prototypes
                                                  -Werror=missing-variable-declarations)

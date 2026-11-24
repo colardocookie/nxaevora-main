@@ -2,20 +2,17 @@
 <!-- Copyright 2026 the ScarletNX contributors -->
 # Licenses and credits
 
-ScarletNX is [GPL-3.0-or-later](../LICENSE).
+NXAevora Engine is [GPL-3.0-or-later](../LICENSE).
 Generated modules include runtime ABI code. Game assets, keys and firmware are excluded.
 
 | Component | License |
 | --- | --- |
 | FFmpeg | LGPL-2.1-or-later |
 | libvpx's VP9 test vectors (the WebM project's test data, downloaded for the `nvdec_vp9_*` tests, not shipped) | BSD-3-Clause |
-| jsmolka's gba-tests (test ROMs, downloaded for the `agb_gba_*` tests, not shipped) | MIT |
 | cJSON (`src/nx/runtime/driver/cjson`, Dave Gamble and cJSON contributors) | MIT |
 | OpenSSL | Apache 2.0 |
 | Noto Sans JP, SC, TC and KR Subsets (the shared fonts' stand-ins, fetched by `cmake/dependencies.cmake`, made by `tools/subset_fonts.py` from Google Fonts commit `e7db6ca603fd4862010383ff17ffd6cc4ffac1c0`) | SIL OFL 1.1 ([text](../dist/licenses/Noto/OFL.txt)) |
 | yuzu's controller button glyphs (`font_nintendo_extended.cpp`, as Eden carries it) | GPL-2.0-or-later |
-| The 3DS system archives' open stand-ins (`cmake/ctr_system_archives.cmake`): the Mii data, country list, shared font and bad word list B3n30/citra_system_archives makes (Weiyi Wang's generators), as Azahar carries them | GPL-2.0-or-later |
-| Montserrat and GNU Unifont 10.0.05, the glyphs of the 3DS shared font's stand-in | OFL-1.1 ([text](../dist/licenses/Montserrat/OFL.txt)) / GPL-2.0-or-later with the GNU font embedding exception |
 | LZ4 (the library, `lib/`) | BSD-2-Clause |
 | xxHash 0.8.3 (XXH3 and its x86 dispatcher, the renderer's content hashes: `src/nx/gpu/vk/xxh3.c`) | BSD-2-Clause |
 | Vulkan-Headers | Apache 2.0 |
@@ -41,19 +38,13 @@ a source keep that source's copyright lines and license, most with the revision 
 | Where | From | License |
 | --- | --- | --- |
 | `src/nx/gpu/gpu.c` (safe reads of compute-inline payloads) and `src/nx/gpu/shader/spirv_translate.c` (constant geometry invocation information) | Citron, Zephyron's Princess Peach: Showtime! fixes in [`acfb1dcc1ad9adf25b960c4f8f25c5bf78849406`](https://github.com/citron-neo/emulator/commit/acfb1dcc1ad9adf25b960c4f8f25c5bf78849406), `video_core/dma_pusher.cpp` and `shader_recompiler/backend/spirv/emit_spirv_context_get_set.cpp`; original code copyright 2018 and 2021 yuzu Emulator Project | GPL-2.0-or-later |
-| `src/3ds/gpu/`, `src/3ds/audio/`, `src/3ds/services/dsp.c`, `src/3ds/services/cfg.c` (the config blocks' defaults), `src/3ds/services/hid.c` (HID's samples, their layout and pace) | Azahar (Citra) | GPL-2.0-or-later |
-| `src/vita/hle/gxm.c` (sceGxm's state and its calls' semantics), `src/vita/gpu/usse.c` and `usse_constants.inc` (the USSE shader translator), `src/vita/gpu/gxp.h` (the GXP program layout), `src/vita/gpu/texture.h` (SceGxmTexture's words), `src/vita/gpu/swizzle.glsl` and `tests/glsl/vita_swizzle_glsl.cpp` (the swizzled and tiled texture layouts), `texture_levels` in `src/vita/gpu/render.c` (where a texture's mipmaps lie), `src/vita/hle/audiodec.c` and `videodec.c` (the decoders' structures and their ATRAC9 configuration word), `src/vita/hle/trophy.c` (the trophy calls' error codes and unlock rules) | Vita3K (`modules/SceGxm/`, `shader/`, `gxm/`, `renderer/src/texture/format.cpp`, `modules/SceAudiodec/`, `modules/SceVideodec/`, `modules/SceNpTrophy/SceNpTrophy.cpp`) | GPL-2.0-or-later |
-| `src/vita/hle/ngs.c` (SceNgs's voices, players, patches and master buss, the voice states and the parameter blocks) | Vita3K (`modules/SceNgsUser/SceNgs.cpp`, `ngs/`) | GPL-2.0-or-later |
-| `hevag_decode` and `hevag_coefficients` in `src/vita/hle/ngs.c` (HE-ADPCM) | Vita3K (`codec/src/pcm.cpp`), after vgmstream's HEVAG decoder | GPL-2.0-or-later, vgmstream's ISC-style license |
-| `src/vita/hle/` (the NIDs and the error codes) | vita-headers (`db/`, `include/psp2/`) | MIT |
-| `src/3ds/gpu/shader.c` and `shader.h` (the instruction fields) | nihstro | BSD-3-Clause |
 | `src/common/cpu/` (the recompiler's instruction semantics: `recompiler/llvm/ir_int.c`, `ir_ldst.c`, `ir_fpu.c`, `ir_vec.c`, `ir_vec_fp.c` and `ir_vec_crypto.c`, the integer, branch, system, load/store, scalar floating-point and AdvSIMD emitters ported from `translate-a64.c`'s `trans_*` functions, `gengvec.c`, `vec_helper.c` and `translate.c`'s `asimd_imm_const`, and the A32/T32 block compiler) | QEMU's `target/arm/tcg/` | LGPL-2.1-or-later |
 | `src/common/cpu/aarch64/decode/a64.decode` (the A64 encodings, unmodified, from commit `a19f59a`, which `tools/a64dec` generates the decoder from; [README](../src/common/cpu/aarch64/decode/README.md)) | QEMU's `target/arm/tcg/a64.decode` | LGPL-2.1-or-later |
 | `src/common/cpu/aarch64/` (`cpu.h`, `cpu_helpers.c` and `helpers/`, the generated code's FP, SIMD, integer and crypto helpers) | QEMU's `target/arm/` and its softfloat, with the SoftFloat-2a notice | LGPL-2.1-or-later, SoftFloat-2a, BSD |
 | `src/common/cpu/aarch64/helpers/vector.c` (the SM4 S-box, GB/T 32907-2016's table) | OpenSSL's `crypto/sm4/sm4.c` | Apache 2.0 |
 | `src/nx/gpu/gpu.c`, `gpu.h`, `pushbuffer.h` and `src/nx/gpu/maxwell/` (the DMA pusher and puller, the 3D, macro, DMA, 2D, inline-to-memory and compute engines, and their register layouts in the `*_regs.h` headers), with the DMA and 2D engines' CPU references in `tests/support/dma_ref.c` and `fermi2d_ref.c` | Eden and yuzu (`video_core/dma_pusher.cpp`, `engines/`: `puller.cpp`, `engine_upload.cpp`, `maxwell_3d.cpp`, `draw_manager.cpp`, `maxwell_dma.cpp`, `fermi_2d.cpp`, `kepler_compute.cpp`, `kepler_memory.cpp`, `sw_blitter/`) | GPL-3.0-or-later, GPL-2.0-or-later |
 | `src/nx/gpu/texture/blocklinear.c`, `blocklinear.h` and `src/nx/gpu/maxwell/gob.h` (the GOB and block geometry) | Eden and yuzu (`video_core/textures/decoders.cpp`) | GPL-3.0-or-later, GPL-2.0-or-later |
-| `src/nx/gpu/vk/compute.c` (`res_bind`, `res_publish`: compute storage buffers bound where the GPU holds them and marked as the GPU's when written) and `src/nx/gpu/vk/buffer.c` (`buf_get_owned`: draws read the GPU's bytes on the GPU) | Citron Neo's buffer cache (`video_core/buffer_cache/buffer_cache.h`: `BindHostComputeStorageBuffers`, `MarkWrittenBuffer`, `SynchronizeBuffer`), the model only, on ScarletNX's own GPU ownership | GPL-3.0-or-later |
+| `src/nx/gpu/vk/compute.c` (`res_bind`, `res_publish`: compute storage buffers bound where the GPU holds them and marked as the GPU's when written) and `src/nx/gpu/vk/buffer.c` (`buf_get_owned`: draws read the GPU's bytes on the GPU) | Citron Neo's buffer cache (`video_core/buffer_cache/buffer_cache.h`: `BindHostComputeStorageBuffers`, `MarkWrittenBuffer`, `SynchronizeBuffer`), the model only, on NXAevora Engine's own GPU ownership | GPL-3.0-or-later |
 | `src/nx/gpu/shader/` (`shader.c`, `decode.c`, and `maxwell_opcodes.def`, the encodings `tools/shaderdec` generates the decoder from) | Eden and yuzu (`shader_recompiler/frontend/maxwell/`) | GPL-3.0-or-later, GPL-2.0-or-later |
 | `src/nx/gpu/video/` (`host1x.c`, `nvdec.c`, `vic.c` and their register layouts in `host1x_regs.h`, `nvdec_regs.h` and `vic_regs.h`) and `tests/support/vic_ref.c` | Eden and yuzu (`video_core/host1x/`: `control.cpp`, `nvdec.cpp`, `vic.cpp`, `codecs/h264.cpp`, `codecs/decoder.cpp`, `ffmpeg.cpp`; `video_core/cdma_pusher.cpp`; the nvdrv host1x devices), with Skyline's host1x control (GPL-3.0-or-later) and Ryujinx's CDMA pusher as Eden carries them | GPL-3.0-or-later, GPL-2.0-or-later, MIT |
 | `src/nx/loader/loader.c` (the defaults for a program without an NPDM) | Eden and yuzu (`file_sys/program_metadata.cpp`) | GPL-3.0-or-later, GPL-2.0-or-later |
@@ -83,13 +74,13 @@ packaged ([FAQ](https://github.com/pkgforge-dev/Anylinux-AppImages/blob/main/FAQ
 Installed license texts: `share/licenses/scarletnx/`. AppImage system-library licenses
 and package manifest: `share/licenses/`. Component license files contain the full terms.
 
-Community credits: [README](../README.md#special-thanks).
+## Special thanks
+
+- yuzu, Suyu, Torzu, Ryujinx, [Ryubing](https://git.ryujinx.app/ryubing/ryujinx) (Ryujinx's continuation), [Citron](https://git.citron-emu.org/citron/emulator) and [Eden](https://git.eden-emu.dev/eden-emu/eden).
+- [Atmosphère](https://github.com/Atmosphere-NX/Atmosphere)
+- [NeXium](https://nexium-emu.org/) for research and development.
+- [Switchbrew](https://switchbrew.org) for research.
 
 Wimsy ([SVG metadata](../dist/wimsy.svg)): drawn by Liz, GPL-3.0-or-later.
 The splash's Fuddles ([SVG metadata](../dist/splash/wimsy-fuddles.svg)): Wimsy with Fuddles' tails, circuits and
 colours, by AO55 after Liz's Wimsy, GPL-3.0-or-later.
-
-The 3DS UDS command layouts and encrypted beacon framing in `src/3ds/services/uds.c`
-are adapted from Azahar's `nwm_uds.cpp` and `uds_beacon.cpp` at
-`18c7ff10604659edc8e82d86b7c772f6f709c466` (Citra/Azahar contributors, GPL-2.0-or-later).
-The ScarletNX-to-ScarletNX room transport is separate from Azahar's room protocol.

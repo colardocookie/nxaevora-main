@@ -32,12 +32,13 @@ int main(void) {
     assert(gui_recent_rename(&r, games[3], "Game Three") && !gui_recent_rename(&r, games[3], "Game Three"));
     assert(!gui_recent_rename(&r, games[0], "gone already") && !gui_recent_rename(&r, games[3], ""));
 
-    /* a file once: run again it moves up and keeps its name; with the other driver, its file's name again */
+    /* a file once: run again it moves up and keeps its name */
     assert(!gui_recent_add(&r, games[3], GUI_SWITCH, 1));
     assert(r.count == 5 && !strcmp(r.game[0].path, games[3]) && !strcmp(r.game[0].name, "Game Three"));
     assert(r.game[0].prepared && !strcmp(r.game[1].name, "game 5") && !strcmp(r.game[4].name, "game 1"));
-    assert(!gui_recent_add(&r, games[3], GUI_LINUX, 0) && r.count == 5 && !strcmp(r.game[0].name, "game 3"));
-    assert(r.game[0].driver == GUI_LINUX);
+    /* only the Switch's: another of the menu's items is refused, and the list keeps its name */
+    assert(gui_recent_add(&r, games[3], GUI_SETTINGS, 0) && r.count == 5 && !strcmp(r.game[0].name, "Game Three"));
+    assert(r.game[0].driver == GUI_SWITCH);
 
     /* what one line of the file cannot hold is left out */
     assert(gui_recent_add(&r, "/a\tb.nsp", GUI_SWITCH, 0) && gui_recent_rename(&r, games[3], "a\nb") == 0);
@@ -51,30 +52,22 @@ int main(void) {
         assert(!strcmp(again.game[i].path, r.game[i].path) && !strcmp(again.game[i].name, r.game[i].name) &&
                again.game[i].driver == r.game[i].driver && again.game[i].prepared == r.game[i].prepared);
 
-    /* every console's records keep their driver across a restart: its package (a CIA, a VPK, a GBA ROM) as one, and the
-       game its driver made of it, ready to run, as one too */
-    GuiRecent before_ctr = r;
-    assert(gui_recent_add(&r, games[6], -1, 0)); /* a driver that is no console is refused */
-    for (int d = 0; d < 6; ++d) {
-        int driver = d % 3 == 0 ? GUI_3DS : d % 3 == 1 ? GUI_VITA : GUI_GBA, made = d >= 3;
-        assert(!gui_recent_add(&r, games[6], driver, made));
-        assert(r.game[0].prepared == made && r.game[0].driver == driver);
-        assert(!gui_recent_save(&r, file));
-        gui_recent_load(&again, file);
-        assert(again.count == r.count && again.game[0].driver == driver && again.game[0].prepared == made);
-        r = before_ctr;
-    }
-
-    /* a file that is gone, a line it cannot read, a second copy: left out; CRLF read too */
+    /* a file that is gone, a line it cannot read, a line of another console's, a second copy: left out; CRLF read too */
     assert(!remove(games[1]));
     text = snx_format("switch\tfile\t%s\tTwo\r\nnonsense\nlinux\tgames\t%s\t\nswitch\tfile\t%s\tcopy\n"
                       "wii\tfile\t%s\tx\nswitch\tfile\t%s\tgone\nlinux\tfile\t%s\ta\textra\n",
                       games[2], games[4], games[2], games[6], games[1], games[6]);
     assert(!snx_write_file(file, text, strlen(text)));
     gui_recent_load(&again, file);
-    assert(again.count == 2 && !strcmp(again.game[0].name, "Two") && again.game[0].driver == GUI_SWITCH);
-    assert(!again.game[0].prepared && !strcmp(again.game[1].path, games[4]) && !strcmp(again.game[1].name, "game 4"));
-    assert(again.game[1].driver == GUI_LINUX && again.game[1].prepared);
+    assert(again.count == 1 && !strcmp(again.game[0].name, "Two") && again.game[0].driver == GUI_SWITCH);
+    assert(!again.game[0].prepared);
+    free(text);
+
+    /* only the Switch's entries load: an old list with a 3DS game and a Switch game keeps the Switch one */
+    text = snx_format("3ds\tfile\t%s\tA 3DS game\nswitch\tfile\t%s\tTwo\n", games[4], games[2]);
+    assert(!snx_write_file(file, text, strlen(text)));
+    gui_recent_load(&again, file);
+    assert(again.count == 1 && !strcmp(again.game[0].name, "Two") && again.game[0].driver == GUI_SWITCH);
     free(text);
 
     /* no file yet: no games */

@@ -37,7 +37,7 @@
 #define MSG_TRUNC 0
 #endif
 #ifndef MSG_NOSIGNAL
-#define SNX_SEND_NOSIGNAL 0 /* macOS: SO_NOSIGPIPE on every socket instead. Windows has no SIGPIPE */
+#define SNX_SEND_NOSIGNAL 0 /* Windows has no SIGPIPE */
 #else
 #define SNX_SEND_NOSIGNAL MSG_NOSIGNAL
 #endif
@@ -57,9 +57,6 @@
 #endif
 #ifndef SO_DOMAIN
 #define SO_DOMAIN SNX_NET_NOOPT
-#endif
-#if defined(__APPLE__) && !defined(TCP_KEEPIDLE)
-#define TCP_KEEPIDLE TCP_KEEPALIVE
 #endif
 #ifndef TCP_KEEPIDLE
 #define TCP_KEEPIDLE SNX_NET_NOOPT
@@ -401,7 +398,7 @@ int snx_net_addr_to_host(const SnxSockAddr* in, struct sockaddr_storage* out, sn
             a.sin_family = AF_INET;
             a.sin_port = in->port;
             memcpy(&a.sin_addr, in->addr, 4);
-#if defined(__APPLE__) || defined(__FreeBSD__)
+#if defined(__FreeBSD__)
             a.sin_len = sizeof a;
 #endif
             memcpy(out, &a, sizeof a);
@@ -416,7 +413,7 @@ int snx_net_addr_to_host(const SnxSockAddr* in, struct sockaddr_storage* out, sn
             a.sin6_flowinfo = in->flowinfo;
             memcpy(&a.sin6_addr, in->addr, 16);
             a.sin6_scope_id = in->scope_id;
-#if defined(__APPLE__) || defined(__FreeBSD__)
+#if defined(__FreeBSD__)
             a.sin6_len = sizeof a;
 #endif
             memcpy(out, &a, sizeof a);

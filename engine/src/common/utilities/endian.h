@@ -3,7 +3,7 @@
 #ifndef SNX_ENDIAN_H
 #define SNX_ENDIAN_H
 
-/* Guest memory is little-endian on every guest the runtimes run (AArch64 Linux, the Switch, the 3DS), whatever the
+/* Guest memory is little-endian on every guest the runtime runs (the Switch), whatever the
    host's byte order. These read and write a guest value at a byte address, and convert one held in a register. On a
    little-endian host each is a memcpy or nothing, so the code compiled from them is what a plain memcpy gave. Some
    wire formats are big-endian (the network room, DNS, the shared fonts' header), hence the _be forms. */

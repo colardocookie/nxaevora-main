@@ -13,7 +13,7 @@
 * [Languages](#languages)
 * [Building and testing](#building-and-testing)
 
-`scarletnx` started with no arguments (or a model's name, or the AppImage), with no game of its
+`nxaevora-engine` started with no arguments (or a model's name, or the AppImage), with no game of its
 name beside it, opens its launcher: a small SDL3 menu for the command-line drivers. A copy named
 after a game, without its code, says so and never opens it. It uses an
 embedded public-domain 8x16 VGA BIOS font, with GNU Unifont's 8x16 glyphs fitted to it for the Latin letters its CP437
@@ -24,11 +24,11 @@ their rows that open a screen or do something (the others keep its columns), a g
 and the game's menu's. No font files or localization packages are needed.
 
 ```sh
-./build/scarletnx
+./build/nxaevora-engine
 ```
 
-The window's title tells which build it is, as `ScarletNX <branch> <commit> (<compiler>, <OS> <arch>)`, for example
-`ScarletNX main 43bf71a (clang 22.1.8, Linux x86_64)`; the commit ends in `-dirty` when the tree had changes, a
+The window's title tells which build it is, as `NXAevora Engine <branch> <commit> (<compiler>, <OS> <arch>)`, for example
+`NXAevora Engine main 43bf71a (clang 22.1.8, Linux x86_64)`; the commit ends in `-dirty` when the tree had changes, a
 build of a detached checkout outside CI says `detached`, and both read `unknown` outside a git checkout. A game's window carries the same line after the game's name.
 
 It opens on a splash: Wimsy, or Fuddles (`dist/splash/`), picked at random each start, a third of the window's
@@ -59,7 +59,7 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   presses the key when its words all press one. `Arrows`, `mouse`, `pad` and `D-pad` press nothing.
 - The menu, top to bottom: the loads, **Settings**, **Share Log**,
   **Folders**, and **Exit**. The games, and the recent ones, are the Games tab's. A load whose driver
-  is neither beside ScarletNX nor on PATH, as those an app leaves out ([APPLE](APPLE.md)), is greyed out, still there,
+  is neither beside NXAevora Engine nor on PATH is greyed out, still there,
   and Enter or a tap on it says which driver it misses rather than opening its screen; the drivers are looked for
   again each second, and with F5.
 - Space, Enter or a left click explicitly activates an item, marking it bright
@@ -71,40 +71,22 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   on, slowing to a stop; on the Settings, the side panel a list, the drag that passes onto it opens the group in
   focus there, its rows taking the focus, and back onto the groups they take it back, the panel showing the group in
   focus again. A tap on a finished run returns to the menu, and one on a
-  running run's ESC line aborts it. Android's back button is ESC. On a screen packed with
-  pixels (a phone) the text takes the display's own scale, as far as the menu still fits.
-- **Load Switch NRO**, **Load Linux ARM ELF**, **Load 3DS game**, **Load Vita VPK** and
-  **Load GBA ROM** open a screen: a click on its blinking **[ Pick or drop a file ]**, or Enter, opens the system's file
+  running run's ESC line aborts it. On a screen packed with
+  pixels the text takes the display's own scale, as far as the menu still fits.
+- **Load Switch NRO** opens a screen: a click on its blinking **[ Pick or drop a file ]**, or Enter, opens the system's file
   picker (on Linux the desktop's, else zenity's). Dropping a file on the window and Ctrl+V with
-  a path work too. ESC returns to the menu. On Android the picker opens at once. A Switch game is read where it lies
-  and takes no room. A 3DS dump not extracted yet takes about its size; when its disks have less free, the menu says how
-  much it needs and *Run Anyway* takes a second press. A Switch game from encrypted dumps is not loaded here: decrypt it
-  to a folder (`exefs/`, `romfs/`) and give the folder to `scarletnx -r`. With more than one folder of the recompiled library that can
+  a path work too. ESC returns to the menu. A Switch game is read where it lies
+  and takes no room. A game from encrypted dumps is not loaded here: decrypt it
+  to a folder (`exefs/`, `romfs/`) and give the folder to `nxaevora-engine -r`. With more than one folder of the recompiled library that can
   take a game (its Main, and each Extra that can be written and runs programs), a box asks which the dump's game goes
   in, **Recompile** on its tab: each folder with what it is and its free room, the Main first and in focus; ESC runs
-  nothing. The one taken is the run's `--outdir`, and the room asked about is that folder's.
-- **Load 3DS game** uses `scarletnx-3ds`. Its `games/` browser lists CIA, CCI, 3DS, CXI, APP, HBB, BCCI/BCXI/BCIA and ZCCI/ZCXI/ZCIA inputs,
-  not host executables. The driver reads supported decrypted application CIAs, cartridge images (a card's
-  update partition played as the update) and bare NCCHs where they lie, or extracts them with its `--extract-container`.
-  The driver then compiles the ARM11 code ahead of time and runs it, on Linux and
-  Windows. Larger images use bounded conservative discovery (16 MiB text cap).
-  SuperTux shows its title screen and plays its music, but takes no input yet.
-  Full HLE/devices remain incomplete. Like the Switch driver, it uses an
-  extraction (or the CIA itself) and a compiled module already there, and recompiles only when needed.
-  See [3DS port](3DS.md) for limits.
-- **Load Vita VPK** uses `scarletnx-vita`, with the menu's data folder as its `--data`. The driver extracts the VPK
-  into its game's folder of `recompiled/` (named after its title ID), compiles its code ahead of time and plays it,
-  compiling at run time what it missed. A VPK extracted and compiled before plays at once. See
-  [Vita driver](VITA.md) for limits.
-- **Load GBA ROM** uses `scarletnx-agb`, the AGB board runtime, with the menu's data folder as its `--data`: it makes
-  the game's folder of `recompiled/` (named after the ROM's file), its module and its copy of the runtime, and plays
-  it in a window. See [AGB board](AGB.md).
+  nothing. The one taken is the run's `--outdir`.
 - **Settings** opens on its groups, Enter opening one and ESC coming back: **App**, then
   **Launch** (the launcher's own and the recompiler's, from `src/nx/runtime/settings.txt`), then a group per section of the game's `.ini` (Display,
   Graphics, Performance, Overlay, Controllers, Network, Debug; Overlay is the runtime's On-screen controls, the
-  name its page in the game and `settings.ini` keep), as `scarletnx --settings`
+  name its page in the game and `settings.ini` keep), as `nxaevora-engine --settings`
   prints them from the runtime's own tables: read from them in the same process where the menu is built into
-  scarletnx (iOS too), so every section shows at once; a menu built alone asks `scarletnx --settings`. The game's menu's settings have its names and words
+  nxaevora-engine, so every section shows at once; a menu built alone asks `nxaevora-engine --settings`. The game's menu's settings have its names and words
   (*Scale* 100%, *Touch screen* Fingers), and its **Buttons** page, whose **All** steps every row;
   *Edit layout* and *Reset layout* stay in the game's menu, as the layout is each game's own.
   Controllers' **Button map** draws the pad as the game's menu does: each control in a box down either
@@ -153,8 +135,7 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   stay as they were, said in a box; the row says *default*, *custom* or why its folder cannot be, at its end, the tips what it holds and its disk's free
   space. A folder not there, not a folder, that cannot be written or, for the games, on a disk that runs no programs
   (`noexec`) is refused, and a run whose picked folder no longer can be stops, naming it: the default never takes its
-  place. On Android a folder outside the app's own storage is asked about first, since Android checks every file
-  access there and games may run slower: *Use it* takes a second tap, and its row says *outside the app*. A library's
+  place. A library's
   **Add a folder** opens the folder picker, and a folder dropped on, or pasted on, a row of a library is added to it; one
   with folders in it asks first: *Only This Folder*, or *With Subfolders*, whose games are listed too, four levels
   down, hidden folders left alone (its row says *+ subfolders*). Del or Enter asks before an Extra is taken off its
@@ -172,7 +153,7 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   that do not fit, until another key closes it;
   Share Log lists them too. **Move Old Files** (its value how many folders an older version left) asks first, with
   how many entries would move and how many stay, then moves what *Left by older versions* lists an entry at a time
-  (`scarletnx --migrate=yes` without the menu, [USAGE](USAGE.md#folders)), the same box saying what moved and why the
+  (`nxaevora-engine --migrate=yes` without the menu, [USAGE](USAGE.md#folders)), the same box saying what moved and why the
   rest did not: one already there, one on another disk, a game laid out beside others, which moves from its dump.
   **Reset to Defaults**, the last row, puts every setting of the groups after App back to its default, asking first with how
   many change. A group of settings shows
@@ -180,18 +161,16 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   nickname, a theme's key, a color's `#RRGGBB`) is typed in a dialog, as UI scale's, never in the row: the row's label
   its title, the text with its cursor in a field, what the row takes under it with its numbers (`A number from 0.25 to
   16, two decimals at most; empty, the default 1`), then OK and Cancel. Enter or A is OK, ESC or B Cancel, Backspace
-  takes a letter out; a click off the dialog is Cancel. A phone's keyboard comes up with it, its number pad for a whole
-  number never under 0 (SDL's pad has no point and no minus). Nothing changes before OK, and OK takes nothing the
+  takes a letter out; a click off the dialog is Cancel. Nothing changes before OK, and OK takes nothing the
   row does not take whole, a number past its range too: the dialog stays, saying the value typed and what holds
   (`20 is not a number from 0.25 to 16, two decimals at most`, `Ab is not a nickname: ...`). A setting not picked shows
   the runtime's default and `[default]` (*Off [default]*):
   the run takes the game's `.ini`'s, which starts as that; one picked goes to every
   Switch run as `--key=value`, over the `.ini` ([USAGE](USAGE.md)), and is kept for every game:
   what was changed, by the `.ini`'s sections and keys, in `settings.ini` of the config folder on
-  Linux (`~/.config/scarletnx/`), else the data folder's `config/`. A run takes a setting from what that
+  Linux (`~/.config/nxaevora/`), else the data folder's `config/`. A run takes a setting from what that
   run picks, then from the game's own picks (to come), then from these, and last from the game's
-  `.ini`. Del puts a setting back to its default, and App's **Reset to Defaults** every one. The launcher's own choices start picked: `fullscreen` 0, `controls` 0 (on Android 1,
-  and `fullscreen` puts the launcher itself on the whole screen too).
+  `.ini`. Del puts a setting back to its default, and App's **Reset to Defaults** every one. The launcher's own choices start picked: `fullscreen` 0 and `controls` 0.
   **gdbstub** passes `-S` and `-s`, the
   runtime's stub on port 1234 waiting for the debugger at startup (UNIX only).
   **Optimization level** (0, 1, 2, 3 or z, 2 by default) is LLVM's level for the game's code, **AOT threads** the
@@ -200,8 +179,7 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   turns each pass of LLVM's pipelines off and sets the options LLVM's C API takes, its **All** stepping every row. They
   are passed as `--key=value` when the game is recompiled: by **R**, or by a run that has to (a game folder recompiled
   the first time, an NRO each time). A game made already keeps its code until then. The first two settings and these reach
-  neither the Linux nor the 3DS driver.
-- The Status box, after the RAM and the CPU, says what ScarletNX's folders take (recompiled/,
+- The Status box, after the RAM and the CPU, says what NXAevora Engine's folders take (recompiled/,
   work/ and themes/ of the data folder, and on Linux its config, state and cache folders, else
   the menu's own) and what is left on that disk, counted as the menu opens and after each run. While a recompile of
   the queue runs its tree's RAM and CPU are in the first line, and a last one says how it goes:
@@ -212,7 +190,7 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   It is kept for the next start,
   as are UI scale and Language, in `app.ini` beside `settings.ini`: `[app]` with `theme` (a theme's folder
   name), `ui_scale` (1 to 4; a start without it takes twice the display's
-  scale, as many as fit 16 rows (30 on a phone), and writes it; `text_size` before, still read and written again as
+  scale, as many as fit 16 rows, and writes it; `text_size` before, still read and written again as
   `ui_scale`, said once; `auto`, `0.25`, `0.5` and `0.75` of older versions read as that number and written again so,
   said once), `recompile_background` (`full`, the default, or `gentle`; a word it does not know named
   with the one kept, `recompile_background = slow (it keeps full)`), `dumps_subfolders` (`on`, the default: dumps/'s
@@ -231,7 +209,7 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   number, Enter types a text or a number and opens a colour's picker. The picker sits over the keys, so the preview
   shows the colour as it changes: a bar per channel, R, G and B, which Left/Right step by 1 and PgUp/PgDn by 16, or
   a click, a drag or a finger sets, then the colour as `#RRGGBB`, which Enter there types. Enter keeps the colour, as
-  does a click or a tap off the picker; ESC (Back on Android) puts back the one it had.
+  does a click or a tap off the picker; ESC puts back the one it had.
   Save (or Ctrl+S) writes `themes/<folder>/theme.ini` in the data folder and switches to it;
   a built-in is saved as a new theme, `mytheme` until renamed. ESC leaves, asking first if
   there are unsaved changes.
@@ -260,19 +238,17 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   own log and its fatal errors (below) and the game log. Beside it, whole, the launcher's logs (`launcher/`) and the
   games' logs of the last 14 days, each game's runs under `games/<its name> [<its folder>]/` by when each was last
   written; in every file a home folder is written `~`. **Share Log** saves that summary alone as `scarletnx.log`. Either
-  goes in `share/` of Folders' Logs (`~/.local/state/scarletnx/share/`; on iOS Documents' `logs/share/`, which the Files
-  app shows), emptied of what was shared before, and that folder opens in the system's file manager, to share from
+  goes in `share/` of Folders' Logs (`~/.local/state/nxaevora/share/`), emptied of what was shared before, and that folder opens in the system's file manager, to share from
   there. **Open Logs Folder** opens Folders' Logs, where they all are. After a run or a recompile of the queue that
   ended abnormally (not by ESC) it blinks red (the theme's `failure` colour, at its `blink_ms`) until its logs are saved or a run ends well.
 - **Folders** opens Settings > App > Folders (ESC comes back to the menu). There Enter, or a tap, on a folder gives
-  **Open Folder**, which opens it in the system's file manager (on Android its Files app, the data folder through the
-  app's own storage, [ANDROID](ANDROID.md)), **Change Folder** and **Reset to Default**; on an Extra of a library
+  **Open Folder**, which opens it in the system's file manager, **Change Folder** and **Reset to Default**; on an Extra of a library
   Open Folder and **Remove from Library**; on dumps/ and Settings, Open Folder. A row of the Dumps Library, dumps/ or an
   Extra, also gives **Subfolders**, `(*)` while its subfolders' dumps are listed and `( )` while not: Enter switches
   it, the box staying, kept at once (dumps/ in `app.ini`, an Extra in `folders.txt`). Del still puts a folder back to
   its default, or takes an Extra off.
 - The launcher's log, a file a day, `scarletnx-console-2026-10-28.log` in its state folder (Settings > App > Folders'
-  Logs; on iOS in `logs/` of the app's Documents, [APPLE](APPLE.md)), the 14 newest days kept (a day's first line
+  Logs), the 14 newest days kept (a day's first line
   deletes the older ones; the `scarletnx-console.log` older versions wrote stays as it is), holds what it says: its
   start (its build and data folder), each failure
   once in a session (what the box over the screen says, shown or not), the warnings it gives as it opens. Each line starts with the time and the launcher's process
@@ -297,10 +273,7 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   ([USAGE](USAGE.md#folders)). Up/Down, PgUp/PgDn and the wheel go over those that do not fit (an arrow at the
   right of the first says some are above it, *and N more* the ones under), any other key, click or tap closes it;
   nothing is moved, and it shows again at the next start for as long as they are there.
-  **Share Log** lists them all, each with where it goes now. On Android the menu's own files an older version kept
-  in the app's own files, out of the Files app's reach, are listed a file at a time, and under them the box says how
-  they go while the app is in testing: Android's Settings > Apps > ScarletNX > Storage > Clear storage, which takes
-  every game, save and key in the app with them. The menu never reads them: it starts from its defaults.
+  **Share Log** lists them all, each with where it goes now. The menu never reads them: it starts from its defaults.
 - **Recent Games**, at the top of Games, lists the last games run, newest first, three and a row that
   shows the rest, by the name their run gave (the runner's `ScarletNX - <name>` line), else their file's. A dump not
   made into a game yet stays in the list but has no row, as opening it would compile it; once made, by any run, its
@@ -309,19 +282,18 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   game's path. Choosing one runs it again with the driver it was
   loaded with and the options the menu has now; a game whose file is gone leaves the
   list instead. The list is kept in `recent.txt`, beside `last-run.log`, at the root of the menu's state
-  folder ([USAGE](USAGE.md#folders)): `$XDG_STATE_HOME/scarletnx/` on Linux, by default
-  `~/.local/state/scarletnx/`, `%APPDATA%\scarletnx\state\` on Windows, or the data folder's `state/` on Android. An
+  folder ([USAGE](USAGE.md#folders)): `$XDG_STATE_HOME/nxaevora/` on Linux, by default
+  `~/.local/state/nxaevora/`, or `%APPDATA%\nxaevora\state\` on Windows. An
   older version's, in a `gui/` folder, stay where they are. A line per
-  game: `switch`, `linux` or `3ds`, `file` or `games` (a program from recompiled/, run as it is: the token keeps its old name),
+  game: `switch`, `file` or `games` (a program from recompiled/, run as it is: the token keeps its old name),
   the path and the name, separated by tabs. A list that cannot be written there is named in the
   message, after a run's end too, until it can be.
 
-The launcher runs Switch inputs with the `scarletnx` it is part of, and looks beside it, then on
-PATH, for `scarletnx-gnuabi` or `scarletnx-3ds`. Files are passed directly
+The launcher runs Switch inputs with the `nxaevora-engine` it is part of. Files are passed directly
 as argv entries, never through a shell. Spaces, Unicode paths and shell punctuation
 are not evaluated. Local `file://` text drops are decoded, but lists and remote URI
 authorities are rejected. The working directory is not changed and is shown in the
-Status box. See [GNUABI](GNUABI.md) for supported Linux ELF applications.
+Status box.
 
 ## Setup
 
@@ -345,11 +317,10 @@ they are, Keep, Later, the nickname `Player`), writes `setup.ini` and opens the 
   asked about for 15 s as App's is; Enter does as App's (the language or the theme a step on, UI scale's dialog), and on
   Next goes on. What was changed is kept in `app.ini` once the setup is done, in the folders Install picks; Auto
   stays Auto while the language is the system's.
-- **Install**: Installed, or Portable, which makes `.scarletnx/` beside the program and moves the menu's own files
-  there from then on. A box over the two says which the copy is now: `Now: portable, its files in <folder>/.scarletnx`
+- **Install**: Installed, or Portable, which makes `.nxaevora/` beside the program and moves the menu's own files
+  there from then on. A box over the two says which the copy is now: `Now: portable, its files in <folder>/.nxaevora`
   while that folder is there, the focus then on Portable, else `Now: installed, its files in` the user's data folder.
-  Installed is refused while a `.scarletnx/` is there, which keeps the copy portable. An app (Android, iOS) has no such
-  page.
+  Installed is refused while a `.nxaevora/` is there, which keeps the copy portable.
 - **Folders**: Keep, Change recompiled folder (Settings > App > Folders, the recompiled library's Main) or Add a folder
   (an Extra of Settings > App > Folders), each through the folder picker, the page listing what is there now: Recompiled, Dumps
   (the data folder's `dumps/`, with its subfolders), then the player's folders.
@@ -358,35 +329,32 @@ they are, Keep, Later, the nickname `Player`), writes `setup.ini` and opens the 
   the rooms' rule refuses is said, and the page stays.
 
 Once the last page is done the menu opens, `setup.ini` written. After an update that brings a notice, the setup
-shows that notice alone (1/1), with OK, before the menu. `scarletnx --no-setup` opens the menu with no
+shows that notice alone (1/1), with OK, before the menu. `nxaevora-engine --no-setup` opens the menu with no
 setup, writing nothing.
 
 ## Games: the games of recompiled/ and the player's folders
 
-**Games**, the tab, lists the games: the ones ready to run (a recompiled game runs directly), the dumps to prepare
-on Android, CIA files, which go to the 3DS driver, VPK files, which go to the Vita driver, and GBA ROMs, which go to the
-GBA's. It reads the `recompiled/` of the
-folder the driver works in, which the menu passes it as `--data`: a portable copy's `.scarletnx/` beside the
+**Games**, the tab, lists the games: the ones ready to run (a recompiled game runs directly). It reads the `recompiled/` of the
+folder the driver works in, which the menu passes it as `--data`: a portable copy's `.nxaevora/` beside the
 AppImage (or the GUI), else the user's data folder, a build tree's menu's too ([USAGE](USAGE.md#folders)), then each
 Extra of Settings > App > Folders. Each game is shown by the name in its `control.nacp`, which the recompile copies into
 its data, else by its folder's or file's name, sorted by it in each folder, with its icon (Wimsy in grey for one with
 none): a game's own; a dump (an `.nro`) shows none. Only immediate files are listed:
-executables (execute permission on UNIX, `.exe` on Windows), `.cia`, `.cci`, `.3ds`, `.cxi`, `.app`, `.hbb`, `.bcci`, `.bcxi`, `.bcia`, `.zcci`, `.zcxi` and `.zcia` files
-(case-insensitive, no execute permission needed), which run with the 3DS driver, and `.vpk` files, which run with the Vita driver. Hidden files, shared libraries and
-directories are excluded. The folders are looked at once a second while the menu is open (their
+executables (execute permission on UNIX, `.exe` on Windows), which run with the Switch driver. Hidden
+files, shared libraries and directories are excluded. The folders are looked at once a second while the menu is open (their
 names only), so a game put in or taken out shows in the open list; a folder that
 cannot be read is named and the others still listed.
 
-- **P** (on a phone a tap on *Folders* at the foot) opens Settings > App > Folders at the recompiled library's Add a
+- **P** opens Settings > App > Folders at the recompiled library's Add a
   folder, where ESC comes back to Games and its list read again. The recent games are over the games. ESC returns to
   the menu.
-- **V** (on a phone a tap on *View* at the foot) opens the View box over the list, an option a row, its value between
+- **V** opens the View box over the list, an option a row, its value between
   the arrows: **Recent Games** (*On*, `recent_games = on` in `app.ini`: the recent games over the list; *Off*: none),
   **Dumps** (*On*, `games_dumps = on`: the dumps of `dumps/` and of the dumps library's folders under their
-  heading; *Off*: the games ready to run alone, a CIA or a VPK left out with the dumps) and **Sort** (*Title*,
+  heading; *Off*: the games ready to run alone) and **Sort** (*Title*,
   `games_sort = title`: by the name shown, in each folder; *Last opened*, `games_sort = last_opened`: the game whose
   log a run wrote last first, as every run writes its game's log again, then the games never run in their order,
-  each group on its own, its dumps, CIAs and VPKs in theirs) and **View** (*List*, `games_view = list`: a row a game,
+  each group on its own, its dumps in theirs) and **View** (*List*, `games_view = list`: a row a game,
   all on one page that scrolls; *Grid*, `games_view = grid`: a tile a game, its icon over its name, as many a line as fit, on one page
   that scrolls, the list three fifths of the screen as a run's output is, Recent Games and a group's heading each on
   a line of its own; the arrows go to the tile beside, above or under the focus, its column or the line's last,
@@ -395,32 +363,29 @@ cannot be read is named and the others still listed.
   *Small*, `small`: 8 by 3; *Large*, `large`: 16 by 6), then the **Side panel** of Settings > App (`side_box`, which
   F2 turns too). Enter, Left, Right or
   a click change the focused one,
-  kept in `app.ini` at once, and the list is read again by it; ESC or a click off the box closes it. On iOS Recent
-  Games and Dumps start *Off*, as a phone keeps the games made in the app's `recompiled/` and prepares a dump from the
-  Menu; the player turns them on there. An `app.ini` without them, an older version's, has these defaults, and a word
+  kept in `app.ini` at once, and the list is read again by it; ESC or a click off the box closes it. An `app.ini` without them, an older version's, has these defaults, and a word
   it does not know is named in the message with the one kept: `recent_games = maybe (it keeps on)`.
 - In the list, Up/Down go round the recent games and the page's files. Enter/Space opens one. A game no game of the
-  recompiled library was made from yet (a dump, a package, a ROM) compiles first, through the queue of compiles R's
+  recompiled library was made from yet (a dump) compiles first, through the queue of compiles R's
   goes through: the Compile tab shows it, and it plays once its compile ended if the tab still shows it; sent away
   first (Tab), the tips say it is ready, and Enter then plays it. One a game was made from already, in `recompiled/` or
   a recompiled folder of the Library, asks first, naming the game and its folder: **Play**, in focus, plays it,
   **Recompile** recompiles it where it is, as R does, and Back does neither.
-- **R** (on Android a tap on *Recompile* at the foot) recompiles the game in focus, recent or on the page, whichever
-  console's, where it is, or makes its dump or package again: its driver's `-r` (`scarletnx -r`, `scarletnx-3ds -r`,
-  `scarletnx-vita -r`, `scarletnx-agb -r`). It plays nothing, and goes in the queue of compiles, which runs them one
+- **R** recompiles the game in focus, recent or on the page,
+  where it is, or makes its dump again: the driver's `-r` (`nxaevora-engine -r`). It plays nothing, and goes in the queue of compiles, which runs them one
   at a time behind the screens: with none running it starts at once, the Compile tab showing it; else the tips say
   where it waits. A game of the queue says it on its row (`42%`, `next`, `3rd in queue`) and in the side box; Enter
-  on it, or R again, shows it on the Compile tab, and it plays once its compile ended. On a Linux
-  program, or another row, R says why it does nothing. **B** builds the focused game's AOT pack from its JIT cache
+  on it, or R again, shows it on the Compile tab, and it plays once its compile ended. On
+  another row, R says why it does nothing. **B** builds the focused game's AOT pack from its JIT cache
   ([AOT packs](AOT_PACKS.md)) through the same queue.
-- **M** (on Android a tap on *Mods* at the foot) opens the box of the recompiled Switch game in focus, recent or on
+- **M** opens the box of the recompiled Switch game in focus, recent or on
   the page, that Enter opens for a game with updates, DLCs, mods or cheats beside it, and for a game with none of them
   too, whose **Add Mod** and **Add Cheats** copy a folder or a `.txt` the system's picker gives into the game's mods
   and cheats, **Open Folder** lists the game's folders to open (its dump's, its own, saves, settings, logs, caches; one
   not there greyed), **Save States** opens the box of its save states that S opens (greyed for a dump, which has
-  none; on a phone the way to them, with a tap on *Save states* at the foot) and **Clean Cache** deletes its shader
+  none) and **Clean Cache** deletes its shader
   and code caches, asked first ([USAGE](USAGE.md#mods)). On
-  another row, a dump, a package or another console's game, it says what it opens. The side panel of a recompiled
+  another row, a dump, it says what it opens. The side panel of a recompiled
   game says how its code was made (`Made with: O2, AOT 81%`, `?` for one an older version made), or, in the failure
   colour, `Needs Recompile` when Play compiles it first.
 - The list is one page that scrolls, by pixels: past its height a scroll bar at its right, as every list has (below),
@@ -431,14 +396,13 @@ cannot be read is named and the others still listed.
 - Empty or missing directories show a diagnostic, and the side box says P adds a folder.
 
 A recompiled game, in a folder of its own (`recompiled/<id>/<id>`), runs with the Settings through the menu's own
-`scarletnx` and is never extracted as a dump: it plays as it is when this build made it with the mods it plays, and
+`nxaevora-engine` and is never extracted as a dump: it plays as it is when this build made it with the mods it plays, and
 when another build did, or other mods, it compiles first, where it is, in the queue as a dump's first compile does
 (its `<id>.abi` says which: [USAGE](USAGE.md#extract--aot--run)), then plays if the Compile tab still shows it. A game
-an older version laid out beside the others runs directly, as every game does on iOS. A game another console's
-driver made says so in its `.ini` (`system=` of `[Game]`: `3ds`, `vita` or `gba`; an older one by
-its layout, a 3DS `.ini`'s `model=`, a Vita folder's `ux0/`): its row says "3DS game, ready to run" and the like, and
-Enter and R go through that driver, in the game's folder (`--game=`), with none of the Switch's Settings. A CIA goes
-to `scarletnx-3ds`, which is never executed on it directly. Output capture, resource accounting and the return to
+an older version laid out beside the others runs directly. A game of another console
+says so in its `.ini` (`system=` of `[Game]`: a word that is not `switch`) or by its layout (an `.ini`'s
+`model=`, a folder's `ux0/`): the menu refuses it, naming its folder, and says that only Switch games are
+supported. Output capture, resource accounting and the return to
 the main menu work as for a file picked by a load.
 
 ### The Compile tab
@@ -449,7 +413,7 @@ the one in focus, as a theme's loading screen (YoRHa's, its colours, its usage a
 at its foot) or its output under *Output* (the default's), in letters a half step under the text's; on the right the
 **Queue**, a row each in the order asked (`42%`, `next`, `3rd`, `OK`, `FAILED`, B's saying *AOT pack*), and the
 Status box. Up/Down go over the queue, the panel following. **Tab** goes back to Games, the recompile going on;
-**ESC** aborts the one running (asked first on Android), its line gone with it, or on one that ended goes back to
+**ESC** aborts the one running, its line gone with it, or on one that ended goes back to
 Games, its line seen and gone; **Del** takes out one waiting, or the line of one that ended; **Enter**, or a click on
 its row once in focus, plays the game of one that ended well. When one ends the next starts by itself, and the tab
 says `Compile OK` for five seconds before the next one's percent; while one that failed is listed and none runs it
@@ -462,9 +426,8 @@ the queue ends; the window's close, Exit and ESC on the menu ask first, naming t
 With Background recompile *Gentle* every recompile of the queue goes gently; with *Full*, one goes gently by itself
 while a game the launcher started plays: the one running drops to the low priority at once (its threads stay as it
 started), the next starts with half of them, and once the game ended it goes back where the system lets a program
-raise a priority it lowered (Windows does; Linux and macOS without the privilege keep it low until it ends, the
-Status box saying why). On iOS, where the driver runs on a thread of the app and a game plays once the menu closes,
-a game plays once the queue ends.
+raise a priority it lowered (Windows does; Linux without the privilege keeps it low until it ends, the
+Status box saying why).
 
 ## Output and resource use
 
@@ -527,9 +490,7 @@ as the Status box's and the note at the foot of a Settings box are; the setup's 
 a long one sliding, or wrap over its rows with `[tips] wrap`, the last sliding what does not fit. At the foot the
 screen's keys, the whole width (the setup's beside its tips), in letters a size under the rest's: its own keys, ESC alone
 at the left of the row, **F1** last, which opens a box over the screen with every key it has, those every screen has too
-(the arrows and the mouse, Enter, Space and a click, the pages, Tab and F2), until any key or a click closes it; on a
-phone, the words to tap, whole, in the text's letters, each row of them as tall as a list's row (48 pixels times
-the text's size) for a finger, and so are the tabs. The tips and the keys each in a box with a bar down
+(the arrows and the mouse, Enter, Space and a click, the pages, Tab and F2), until any key or a click closes it. The tips and the keys each in a box with a bar down
 its left (`[tips] box`, `[footer] box`) or on the page, each key with what it does a button as a tab is: a box as the
 theme's are (filled in the dim colour, framed in it, or on the foot's band framed in the soft one), its text a column
 inside, a column between two, as tall as a tab where it has a row of its own. Games lists the recent games and the
@@ -540,7 +501,7 @@ rows: Enter, or a click on a row, opens the group, its rows taking the focus, th
 click on another group opens that one. No screen has a Back row: ESC goes back, and so does a click or a tap on the
 foot's ESC. A failure of the system's (a file not written, a folder not made, a picker that did not open, the driver
 not found, the log not saved) shows whole in a box over the screen until OK, once in a session; the tips or the
-note go on saying it after. F5, or the foot's (Refresh on a phone), looks at the disk again at once rather than at the next look:
+note go on saying it after. F5 looks at the disk again at once rather than at the next look:
 Games lists its folders again, Folders says which of its folders are there, the menu counts the disk
 again, and the box of what an older version left looks again. The theme editor lists its keys, the preview beside them. The list's column is two fifths of
 every screen, 20 columns at the least, and a window under 45 columns shows the list alone, or with app.ini's
@@ -551,8 +512,7 @@ Screen and Wide (a theme's `[head] place`, `[tips] place` and `[body] sizing` ar
 (a theme's `[body] gap` and `[body] scroll` are deprecated too): the menu's, Games',
 the Settings' two, the theme editor's, the choices of a question, of UI scale's dialog, of the Recompile box and of the
 setup's pages, the setup's Appearance rows, the box of users, that of a game's updates, DLCs and mods, and the OK of
-a box of files. Their rows are 2 pixels apart times the text's size (on Android and iOS 48 pixels high: a phone held wide gets
-2x by default, so 96, about 37 dp at a density of 2.6, Android's 48 dp touch target at 3x; the desktop's are 17), the focused one kept in the middle (on a
+a box of files. Their rows are 2 pixels apart times the text's size, the focused one kept in the middle (on a
 group's screen, the group open in the groups' list; Games' grid by its lines) as the keys, a pad or the wheel move
 it, and a list still when the mouse, a pen or a tap moves it, the cursor inside each row, which a click takes
 whole as a tap does. Every list whose rows do not all show, Games' grid too, has a scroll bar a letter wide at its
@@ -586,14 +546,12 @@ fades the run out and the menu back in.
 The runtime draws a loading screen of its own in the same look while it prepares the shaders before a game starts
 (`prepare_shaders = 2`, the default). It shows steps with their progress, the lines of the work scrolling under
 them, and a progress bar in every theme. A key that types, an arrow or the keypad, a gamepad button other than Home,
-or a tap starts the game at once, and the rest is prepared while it runs. Esc quits, or on Android back opens the
-menu, whose Exit quits. The screen appears only when the work takes longer than a quarter second, and its words are
+or a tap starts the game at once, and the rest is prepared while it runs. Esc quits. The screen appears only when the work takes longer than a quarter second, and its words are
 in English whatever language the launcher uses. It reads the theme the launcher picked from the launcher's
 `app.ini`, from the built-ins, the `themes/` of the data folder (the one Folders picked, when it did) and
 the themes shipped beside the launcher, which it finds when the launcher started the game. It uses the theme's
 `[run]` colours, `layout`, `texture` and `progress`, and its loading title. A theme that is no longer there draws as
-YoRHa. So does a runtime built without the launcher, which on Android is every runtime: the launcher is the app's
-own library there, and the game's runtime can't ask it.
+YoRHa. So does a runtime built without the launcher.
 
 A theme is also a folder holding a `theme.ini`, the folder's name its id, in
 `themes/` in that same folder or in `themes/` beside the GUI; the first one found
@@ -793,7 +751,7 @@ brings a translation up to the code; a phrase it leaves empty, or marks `fuzzy`,
 - has contexts (`msgctxt`), plurals (`msgid_plural`), a phrase twice, or is not UTF-8.
 
 The runtime's settings stay as the runtime names them (their groups, names, help and words come from
-`scarletnx --settings`), as do the Controllers' button map page, drawn as the game's menu draws it, the theme
+`nxaevora-engine --settings`), as do the Controllers' button map page, drawn as the game's menu draws it, the theme
 editor's rows (the file's own keys) and the lines Share Log adds for us.
 
 ## Building and testing
@@ -811,10 +769,8 @@ cmake --build build/gui
 ctest --test-dir build/gui -R '^gui_' --output-on-failure
 ```
 
-For just the GUI and Linux runtime, use `-DSNX_BUILD_NX=OFF -DSNX_BUILD_GUI=ON`: the launcher is
-then `scarletnx-gui`, a program of its own, which looks for `scarletnx` as it does for the other drivers.
 Tools-only builds cannot enable the GUI.
-Supported host platforms are Linux, FreeBSD, Windows (llvm-mingw) and Android (`dist/android`).
+Supported host platforms are Linux, FreeBSD and Windows (llvm-mingw).
 SDL3 handles window creation, keyboard/mouse input, rendering, clipboard and drag-and-drop
 on every host. The platform-specific code only handles child processes and resource
 accounting. See [BUILD](BUILD.md) for SDL3's desktop dependencies.

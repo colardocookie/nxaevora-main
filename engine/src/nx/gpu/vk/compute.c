@@ -10,7 +10,8 @@
    stores while it runs and a later CPU write wins.
 
    A queue of its own only waits for compute, so holding signals until results land costs a dispatch's run time,
-   not the rendering backlog's (which made that ordering too slow under the old OpenGL renderer, ROADMAP.md Phase 2).
+   not the rendering backlog's (which made that ordering too slow under the old OpenGL renderer, in the upstream
+   project's phase 2).
    Dispatches that read textures run on the graphics queue, after everything recorded before them. */
 #include <stdlib.h>
 #include <string.h>

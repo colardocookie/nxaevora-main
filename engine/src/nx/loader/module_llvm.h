@@ -10,11 +10,6 @@
 struct SnxIrTuning; /* recompiler/llvm/ir.h's */
 typedef struct {
     const char* output; /* <Game>_code.so or .dll, replaced only by a complete module */
-    /* The target triple of a module made for another machine than this one, which the JIT loader loads instead of
-       dlopen (iOS: arm64-apple-ios16.0-elf, the object format the loader reads): then output is a pack of the
-       module's objects without the runtime library (recompiler/llvm/objects_pack.h), which the loading app has for its
-       own machine. NULL: a module for this host */
-    const char* triple;
     char opt;           /* -O letter */
     unsigned jobs;
     int quiet;

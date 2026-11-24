@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* What the indexed filesystem needs from the host, shared by the NX and CTR runtimes: a mutex, folders, and files
+/* What the indexed filesystem needs from the host, for the NX runtime: a mutex, folders, and files
    kept mapped read-only for the whole run. No guest type enters here, so sizes are <stdint.h>'s */
 #ifndef SNX_FS_HOST_H
 #define SNX_FS_HOST_H

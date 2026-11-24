@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
 """area-labels.py TITLE: prints the labels a title's `[area]` prefix and words ask for, one a line. A prefix is one
-or more areas, as in `[gpu]` or `[macos, linux]`; the areas that name no label are skipped.
+or more areas, as in `[gpu]` or `[linux, windows]`; the areas that name no label are skipped.
 .github/workflows/pr-checks.yml adds the labels to the issue or pull request whose title was opened or edited."""
 
 import re
@@ -19,14 +19,9 @@ LABELS = {
     'area: services': ('audio', 'fs', 'hle', 'network', 'nvdrv', 'pl', 'service', 'swipc', 'users', 'vi'),
     'area: test': ('test', 'tests'),
     'kind: documentation': ('docs',),
-    'platform: 3ds': ('3ds',),
-    'platform: android': ('android',),
     'platform: freebsd': ('bsd', 'fbsd', 'freebsd'),
-    'platform: gba': ('gba',),
-    'platform: ios': ('ios',),
     'platform: linux': ('linux',),
     'platform: loongarch': ('loongarch',),
-    'platform: macos': ('macos',),
     'platform: ppc64be': ('ppc64be',),
     'platform: riscv': ('riscv',),
     'platform: windows': ('win32', 'windows'),

@@ -12,24 +12,21 @@
   * [FreeBSD](#freebsd)
   * [Configure and build](#configure-and-build)
   * [SDL3 troubleshooting](#sdl3-troubleshooting)
-* [macOS](#macos)
 * [Windows / PowerShell](#windows--powershell)
 * [Windows / MSYS2 CLANG64](#windows--msys2-clang64)
 * [Rebuild, deploy, cache](#rebuild-deploy-cache)
 * [Build variants](#build-variants)
 * [Install / AppImage](#install--appimage)
 
-Run from checkout root. [Extract/AOT/run](USAGE.md) · [Tests/diagnostics](DEVELOPMENT.md).
+Run from the `engine/` folder. [Extract/AOT/run](USAGE.md) · [Tests/diagnostics](DEVELOPMENT.md).
 
 ## Prerequisites
 
-- **Linux / FreeBSD:** Clang (CI: 23; FreeBSD's system Clang also works), LLVM's development files
+- **Linux / FreeBSD:** Clang (FreeBSD's system Clang also works), LLVM's development files
   (`llvm-config`, required by the recompiler), CMake ≥3.25, Ninja, POSIX shell, GNU make (`gmake` on FreeBSD),
   NASM on x86-64, Perl, Python 3 (the menu's languages), Git, pkg-config and `patch`.
   Use a system SDL3 development package, or X11/Wayland and audio development libraries for the bundled
   SDL3 build.
-- **macOS:** Apple silicon, macOS 13 or newer, Xcode (its Clang and SDKs), CMake ≥3.25, Ninja, Python 3 and Git.
-  LLVM's libraries come from `scripts/apple-llvm.sh` or Homebrew ([steps](#macos)).
 - **Windows:** Win10/11 x64. CI builds in MSYS2's CLANG64 environment, which has LLVM's development files
   ([steps](#windows--msys2-clang64)). Bootstrap stages SHA-256-checked llvm-mingw/Clang, CMake, Ninja,
   NASM, Strawberry Perl and w64devkit in `deps/tools`. llvm-mingw has no LLVM libraries, so that route also needs a
@@ -38,7 +35,7 @@ Run from checkout root. [Extract/AOT/run](USAGE.md) · [Tests/diagnostics](DEVEL
   SDL3 remains a required build dependency.
 - **FFmpeg:** required by every NX runtime build. CMake builds the pinned source release.
   Avoid spaces in checkout/cache paths.
-- **OpenSSL:** required by every build with the NX or 3DS loaders (hashes, ciphers, the ssl service's TLS). CMake
+- **OpenSSL:** required by every build with the NX loader (hashes, ciphers, the ssl service's TLS). CMake
   builds the pinned source release with OpenSSL's Configure, which needs **Perl**.
 
 ## Linux / FreeBSD
@@ -66,7 +63,7 @@ install it to use the distribution's SDL3 instead:
 sudo apt install libsdl3-dev
 ```
 
-If apt cannot find that package, skip it. ScarletNX builds the pinned SDL3 automatically.
+If apt cannot find that package, skip it. NXAevora Engine builds the pinned SDL3 automatically.
 Installing `libsdl2-dev` does not satisfy the SDL3 dependency.
 
 For native Wayland support in the source fallback, also install:
@@ -129,9 +126,9 @@ pass `-DSNX_SYSTEM_SDL3=OFF` for CPM's pinned SDL3 source build instead.
 ### Configure and build
 
 ```sh
-git clone https://github.com/scarletnx/ScarletNX.git && cd ScarletNX &&
+git clone https://github.com/nxaevora/nxaevora-main.git && cd nxaevora-main/engine &&
 cmake --preset default -B build && cmake --build build
-# -> build/{scarletnx,snx-shaderc}
+# -> build/{nxaevora-engine,snx-shaderc}
 ```
 
 ### SDL3 troubleshooting
@@ -150,7 +147,7 @@ installation is needed. It still needs your platform's window-system development
 - For SDL3 installed in a custom prefix, pass `-DCMAKE_PREFIX_PATH=/path/to/prefix`, or
   `-DSDL3_DIR=/path/to/prefix/lib/cmake/SDL3` (the directory containing `SDL3Config.cmake`).
 - To force the source build, pass `-DCPM_DOWNLOAD_SDL3=ON`. This is CPM 0.43.2's per-package override.
-  That version does not support `CPM_FORCE_BUNDLED_SDL3`. No bundled override is forced by ScarletNX.
+  That version does not support `CPM_FORCE_BUNDLED_SDL3`. No bundled override is forced by NXAevora Engine.
   The source build is recommended on Windows to match the MinGW toolchain and keep SDL3 statically linked.
 - If SDL3's configure reports missing X11/Wayland development libraries, install the packages above.
   Do not work around that by disabling both display backends for a windowed build.
@@ -179,64 +176,14 @@ cmake --preset default -B build && cmake --build build
 If that directory was configured with a different compiler or generator, use a new build directory
 (for example `-B build/clang`) rather than mixing the old cache with the new toolchain.
 
-## macOS
-
-Apple silicon only, with Xcode's Clang. The preset is `macos`, and the Linux presets and `default` do not apply.
-Install Xcode, then the build tools:
-
-```sh
-xcode-select --install
-brew install cmake ninja
-```
-
-1. **LLVM's libraries**, once (about 10 minutes on an M1). The script builds the AArch64 code generator alone,
-   which is the one the recompiler uses:
-
-   ```sh
-   scripts/apple-llvm.sh macos ~/apple-llvm/macos
-   ```
-
-   Homebrew's LLVM also works (`brew install llvm`). Pass `-DSNX_LLVM_CONFIG="$(brew --prefix llvm)/bin/llvm-config"`
-   to the configure step below in place of `-DLLVM_DIR`.
-
-2. **Configure and build:**
-
-   ```sh
-   cmake --preset macos -DLLVM_DIR=$HOME/apple-llvm/macos/lib/cmake/llvm
-   cmake --build --preset macos
-   # -> build/macos/{scarletnx,snx-shaderc}
-   ```
-
-   `build/macos/scarletnx` runs from the terminal as on Linux ([USAGE](USAGE.md)). It loads the system's Vulkan
-   loader, so it needs Homebrew's `molten-vk` and `vulkan-loader`.
-
-3. **The app** (optional), for a double-clickable `ScarletNX.app` that carries its own MoltenVK:
-
-   ```sh
-   cmake build/macos -DSNX_MOLTENVK=<moltenvk>
-   cpack --config build/macos/CPackConfig.cmake -B out   # out/ScarletNX-macos-arm64.zip
-   ```
-
-   `<moltenvk>` is the extracted `MoltenVK-macos.tar` of the
-   [Ryujinx MoltenVK release](https://github.com/V380-Ori/Ryujinx.MoltenVK/releases) that
-   `.github/workflows/build.yml` pins (`MOLTENVK_RELEASE`, with its SHA-256). **Do not leave it out.** Without it the
-   app has no MoltenVK, and on a Mac without Homebrew's it stops at startup with
-   `SDL could not open a Vulkan window: Failed to load Vulkan Portability library`. A game's folder gets the library
-   beside its copy of the runtime (`snx_deploy_runtime`), which is what the game's own process loads.
-
-CI's `macOS and iOS (arm64)` job builds the app on every push, and its zip, `ScarletNX-macos-arm64-<commit>.zip`,
-already has MoltenVK. The app is signed ad hoc, so a downloaded copy may need *Open* from the Finder's menu the first
-time (`xattr -cr ScarletNX.app` clears the quarantine). More on the frontend, the data folder, iOS and what is missing
-in [macOS and iOS](APPLE.md).
-
 ## Windows / PowerShell
 
 ```powershell
 & {
     $ErrorActionPreference = 'Stop'
-    git clone https://github.com/scarletnx/ScarletNX.git
+    git clone https://github.com/nxaevora/nxaevora-main.git
     if ($LASTEXITCODE) { throw 'Clone failed' }
-    Set-Location ScarletNX
+    Set-Location nxaevora-main/engine
     powershell -ExecutionPolicy Bypass -File scripts\bootstrap.ps1
     if ($LASTEXITCODE) { throw 'Bootstrap failed' }
     Set-ExecutionPolicy -Scope Process Bypass
@@ -246,7 +193,7 @@ in [macOS and iOS](APPLE.md).
     cmake --build build
     if ($LASTEXITCODE) { throw 'Build failed' }
 }
-# -> build\{scarletnx.exe,snx-shaderc.exe}
+# -> build\{nxaevora-engine.exe,snx-shaderc.exe}
 ```
 
 Each new shell, from the checkout:
@@ -260,7 +207,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 ## Windows / MSYS2 CLANG64
 
-The `windows` job in [build.yml](../.github/workflows/build.yml) builds this way. Clang, LLVM and the FFmpeg and
+The `windows` job in [ci.yml](../../.github/workflows/ci.yml) builds this way. Clang, LLVM and the FFmpeg and
 OpenSSL build tools come from MSYS2, not from `bootstrap.ps1`. Keep `env.ps1` out of this shell: llvm-mingw's C++
 runtime must not mix with another LLVM build.
 
@@ -277,16 +224,15 @@ runtime must not mix with another LLVM build.
      mingw-w64-clang-x86_64-glslang
    ```
 
-   Python builds the menu's languages; spirv-tools is only for the `shader_direct` test. CI also installs ccache, which
-   isn't needed here.
+   Python builds the menu's languages; spirv-tools is only for the `shader_direct` test.
 3. Clone to a path without spaces:
 
    ```sh
-   git clone --depth=1 https://github.com/scarletnx/ScarletNX.git
-   cd ScarletNX
+   git clone --depth=1 https://github.com/nxaevora/nxaevora-main.git
+   cd nxaevora-main/engine
    ```
 
-4. Configure and build. These are CI's options without its ccache and `-DSNX_DEPLOY=OFF` ones. They give
+4. Configure and build. These options give
    CMake the MSYS2 tools as Windows paths and build the pinned SDL3.
 
    ```sh
@@ -300,17 +246,16 @@ runtime must not mix with another LLVM build.
    cmake --build --preset default
    ```
 
-5. The executables land in `build/default`. CI checks them with:
+5. The executables land in `build/default`. Check them with:
 
    ```sh
-   build/default/scarletnx.exe --help
+   build/default/nxaevora-engine.exe --help
    ctest --test-dir build/default --output-on-failure
    ```
 
-6. Run `build/default/scarletnx.exe` from the CLANG64 shell, which has the DLLs it imports on PATH
+6. Run `build/default/nxaevora-engine.exe` from the CLANG64 shell, which has the DLLs it imports on PATH
    ([USAGE](USAGE.md)). For a copy that runs without MSYS2, `cmake --install build/default --prefix stage` puts
-   `scarletnx.exe` in `stage/bin`. Then copy the DLLs it imports from `/clang64/bin`, as CI's
-   "Bundle runtime DLLs and licenses" step does.
+   `nxaevora-engine.exe` in `stage/bin`. Then copy the DLLs it imports from `/clang64/bin`.
 
 ## Rebuild, deploy, cache
 
@@ -336,7 +281,7 @@ builds, so other trees and branches skip both. A change to any input is a new fo
 ## Build variants
 
 SDL3, Vulkan and FFmpeg are mandatory for the NX runtime, including when running with `-H`.
-There are no renderer or media-decoding disable options. Tools-only and GNUABI-only builds do not need them.
+There are no renderer or media-decoding disable options. Tools-only builds do not need them.
 
 Persistent per-build-dir options (POSIX examples):
 
@@ -348,7 +293,7 @@ cmake --preset default -B build -DSNX_FFMPEG_ASM=OFF && cmake --build build
 - `-DCPM_DOWNLOAD_SDL3=ON`: build the pinned SDL3 instead of using a system SDL3 development package.
 - `-DSNX_DEPLOY=OFF`: disable runtime deployment.
 - `-DSNX_TRACY=ON`: build the runtime with the pinned Tracy profiler client (default OFF). For development builds
-  only; not available on iOS. It turns `SNX_DEPLOY` off, since the profiling runtime must not be copied over a
+  only. It turns `SNX_DEPLOY` off, since the profiling runtime must not be copied over a
   game; the `tracy` preset sets both. See [profiling](DEVELOPMENT.md#profiling).
 - `-DSNX_RECOMPILED_DIR=/path`: override deployment dir (default: empty, the data folder's `recompiled/` the build
   tree's driver uses). `SNX_GAMES_DIR`, its name before, is still taken while it is empty, said as it configures. A
@@ -357,41 +302,37 @@ cmake --preset default -B build -DSNX_FFMPEG_ASM=OFF && cmake --build build
 - `-DSNX_DEPS_CACHE=/path`: reuse and publish finished FFmpeg and OpenSSL builds there (default: the environment's
   `SNX_DEPS_CACHE`, else none).
 - `-DSNX_BUILD_NX=OFF`: omit the Switch runtime (default ON).
-- `-DSNX_BUILD_GNUABI=OFF`: omit the CPU-only Linux AArch64 runtime, see [GNUABI.md](GNUABI.md) (default ON).
-- `-DSNX_BUILD_3DS=OFF`: omit the 3DS layer, see [3DS.md](3DS.md) (default ON).
 - `-DSNX_BUILD_GUI=OFF`: omit the SDL3 launcher. The default is ON when `SNX_BUILD_NX` is on and `SNX_TOOLS_ONLY`
   is not, OFF otherwise.
 - `-DSNX_TOOLS_ONLY=ON`: build the extraction/recompilation driver without the runtime, see below (default OFF).
 - `-DSNX_RECOMPILER_SHARED=ON`, `-DSNX_RECOMPILER_INSTALL=ON`: also build the recompiler as a shared library, and
   install the library, see [LIBRARY.md](LIBRARY.md) (defaults OFF and the value of `SNX_TOOLS_ONLY`).
-- `-DSNX_BUILD_TESTING=OFF`: leave the tests out whatever `BUILD_TESTING` says. ON by default when ScarletNX is the
+- `-DSNX_BUILD_TESTING=OFF`: leave the tests out whatever `BUILD_TESTING` says. ON by default when NXAevora Engine is the
   top-level project, OFF when another project adds it with CPM or `add_subdirectory` ([LIBRARY.md](LIBRARY.md)).
 
 Test options, read when `BUILD_TESTING` is on (CTest's default), all OFF by default:
 
 - `-DSNX_TEST_SANITIZERS=ON`: build the native tests, and the programs and libraries of the repository they run or
   link, with ASan and UBSan (`runtime_architecture` names one left out). The runtime is one, so it is not deployed.
-  CI's `Linux (x86_64, ASan + UBSan)` job runs the tests this way, with `LSAN_OPTIONS=use_stacks=0:use_registers=0`
+  Run the tests this way with `LSAN_OPTIONS=use_stacks=0:use_registers=0`
   so the leak check finds the same leaks on every machine.
 - `-DSNX_TEST_VULKAN=ON`: add the offscreen Vulkan integration tests, see below.
 - `-DSNX_TEST_VP9_VECTORS=ON`: add the `nvdec_vp9_*` tests, which run NVDEC's VP9 jobs on libvpx's test vectors;
-  configure downloads the 32 files from the WebM project into `CPM_SOURCE_CACHE` once. CI's Linux, ASan, Windows and
-  macOS jobs run them.
+  configure downloads the 32 files from the WebM project into `CPM_SOURCE_CACHE` once.
 - `-DSNX_TEST_A64_FP_DIFF=ON`: add the AArch64 FP differential test, which needs Python unicorn 2.1.4 and a native
   Linux host.
-- `-DSNX_TEST_ARM_AOT=ON`, `-DSNX_TEST_ARM_DIFF=ON`: the 3DS ARM11 witnesses and the A32 unicorn comparison, see
-  [3DS.md](3DS.md).
+- `-DSNX_TEST_ARM_AOT=ON`, `-DSNX_TEST_ARM_DIFF=ON`: the A57/Thumb witnesses and the A32 unicorn comparison.
 
 ```sh
 # Build without the GUI launcher; SDL3 remains required by the runtime:
 cmake --preset default -B build/headless-vk -DSNX_BUILD_GUI=OFF -DSNX_DEPLOY=OFF &&
 cmake --build build/headless-vk
 # Recompile a game folder, then run Vulkan without a display server, a surface or a swapchain:
-./build/headless-vk/scarletnx -r "/path/to/game folder" --outdir recompiled
-./build/headless-vk/scarletnx --game=recompiled/<id> -H
+./build/headless-vk/nxaevora-engine -r "/path/to/game folder" --outdir recompiled
+./build/headless-vk/nxaevora-engine --game=recompiled/<id> -H
 
 cmake --preset windows-cross && cmake --build --preset windows-cross
-# -> build/windows-cross/scarletnx.exe; requires llvm-mingw on PATH
+# -> build/windows-cross/nxaevora-engine.exe; requires llvm-mingw on PATH
 ```
 
 All NX builds use SDL3 and support `-H` at runtime. Omit the flag to run with a window.
@@ -421,7 +362,7 @@ Host tools only, without SDL/Vulkan/FFmpeg or Python:
 
 ```sh
 cmake --preset default -B build/tools -DSNX_TOOLS_ONLY=ON && cmake --build build/tools
-build/tools/scarletnx -r -h
+build/tools/nxaevora-engine -r -h
 ctest --test-dir build/tools --output-on-failure
 ```
 
@@ -430,12 +371,12 @@ development files are required: `llvm-config` finds them (`-DSNX_LLVM_CONFIG=/pa
 the configure stops without them on every platform, including Windows and cross-builds. There is no recompiler
 build without LLVM. Modules are built for the machine that builds them, with its instruction set
 extensions (build == host == target); nothing is detected at run time. Whole functions are batched into units of 90000
-instructions (20000 on Android; `--chunk`), with a progress line per compiled unit.
+instructions (`--chunk`), with a progress line per compiled unit.
 
 Recompilation deploys the
 running full runtime; the tools-only build creates one in its checkout's `build/native-recomp`, or accepts
 `--runtime FILE`. A build tree's programs work in the same data folder as an installed copy's: the user's
-(`~/.local/share/scarletnx`, `%APPDATA%\scarletnx` on Windows), and on Linux the XDG config, state and cache folders
+(`~/.local/share/nxaevora`, `%APPDATA%\nxaevora` on Windows), and on Linux the XDG config, state and cache folders
 hold its settings, logs and caches ([USAGE](USAGE.md#folders)). `--data DIR` before the command names another data
 folder, `--build-dir DIR` another build tree.
 The menu (`SNX_BUILD_GUI`) needs Python 3 to build its languages (`scripts/build-languages.py`,
@@ -448,7 +389,7 @@ cmake --install build --prefix stage
 # -> stage/bin/, stage/share/licenses/scarletnx/
 ```
 
-AppImage: run inside pkgforge's Arch container with `quick-sharun` ([CI setup](../.github/workflows/build.yml)), as
+AppImage: run inside pkgforge's Arch container with `quick-sharun`, as
 [Anylinux-AppImages](https://github.com/pkgforge-dev/Anylinux-AppImages) makes them; its
 [FAQ](https://github.com/pkgforge-dev/Anylinux-AppImages/blob/main/FAQ.md) is the reference, not the official AppImage
 documentation:
@@ -459,26 +400,21 @@ cmake --preset default -B build/appimage -DSNX_DEPLOY=OFF -DCMAKE_INSTALL_PREFIX
   -DLLVM_DIR="$HOME/linux-llvm/lib/cmake/llvm" -DSNX_A64_DISASM=OFF &&
 cmake --build build/appimage &&
 cmake --install build/appimage &&
-GITHUB_REPOSITORY=scarletnx/ScarletNX scripts/make-appimage.sh
+GITHUB_REPOSITORY=nxaevora/nxaevora-main scripts/make-appimage.sh
 # -> dist/ScarletNX-linux-<arch>.AppImage
 ```
 
 The AppImage links LLVM statically: `scripts/linux-llvm.sh ARCH PREFIX` builds the libraries the recompiler links and
 nothing else, with one code generator, the host's (a distribution's libLLVM is one library with every target). It
-takes the version in `LLVM_VERSION` (CI gives it the container's, whose `opt` prints the LLVM settings' pipelines),
-and with `SNX_SYSROOT` set it cross-builds for another architecture. `SNX_A64_DISASM=OFF` leaves out `scarletnx
+takes the version in `LLVM_VERSION`,
+and with `SNX_SYSROOT` set it cross-builds for another architecture. `SNX_A64_DISASM=OFF` leaves out `nxaevora-engine
 --mcp`'s A64 disassembler, which is for working on the runtime.
 
-`scarletnx` is every driver the build has (`src/multicall`): each driver is a library with no `main` of its own,
-and the program, whichever drivers are on (`SNX_BUILD_NX` among them), runs the one its name says, so LLVM, SDL and
-the code the drivers share are in it once. `scarletnx-switch`, `scarletnx-3ds`, `scarletnx-vita`, `scarletnx-gnuabi`
-and `scarletnx-agb` are links to it on Linux and macOS, made in the build folder and installed. Windows, whose zips
-keep no links, installs `scarletnx.exe` alone, which takes a driver's name as its first argument
-(`scarletnx.exe scarletnx-3ds ...`, how the launcher runs them); its build folder has hard links of those names, for
-the tests. Android's and iOS's apps start the program their own way.
+`nxaevora-engine` is the driver the build has (`src/multicall`): the driver is a library with no `main` of its own,
+and the program, when the driver is on (`SNX_BUILD_NX`), runs the one its name says, so LLVM, SDL and
+the code it shares are in it once. `nxaevora-engine-switch` is a link to it on Linux, made in the build folder
+and installed. Windows, whose zips keep no links, installs `nxaevora-engine.exe` alone, which takes the driver's name as
+its first argument (`nxaevora-engine.exe nxaevora-engine-switch ...`, how the launcher runs it); its build folder has a hard
+link of that name, for the tests.
 
-[Nightly AppImages](https://github.com/scarletnx/nightly/releases/latest), x86_64 and aarch64 · [Launch](USAGE.md).
-
-A pull request's own builds are linked from a comment on it once CI has built them.
-
-[Licenses/credits](CREDITS.md) · [Architecture](ARCHITECTURE.md) · [Roadmap](ROADMAP.md).
+[Licenses/credits](CREDITS.md) · [Architecture](ARCHITECTURE.md) · [Roadmap](../../ROADMAP.md).

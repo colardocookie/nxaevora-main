@@ -1,27 +1,12 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* nxaevora-engine's main, the program's only one: every driver the build has is a library linked into it, run by the
-   name the program was started under (scarletnx-3ds, scarletnx-vita, scarletnx-gnuabi, scarletnx-agb,
-   nxaevora-engine-switch: links beside it on Linux and macOS), or by that name as its first argument
-   (nxaevora-engine nxaevora-engine-switch ..., how the launcher runs them on Windows, which has no links). A game's
-   copy runs its driver too: a GBA game's, whose .ini says
-   system=gba, and a 3DS or Vita game's, named after its title ID. Any other name is the Switch driver, which takes a
-   game's copy's name for the game it runs, or in a build without it the one driver there is. One program carries
-   LLVM, SDL and the code they share once */
+/* nxaevora-engine's main, the program's only one: the Switch driver the build has is a library linked into it, run by
+   the name the program was started under (nxaevora-engine-switch: a link beside it on Linux), or by that name
+   as its first argument (nxaevora-engine nxaevora-engine-switch ..., how the launcher runs it on Windows, which has no
+   links). Any other name is the Switch driver, which takes a game's copy's name for the game it runs, or in a build
+   without it the one driver there is. One program carries LLVM, SDL and the code they share once */
 #ifdef SNX_MULTICALL_SWITCH
 #include "nx/runtime/entry.h"
-#endif
-#ifdef SNX_MULTICALL_3DS
-#include "3ds/runtime/main.h"
-#endif
-#ifdef SNX_MULTICALL_GNUABI
-#include "gnuabi/runtime/main.h"
-#endif
-#ifdef SNX_MULTICALL_VITA
-#include "vita/runtime/main.h"
-#endif
-#ifdef SNX_MULTICALL_AGB
-#include "agb/runtime/main.h"
 #endif
 #if defined(SNX_MULTICALL_GUI) && defined(_WIN32)
 #include "gui/gui.h"
@@ -30,15 +15,6 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
-#if defined(__APPLE__)
-#include <TargetConditionals.h>
-#if TARGET_OS_IOS
-/* UIKit's app is SDL's: this makes the main below SDL_main, run from the real main SDL provides, which starts the app
-   (UIApplicationMain) whose run loop the menu's window needs. Without it SDL_Init fails with "Application didn't
-   initialize properly" and the screen stays black */
-#include <SDL3/SDL_main.h>
-#endif
-#endif
 
 typedef struct {
     const char* name;                 /* its program's name, the link's */
@@ -46,21 +22,8 @@ typedef struct {
     bool (*copy)(const char* argv0); /* whether the program started as argv0 is a copy of one of its games */
 } Driver;
 
-/* first the GBA's, as cmake/deploy.cmake reads a game's .ini before its name: a GBA game is named after its ROM, any
-   name. The Switch's last, every other name's */
+/* the Switch's, every name's */
 static const Driver drivers[] = {
-#ifdef SNX_MULTICALL_AGB
-    {"scarletnx-agb", snx_agb_main, snx_agb_game_name},
-#endif
-#ifdef SNX_MULTICALL_3DS
-    {"scarletnx-3ds", snx_ctr_main, snx_ctr_title_name},
-#endif
-#ifdef SNX_MULTICALL_VITA
-    {"scarletnx-vita", snx_vita_main, snx_vita_title_name},
-#endif
-#ifdef SNX_MULTICALL_GNUABI
-    {"scarletnx-gnuabi", snx_gnuabi_main, NULL},
-#endif
 #ifdef SNX_MULTICALL_SWITCH
     {SNX_SWITCH_DRIVER, snx_switch_main, NULL},
 #endif
@@ -87,7 +50,6 @@ static const Driver* named(const char* path) {
 static int has_driver(const char* name) { return named(name) != NULL; }
 #endif
 
-/* Android's game activity finds it by name in libscarletnx.so (nx/runtime/platform/android_run.c does the same) */
 __attribute__((visibility("default"))) int main(int argc, char** argv);
 
 int main(int argc, char** argv) {

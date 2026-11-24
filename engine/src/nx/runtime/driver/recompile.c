@@ -7,25 +7,38 @@
 #include "nx/loader/module.h"
 #include "nx/loader/module_llvm.h"
 #include "common/cpu/recompiler/llvm/ir.h"
-
-/* the triple of the iOS app's code: Darwin's calling convention and the generic AArch64 CPU, in the object format the
-   JIT loader reads (recompiler/llvm/ir.c's host_triple). The version only names the ABI */
-#define SNX_IOS_TRIPLE "arm64-apple-ios16.0-elf"
 #include "nx/runtime/driver/toolchain.h"
 #include "snx_settings.h"
 #include "common/utilities/build_info.h"
+#include "common/utilities/exit_codes.h"
 #include "common/utilities/mods.h"
 #include "common/utilities/patches.h"
+#include "common/utilities/progress.h"
 #include <ctype.h>
 #include <errno.h>
 #include <limits.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* the optimization levels that opt takes, its words in settings.txt */
+#define SNX_OPT_LEVELS "0123sz"
 
 const IniOpt* snx_recompile_setting(const char* key) {
     const IniOpt* o = ini_find(g_recompile_ini, key);
     if (!o) o = ini_find(g_llvm_ini, key);
     return o ? o : ini_find(g_recompile_game_ini, key);
+}
+/* opt is a text row, so ini_check alone takes any short text; its words are checked here, and the play path calls this
+   function too */
+int snx_recompile_value_taken(const IniOpt* o, const char* value, char* out, size_t n) {
+    if (ini_check(o, value, out, n)) return 0;
+    if (!strcmp(o->key, "opt")) {
+        if (strlen(value) == 1 && strchr(SNX_OPT_LEVELS, value[0])) return 1;
+        snprintf(out, n, "opt = %s: not 0, 1, 2, 3, s or z", value);
+        return 0;
+    }
+    return 1;
 }
 static void usage(void) {
     puts("Usage: nxaevora-engine -r INPUT [NAME] [OPTIONS]\n"
@@ -41,7 +54,6 @@ static void usage(void) {
            "                         unit_instructions\n",
            g_settings.unit_size);
     puts("  --target auto|linux|win64  The host only: modules are built for the machine that builds them\n"
-         "  --target ios           A pack of objects for the iOS app, which loads them into JIT memory (docs/APPLE.md)\n"
          "  --no-build             Stage data/INI only, generate no code");
     puts("  --jit-only             Generate no code: the runtime JIT compiles all of it\n"
          "  --runtime FILE         Deploy this runtime instead of building one\n"
@@ -104,7 +116,7 @@ static int copy_dlls(const char* run, const char* out) {
 int snx_deploy_runtime(const char* run, const char* exe) {
     char* tmp = snx_format("%s.tmp", exe);
     int rc;
-#if defined(_WIN32) || defined(__APPLE__)
+#ifdef _WIN32
     char* folder = snx_dirname(exe); /* what a program loads from its own folder goes beside it before it does */
 #endif
 #ifdef _WIN32
@@ -116,22 +128,10 @@ int snx_deploy_runtime(const char* run, const char* exe) {
         return rc;
     }
 #endif
-#if defined(__APPLE__) && !defined(SNX_IOS)
-    /* MoltenVK, the Vulkan driver the app carries in its Frameworks: a game's copy of the runtime plays outside the
-       bundle, where SDL finds neither the app's Frameworks nor a system loader (docs/APPLE.md). A copy the disk refuses
-       (a game folder on a read-only image) is said, and no reason to refuse the run: the system's loader may serve it */
-    if (folder) snx_deploy_vulkan_driver(run, folder);
-#endif
-#if defined(_WIN32) || defined(__APPLE__)
+#ifdef _WIN32
     free(folder);
 #endif
-#ifdef __ANDROID__
-    /* the shared storage runs nothing (the game runs on the app's own runtime), and before Android 11 it refuses a
-       mode change: there the copy only marks the recompile done */
-    rc = snx_copy_file(run, tmp) || snx_replace(tmp, exe);
-#else
     rc = snx_copy_file(run, tmp) || snx_make_executable(tmp) || snx_replace(tmp, exe);
-#endif
     if (rc) {
         snx_error("cannot deploy the runtime %s to %s", run, exe);
         if (snx_is_file(tmp)) snx_remove_tree(tmp);
@@ -287,6 +287,11 @@ static int patch_modules(SnxProgram* program, const char* mods, const char* off,
     snx_free_strings(patches, count);
     return rc;
 }
+/* 1 for --progress=value, the option of the JSON Lines stream (progress.h) */
+static int is_progress_option(const char* arg) {
+    return !strncmp(arg, "--progress=", 11) || !strcmp(arg, "--progress");
+}
+
 int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
     const char *input = NULL, *name = NULL, *outdir = NULL, *runtime = NULL, *target = "auto", *jit_cache = NULL, *arg,
                *value;
@@ -301,7 +306,7 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
     char error[1024], option[64], why[256];
     const char* equal;
     size_t option_size;
-    int i, rc = 1, ios = 0, no_build = 0, keep_c = 0, host_win = 0, positional = 0;
+    int i, rc = SNX_EXIT_RECOMPILE, no_build = 0, keep_c = 0, host_win = 0, positional = 0;
     memset(&compile, 0, sizeof(compile));
     memset(&gen, 0, sizeof(gen));
     memset(&program, 0, sizeof(program));
@@ -317,13 +322,15 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
                 input = arg;
             else if (!name)
                 name = arg;
-            else
-                return snx_error("unexpected argument: %s", arg);
+            else {
+                snx_error("unexpected argument: %s", arg);
+                return SNX_EXIT_USAGE;
+            }
             continue;
         }
         if (!strcmp(arg, "--help") || !strcmp(arg, "-h")) {
             usage();
-            return 0;
+            return SNX_EXIT_OK;
         }
         if (!strcmp(arg, "--")) {
             positional = 1;
@@ -343,34 +350,56 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
         } else if (!strcmp(arg, "--quiet") || !strcmp(arg, "-q"))
             compile.quiet = gen.quiet = 1;
         else if (arg[0] == '-') {
+            if (is_progress_option(arg)) {
+                int mode = snx_progress_parse(arg);
+                if (mode < 0) {
+                    snx_error("%s: not jsonl", arg);
+                    return SNX_EXIT_USAGE;
+                }
+                if (snx_progress_open(mode)) return SNX_EXIT_INTERNAL;
+                continue;
+            }
             value = NULL;
             if (arg[1] == 'O' && arg[2]) {
                 value = arg + 2;
                 arg = "-O";
             } else if ((equal = strchr(arg, '=')) != NULL) {
                 option_size = (size_t)(equal - arg);
-                if (option_size >= sizeof(option))
-                    return snx_error("unknown option: %s (scarletnx -r -h lists them)", arg);
+                if (option_size >= sizeof(option)) {
+                    snx_error("unknown option: %s (scarletnx -r -h lists them)", arg);
+                    return SNX_EXIT_USAGE;
+                }
                 memcpy(option, arg, option_size);
                 option[option_size] = 0;
                 value = equal + 1;
                 arg = option;
                 if (arg[1] == '-' && snx_recompile_setting(arg + 2)) {
                     const IniOpt* o = snx_recompile_setting(arg + 2);
-                    if (ini_check(o, value, error, sizeof error)) return snx_error("%s", error);
+                    if (!snx_recompile_value_taken(o, value, error, sizeof error)) {
+                        snx_error("%s", error);
+                        return SNX_EXIT_USAGE;
+                    }
                     ini_read(o, value);
                     continue;
                 }
             }
             if (strcmp(arg, "-o") && strcmp(arg, "--name") && strcmp(arg, "--out") && strcmp(arg, "--outname") &&
                 strcmp(arg, "--outdir") && strcmp(arg, "--runtime") && strcmp(arg, "--target") && strcmp(arg, "-O") &&
-                strcmp(arg, "--jobs") && strcmp(arg, "--chunk") && strcmp(arg, "--jit-cache"))
-                return snx_error("unknown option: %s (scarletnx -r -h lists them)", arg);
+                strcmp(arg, "--jobs") && strcmp(arg, "--chunk") && strcmp(arg, "--jit-cache")) {
+                snx_error("unknown option: %s (scarletnx -r -h lists them)", arg);
+                return SNX_EXIT_USAGE;
+            }
             if (!value) {
-                if (++i == argc) return snx_error("%s requires a value", arg);
+                if (++i == argc) {
+                    snx_error("%s requires a value", arg);
+                    return SNX_EXIT_USAGE;
+                }
                 value = argv[i];
             }
-            if (!*value) return snx_error("%s requires a nonempty value", arg);
+            if (!*value) {
+                snx_error("%s requires a nonempty value", arg);
+                return SNX_EXIT_USAGE;
+            }
             if (!strcmp(arg, "-o") || !strcmp(arg, "--out") || !strcmp(arg, "--outname"))
                 snx_option_renamed(!strcmp(arg, "-o") ? "-o" : !strcmp(arg, "--out") ? "--out" : "--outname", "--name");
             if (!strcmp(arg, "-o") || !strcmp(arg, "--name") || !strcmp(arg, "--out") || !strcmp(arg, "--outname"))
@@ -382,33 +411,41 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
             else if (!strcmp(arg, "--target"))
                 target = value;
             else if (!strcmp(arg, "-O")) {
-                if (strlen(value) != 1 || !strchr("0123sz", value[0]))
-                    return snx_error("-O %s: not 0, 1, 2, 3, s or z", value);
+                if (strlen(value) != 1 || !strchr("0123sz", value[0])) {
+                    snx_error("-O %s: not 0, 1, 2, 3, s or z", value);
+                    return SNX_EXIT_USAGE;
+                }
                 strcpy(g_settings.optimization_level, value);
             } else if (!strcmp(arg, "--jobs")) {
                 g_settings.aot_threads = (int)number(value, 1024);
-                if (!g_settings.aot_threads) return snx_error("--jobs %s: not a whole number from 1 to 1024", value);
+                if (!g_settings.aot_threads) {
+                    snx_error("--jobs %s: not a whole number from 1 to 1024", value);
+                    return SNX_EXIT_USAGE;
+                }
             } else if (!strcmp(arg, "--jit-cache")) {
                 jit_cache = value;
             } else {
                 g_settings.unit_size = (int)number(value, INT_MAX);
-                if (!g_settings.unit_size)
-                    return snx_error("--chunk %s: not a whole number of instructions from 1", value);
+                if (!g_settings.unit_size) {
+                    snx_error("--chunk %s: not a whole number of instructions from 1", value);
+                    return SNX_EXIT_USAGE;
+                }
             }
         } else if (!input)
             input = arg;
         else if (!name)
             name = arg;
-        else
-            return snx_error("unexpected argument: %s", arg);
+        else {
+            snx_error("unexpected argument: %s", arg);
+            return SNX_EXIT_USAGE;
+        }
     }
     if (!input) {
         usage();
-        return 2;
+        return SNX_EXIT_USAGE;
     }
-    /* the settings, whichever way they came: -O and --jobs, or --opt= and --aot_threads= as the launcher passes them */
-    if (strlen(g_settings.optimization_level) != 1 || !strchr("0123sz", g_settings.optimization_level[0]))
-        return snx_error("opt = %s: not 0, 1, 2, 3, s or z", g_settings.optimization_level);
+    snx_progress_stage(SNX_PROGRESS_STAGE_INPUT);
+    /* opt's value was checked as it was read: -O's own check, or --opt's snx_recompile_value_taken */
     compile.opt = g_settings.optimization_level;
     gen.chunk_instrs = (size_t)g_settings.unit_size;
     compile.jobs = g_settings.aot_threads > 0 ? (unsigned)g_settings.aot_threads : snx_cpu_count();
@@ -416,18 +453,25 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
         compile.target_win = 1;
     else if (!strcmp(target, "linux"))
         compile.target_win = 0;
-    else if (!strcmp(target, "ios"))
-        ios = 1;
-    else if (strcmp(target, "auto"))
-        return snx_error("--target %s: not auto, linux, win64 or ios", target);
+    else if (strcmp(target, "auto")) {
+        snx_error("--target %s: not auto, linux or win64", target);
+        return SNX_EXIT_USAGE;
+    }
     /* The backends write the module for the machine they run on (build == host == target) */
-    if (compile.target_win != host_win)
-        return snx_error("--target %s: modules are built for this host only (%s)", target,
-                         host_win ? "win64" : "linux");
+    if (compile.target_win != host_win) {
+        snx_error("--target %s: modules are built for this host only (%s)", target,
+                  host_win ? "win64" : "linux");
+        return SNX_EXIT_USAGE;
+    }
     gen.abi = snx_game_abi();
     /* an encrypted dump is refused: an ExeFS folder or an NRO is an input */
-    if (snx_refuse_encrypted_dump(input)) return 1;
-    if (snx_load_program(input, &program, error, sizeof(error))) return snx_error("%s", error);
+    if (snx_refuse_encrypted_dump(input)) return SNX_EXIT_GAME_FILES;
+    if (snx_load_program(input, &program, error, sizeof(error))) {
+        snx_error("%s", error);
+        return SNX_EXIT_GAME_FILES;
+    }
+    snx_progress_done(SNX_PROGRESS_STAGE_INPUT);
+    snx_progress_stage(SNX_PROGRESS_STAGE_RECOMPILE);
     title = snx_game_shown(name, &program);
     game = snx_game_name(name, &program.npdm, program.entry_path);
     out = outdir ? snx_absolute(outdir) : snx_recompiled_dir(paths->repo);
@@ -438,6 +482,7 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
     if ((program.romfs_path && snx_path_within(out, program.romfs_path)) ||
         (program.exefs_path && snx_path_within(out, program.exefs_path))) {
         snx_error("%s must be outside the input ExeFS/RomFS", out);
+        rc = SNX_EXIT_USAGE;
         goto done;
     }
     if (snx_mkdirs(out)) {
@@ -464,6 +509,7 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
         snx_free_program(&program);
         if (snx_load_program_mods(input, mod_names, mod_files, mod_count, &program, error, sizeof error)) {
             snx_error("%s", error);
+            rc = SNX_EXIT_GAME_FILES;
             goto done;
         }
         if (!compile.quiet)
@@ -522,18 +568,14 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
         if (failed) goto done;
     }
     if (no_build) {
-        rc = 0;
+        snx_progress_done(SNX_PROGRESS_STAGE_RECOMPILE);
+        rc = SNX_EXIT_OK;
         goto done;
     }
-    if (ios && !program.npdm.is64) {
-        snx_error("--target ios: 32-bit games are not supported yet");
-        goto done;
-    }
-    code = ios ? snx_format("%s_code.snxobj", base) : snx_format("%s_code.%s", base, compile.target_win ? "dll" : "so");
+    code = snx_format("%s_code.%s", base, compile.target_win ? "dll" : "so");
     {
         char *kept = keep_c ? snx_format("%s_build", base) : NULL, *units = NULL;
         llvm.output = code;
-        llvm.triple = ios ? SNX_IOS_TRIPLE : NULL;
         llvm.opt = compile.opt[0];
         snx_ir_slp_vectorizer(g_settings.slp_vectorizer);
         snx_ir_fpsr_flags(g_settings.fpsr_flags);
@@ -572,11 +614,8 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
         free(units);
         if (i) goto done;
     }
-    if (ios) { /* the iOS app is the runtime: only the code is made here */
-        if (!compile.quiet) printf("Built %s\n", code);
-        rc = 0;
-        goto done;
-    }
+    snx_progress_done(SNX_PROGRESS_STAGE_RECOMPILE);
+    snx_progress_stage(SNX_PROGRESS_STAGE_BUILD);
     if (runtime) run = snx_absolute(runtime);
 #ifdef SNX_WITH_RUNTIME
     else if (host_win == compile.target_win)
@@ -612,7 +651,8 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
         }
     }
     if (!compile.quiet) printf("Built %s\n", exe);
-    rc = 0;
+    snx_progress_done(SNX_PROGRESS_STAGE_BUILD);
+    rc = SNX_EXIT_OK;
 done:
     snx_free_program(&program);
     snx_free_strings(mod_names, mod_count);

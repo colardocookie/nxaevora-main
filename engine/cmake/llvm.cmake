@@ -6,10 +6,9 @@ include("${CMAKE_CURRENT_LIST_DIR}/llvm_components.cmake")
 # scarletnx --mcp's A64 disassembler (src/nx/runtime/driver/disasm.c), where LLVM has the AArch64 target. A release
 # leaves it out: it is for working on the runtime, and a static LLVM then links no AArch64 code into a host of another
 option(SNX_A64_DISASM "Build scarletnx --mcp's A64 disassembler, where LLVM has the AArch64 target" ON)
-if(ANDROID OR IOS OR (LLVM_DIR AND NOT SNX_LLVM_CONFIG))
-    # Android's and iOS's LLVM (scripts/android-llvm.sh, scripts/apple-llvm.sh) have an llvm-config that only runs on the
-    # device, and the Mac's from scripts/apple-llvm.sh and Linux's from scripts/linux-llvm.sh none: their CMake package
-    # instead, named by LLVM_DIR
+if(LLVM_DIR AND NOT SNX_LLVM_CONFIG)
+    # a Linux build's LLVM from scripts/linux-llvm.sh has no llvm-config that runs on the build machine: its CMake
+    # package instead, named by LLVM_DIR
     find_package(LLVM REQUIRED CONFIG)
     llvm_map_components_to_libnames(SNX_LLVM_LIBS ${SNX_LLVM_COMPONENTS})
     if(SNX_A64_DISASM AND "AArch64" IN_LIST LLVM_TARGETS_TO_BUILD AND TARGET LLVMAArch64Disassembler)
@@ -54,7 +53,7 @@ if(NOT SNX_LLVM_VERSION OR NOT EXISTS "${SNX_LLVM_INCLUDE_DIR}/llvm-c/Core.h" OR
                         "installation. Check its headers and libraries or select another SNX_LLVM_CONFIG.")
 endif()
 separate_arguments(SNX_LLVM_LIBS UNIX_COMMAND "${SNX_LLVM_LIBS}")
-# a distribution's libLLVM, whose own dependencies the program's search path has to find (src/3ds)
+# a distribution's libLLVM, whose own dependencies the program's search path has to find (the runtime)
 execute_process(COMMAND "${SNX_LLVM_CONFIG}" --shared-mode OUTPUT_VARIABLE snx_llvm_mode OUTPUT_STRIP_TRAILING_WHITESPACE
                 ERROR_QUIET)
 if(snx_llvm_mode STREQUAL "shared")

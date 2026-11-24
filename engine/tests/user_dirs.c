@@ -49,8 +49,7 @@ int main(void) {
     char *root = snx_temp_dir(NULL), *home, *dir[4], *base, *games, *path;
     int kind;
     assert(root);
-    /* the folder as the functions name it, links resolved: macOS's temporary folder is under /var, a link to
-       /private/var */
+    /* the folder as the functions name it, links resolved */
     {
         char* real = realpath(root, NULL);
         assert(real);
