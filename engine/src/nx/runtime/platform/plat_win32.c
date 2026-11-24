@@ -11,6 +11,7 @@
 #include <SDL3/SDL_thread.h>
 #include <errno.h>
 #include <io.h>
+#include <psapi.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -39,8 +40,20 @@ static void timer_period_1ms(void) {
 
 /* ================================================================ condition variables */
 void pc_init(PCond* c) { InitializeConditionVariable(&c->c); }
-void pc_signal(PCond* c) { WakeConditionVariable(&c->c); }
-void pc_broadcast(PCond* c) { WakeAllConditionVariable(&c->c); }
+/* the wait hook (PERF-32) times the call: a wake that finds a sleeper is a system call */
+#define PC_WAKE_TIMED(call)                                                                                            \
+    do {                                                                                                               \
+        const PmWaitHook* h = __atomic_load_n(&g_pm_hook, __ATOMIC_ACQUIRE);                                           \
+        if (!h) {                                                                                                      \
+            call;                                                                                                      \
+            break;                                                                                                     \
+        }                                                                                                              \
+        const u64 t0 = h->now();                                                                                       \
+        call;                                                                                                          \
+        h->note(PMW_WAKE, __builtin_return_address(0), h->now() - t0);                                                 \
+    } while (0)
+void pc_signal(PCond* c) { PC_WAKE_TIMED(WakeConditionVariable(&c->c)); }
+void pc_broadcast(PCond* c) { PC_WAKE_TIMED(WakeAllConditionVariable(&c->c)); }
 static int cond_wait(PCond* c, PMutex* m, i64 timeout_ns) {
     DWORD ms = INFINITE;
     if (timeout_ns >= 0) {
@@ -56,9 +69,12 @@ static int cond_wait(PCond* c, PMutex* m, i64 timeout_ns) {
 /* the wait noted while it lasts, for a hang report (pm_waits) */
 int pc_wait(PCond* c, PMutex* m, i64 timeout_ns) {
     int r;
+    const PmWaitHook* h = __atomic_load_n(&g_pm_hook, __ATOMIC_ACQUIRE);
+    const u64 t0 = h ? h->now() : 0;
     pm_wait_note(m, __builtin_return_address(0), 1);
     r = cond_wait(c, m, timeout_ns);
     pm_wait_note(NULL, NULL, 0);
+    if (h) h->note(PMW_COND, __builtin_return_address(0), h->now() - t0);
     return r;
 }
 
@@ -144,7 +160,12 @@ void plat_system_info(char* out, size_t cap) {
              (unsigned long)GetActiveProcessorCount(ALL_PROCESSOR_GROUPS),
              (unsigned long long)((m.ullTotalPhys + (512ull << 20)) >> 30));
 }
-void plat_yield(void) { SwitchToThread(); }
+void plat_yield(void) {
+    const PmWaitHook* h = __atomic_load_n(&g_pm_hook, __ATOMIC_ACQUIRE); /* PERF-32 */
+    const u64 t0 = h ? h->now() : 0;
+    SwitchToThread();
+    if (h) h->note(PMW_YIELD, __builtin_return_address(0), h->now() - t0);
+}
 void plat_exit_now(int code) {
     fflush(NULL);
     /* not ExitProcess: DLL detach code (the video driver's) can wait on a lock one of the stopped threads held */
@@ -202,6 +223,18 @@ u8* plat_vm_reserve(u64 size) {
         errno = why == ERROR_NOT_ENOUGH_MEMORY || why == ERROR_COMMITMENT_LIMIT ? ENOMEM : EINVAL;
     }
     return (u8*)p;
+}
+
+void plat_thread_cpu(u64* kernel_ns, u64* user_ns) {
+    FILETIME created, exited, k, u;
+    *kernel_ns = *user_ns = 0;
+    if (!GetThreadTimes(GetCurrentThread(), &created, &exited, &k, &u)) return;
+    *kernel_ns = ((u64)k.dwHighDateTime << 32 | k.dwLowDateTime) * 100; /* 100 ns units */
+    *user_ns = ((u64)u.dwHighDateTime << 32 | u.dwLowDateTime) * 100;
+}
+u64 plat_page_faults(void) {
+    PROCESS_MEMORY_COUNTERS info;
+    return GetProcessMemoryInfo(GetCurrentProcess(), &info, sizeof info) ? (u64)info.PageFaultCount : 0;
 }
 
 int plat_ww_scan(u8* p, u64 size, void (*cb)(u8* p, u64 size)) {

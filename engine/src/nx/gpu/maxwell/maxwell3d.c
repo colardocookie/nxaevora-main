@@ -9,6 +9,7 @@
    GPU-side writes the renderer's caches check */
 #include "nx/gpu/maxwell/engines_int.h"
 #include "nx/gpu/maxwell/write_pages.h"
+#include "nx/gpu/perf_times.h"
 #include "nx/hle/services/nvdrv.h"
 
 /* ------------------------------------------------------------ the record of GPU-side writes */
@@ -49,37 +50,64 @@ static void guest_runs(u64 gva, u64 size, int (*fn)(u64 cpu, u64 n, void* ctx), 
         left -= n;
     }
 }
-static void stamp_alias(void* ctx, u64 gva, u64 n) { write_pages_stamp(&g_wgpu, gva, n, *(const u64*)ctx); }
+/* a stamp and who made it (PSK_*): SNX_ARCEUS_PERF_TIMES keeps it to the byte too (PERF-23), as stamped, and at 2
+   also, but for a result's whole binding, as written. A landed run (PSK_LANDED) is the probe's alone, stamps nothing */
+typedef struct {
+    u64 gen;
+    int kind;
+} Stamp;
+static void stamp_gpu(u64 gva, u64 n, const Stamp* s) {
+    if (s->kind != PSK_LANDED) write_pages_stamp(&g_wgpu, gva, n, s->gen);
+    if (!g_perf_times) return;
+    if (s->kind != PSK_LANDED) perf_stamp_add(&g_perf_stamps, gva, n, s->gen, s->kind);
+    if (s->kind != PSK_RESULT && g_perf_times > 1) perf_stamp_add(&g_perf_real, gva, n, s->gen, s->kind);
+}
+static void stamp_alias(void* ctx, u64 gva, u64 n) { stamp_gpu(gva, n, ctx); }
 /* guest memory written: the GPU pages showing it */
-static void stamp_cpu(u64 cpu, u64 n, u64 gen) {
-    gmmu_aliases(cpu, n, stamp_alias, &gen);
-    if (wcheck_on()) write_pages_stamp(&g_wcpu, cpu, n, gen);
+static void stamp_cpu(u64 cpu, u64 n, const Stamp* s) {
+    gmmu_aliases(cpu, n, stamp_alias, (void*)s);
+    if (s->kind != PSK_LANDED && wcheck_on()) write_pages_stamp(&g_wcpu, cpu, n, s->gen);
 }
 static int stamp_run(u64 cpu, u64 n, void* ctx) {
-    stamp_cpu(cpu, n, *(const u64*)ctx);
+    stamp_cpu(cpu, n, ctx);
     return 0;
 }
-void gpu_mem_written(u64 gva, u64 size) {
-    u64 gen;
+static void mem_written(u64 gva, u64 size, int kind) {
     if (!size) return;
     pm_lock(&g_wlk);
-    gen = g_wgen + 1;
-    write_pages_stamp(&g_wgpu, gva, size, gen);
-    guest_runs(gva, size, stamp_run, &gen);
-    __atomic_store_n(&g_wgen, gen, __ATOMIC_RELEASE);
+    Stamp s = {g_wgen + 1, kind};
+    stamp_gpu(gva, size, &s);
+    guest_runs(gva, size, stamp_run, &s);
+    if (kind != PSK_LANDED) __atomic_store_n(&g_wgen, s.gen, __ATOMIC_RELEASE);
     pm_unlock(&g_wlk);
 }
-void gpu_mem_written_shader(u64 gva, u64 size) { gpu_mem_written(gva, size); }
+void gpu_mem_written(u64 gva, u64 size) { mem_written(gva, size, PSK_GPU); }
+int (*gpu_lock_mine)(void);
+void gpu_mem_written_shader(u64 gva, u64 size) { mem_written(gva, size, PSK_RESULT); }
+void gpu_mem_landed(u64 gva, u64 size) {
+    if (g_perf_times > 1) mem_written(gva, size, PSK_LANDED); /* the next generation, which the result's stamp takes */
+}
+/* PERF-23: perf_stamp_ask under the writers' lock. A write the page table couldn't hold, or every page written at
+   once (gpu_mem_written_all), leaves no definite answer for what was asked since before it */
+int gpu_mem_written_ask(u64 since, int real, u64 a, u64 sz, int* outside, unsigned* kinds) {
+    pm_lock(&g_wlk);
+    int r = perf_stamp_ask(real ? &g_perf_real : &g_perf_stamps, since, a, sz, outside, kinds);
+    if (r == PSA_NONE && __atomic_load_n(&g_wgpu.overflow, __ATOMIC_ACQUIRE) > since) r = PSA_UNKNOWN;
+    pm_unlock(&g_wlk);
+    return r;
+}
 void gpu_mem_written_cpu(u64 cpu, u64 size) {
-    u64 gen;
     if (!size) return;
     pm_lock(&g_wlk);
-    gen = g_wgen + 1;
-    stamp_cpu(cpu, size, gen);
-    __atomic_store_n(&g_wgen, gen, __ATOMIC_RELEASE);
+    Stamp s = {g_wgen + 1, PSK_PUBLISH};
+    stamp_cpu(cpu, size, &s);
+    __atomic_store_n(&g_wgen, s.gen, __ATOMIC_RELEASE);
     pm_unlock(&g_wlk);
 }
-u64 gpu_mem_generation(void) { return __atomic_load_n(&g_wgen, __ATOMIC_ACQUIRE); }
+u64 gpu_mem_generation(void) {
+    if (g_perf_probes && gpu_lock_mine && !gpu_lock_mine()) perf_stamp_read(&g_perf_handoff, 0); /* PERF-34 */
+    return __atomic_load_n(&g_wgen, __ATOMIC_ACQUIRE);
+}
 /* a save state's load: every page reads as written after anything asked before, through the tables' overflow, which
    covers every page */
 void gpu_mem_written_all(void) {
@@ -106,6 +134,7 @@ static int dirty_run(u64 cpu, u64 n, void* ctx) {
    one game */
 int gpu_mem_dirty_since(u64 since, u64 a, u64 sz) {
     DirtyAsk q;
+    if (g_perf_probes && gpu_lock_mine && !gpu_lock_mine()) perf_stamp_read(&g_perf_handoff, 0); /* PERF-34 */
     if (!sz || since >= __atomic_load_n(&g_wgen, __ATOMIC_ACQUIRE)) return 0;
     if (write_pages_since(&g_wgpu, since, a, sz)) return 1;
     if (!wcheck_on()) return 0;

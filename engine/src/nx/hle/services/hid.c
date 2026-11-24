@@ -15,6 +15,10 @@
 #include "nx/hle/services/hid_layout.h"
 #include "nx/hle/services/hid_motion.h"
 #include "nx/runtime/clock.h"
+#include "nx/runtime/platform/log.h"
+#include "nx/runtime/platform/plat.h"
+#include "nx/runtime/platform/unattended.h"
+#include "nx/gpu/frame_log.h"
 
 #include "hle/services/hid.swipc.inc"
 
@@ -412,6 +416,12 @@ void hid_update(void) {
         default: break;
         }
     }
+    /* SNX_ARCEUS_LATENCY_PROBE (gpu/frame_log.h): t0 is the first update whose pushed state carries a newly pressed
+       scripted button, the first state the guest can read with it. The scripted buttons came in this thread's poll */
+    if (g_latency_probe && latency_input(&g_latency, unattended_last_buttons(), plat_ns()))
+        LOG("arceus-latency: t0 at_us=%llu mask=%llx sample=%llu\n",
+            (unsigned long long)(__atomic_load_n(&g_latency.t0, __ATOMIC_RELAXED) / 1000),
+            (unsigned long long)g_latency.mask, (unsigned long long)g_hle.hid.samp);
     /* the touch screen, and the devices nothing drives here, which only count their samples */
     hid_touch_sample(&g_hle.hid.fingers, &touch, g_hle.hid.samp, other);
     hid_lifo_push(shm + HO_HidSharedMemory_touchscreen + HO_HidTouchScreenSharedMemoryFormat_lifo,

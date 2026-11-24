@@ -319,6 +319,7 @@ void dma_snap_staged_free(DmaStaged* d);
 /* maxwell3d.c: the record of GPU-side writes. Each write stamps a new generation on the pages it covers, by GPU
    address and by the guest pages behind them */
 void gpu_mem_written(u64 gva, u64 size);
+extern int (*gpu_lock_mine)(void); /* the renderer's: whether this thread holds its lock (PERF-34's probe) */
 void gpu_mem_written_shader(u64 gva, u64 size); /* a shader's result landing in guest memory */
 /* guest CPU bytes [cpu, cpu + size) written by an engine that doesn't go through the GPU's address space (VIC's
    picture, published over them, memory/own.c): what is built from them checks them again */
@@ -326,6 +327,10 @@ void gpu_mem_written_cpu(u64 cpu, u64 size);
 u64 gpu_mem_generation(void);                   /* the last generation fully published */
 void gpu_mem_written_all(void); /* a save state's load: every page written, after anything asked before */
 int gpu_mem_dirty_since(u64 since, u64 a, u64 sz); /* a GPU-side write after since touched [a, a + sz) */
+/* SNX_ARCEUS_PERF_TIMES (PERF-23): whether a byte of [a, a + sz) was written after since (perf_times.h's PSA_*), as
+   stamped or (real) as written, and a run of a result's bytes that changed, for the record as written only */
+int gpu_mem_written_ask(u64 since, int real, u64 a, u64 sz, int* outside, unsigned* kinds);
+void gpu_mem_landed(u64 gva, u64 size);
 
 /* ---- gpu.c: GPFIFO submission and the GPU thread's queue */
 void gpu_init(void);
@@ -377,6 +382,8 @@ extern void (*g_gpu_before_write)(u64 gva, u64 size);
 /* SNX_ARCEUS_WSI_LOCK, on by default (=0 off), serializes host access to the swapchain, read once before workers
    start */
 extern int g_vk_wsi_lock;
+/* SNX_ARCEUS_VK_VALIDATION=2: the validation layer's synchronization checks too (gpu/vk/device.c), read once */
+extern int g_vk_sync_validation;
 extern int g_gpu_releases; /* the renderer holds releases waiting to happen (renderer.h release_need) */
 /* the renderer's memory lock held across a change of backing. full is for CPU guest pages, whose GPU aliases are
    unknown; GPU address space changes give the range. Begin is taken before the memory manager's own lock */

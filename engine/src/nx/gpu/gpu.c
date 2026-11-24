@@ -41,6 +41,7 @@
 #include "nx/gpu/maxwell/fermi2d_regs.h"
 #include "nx/gpu/texture/blocklinear.h"
 #include "nx/gpu/renderer.h"
+#include "nx/gpu/perf_times.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/platform/log.h"
@@ -52,6 +53,7 @@ volatile u64 g_gpu_submits;
 void (*g_gpu_mem_changed)(u64 cpu_addr, u64 len);
 void (*g_gpu_before_write)(u64 gva, u64 size);
 int g_gpu_releases;
+int g_vk_sync_validation;
 void (*g_gpu_mapping_begin)(u64 gva, u64 size, int full);
 void (*g_gpu_mapping_end)(void);
 
@@ -936,8 +938,17 @@ static int run_pass(i64* wake) {
     }
     return 0;
 }
+/* SNX_ARCEUS_PERF_TIMES: the GPU thread's wait that gpu_wait_note named, and since when */
+static _Thread_local const char* t_perf_what;
+static _Thread_local u64 t_perf_since;
 void gpu_wait_note(const char* what, u64 value) {
     if (!t_gpu) return;
+    if (g_perf_times) {
+        const u64 now = plat_ns();
+        if (t_perf_what) perf_time_named(&g_perf, t_perf_what, now - t_perf_since);
+        t_perf_what = what;
+        t_perf_since = now;
+    }
     if (what) {
         __atomic_store_n(&g_wait_value, value, __ATOMIC_RELAXED);
         __atomic_store_n(&g_wait_since, plat_ns(), __ATOMIC_RELAXED);
@@ -998,6 +1009,7 @@ static void gpu_thread(void* arg) {
     (void)arg;
     t_gpu = 1;
     SNX_THREAD_NAME("GPU");
+    if (g_settings.profiler) plat_prof_label_self("GPU");
     pm_lock(&g_qlk);
     for (;;) {
         u64 gen = g_qgen;
@@ -1006,7 +1018,11 @@ static void gpu_thread(void* arg) {
         /* A whole pass ran nothing: sleep until a new item, a kick, or the next look at a wait. A plot, not a zone:
            this wait can last the rest of the run. */
         SNX_PLOT("gpu idle", 1);
-        if (gen == g_qgen) pc_wait(&g_qcv, &g_qlk, wake);
+        if (gen == g_qgen) {
+            const u64 idle = g_perf_times ? plat_ns() : 0;
+            pc_wait(&g_qcv, &g_qlk, wake);
+            if (idle) perf_time_add(&g_perf, PT_IDLE, plat_ns() - idle);
+        }
         SNX_PLOT("gpu idle", 0);
     }
 }

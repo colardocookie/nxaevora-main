@@ -472,7 +472,7 @@ endif()
 # with the kernel objects stubbed
 if(TARGET OpenSSL::Crypto AND NOT SNX_TOOLS_ONLY)
     add_executable(snx-test-misc-service misc_service.c "${PROJECT_SOURCE_DIR}/src/nx/hle/services/hid_touch.c"
-        "${PROJECT_SOURCE_DIR}/src/nx/hle/services/hid_motion.c")
+        "${PROJECT_SOURCE_DIR}/src/nx/hle/services/hid_motion.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/frame_log.c")
     snx_test_target(snx-test-misc-service 23)
         snx_service_swipc(snx-test-misc-service hle/services/hid.swipc hle/services/misc.swipc hle/services/acc.swipc)
     target_link_libraries(snx-test-misc-service PRIVATE OpenSSL::Crypto snx_splash scarletnx-common)
@@ -586,6 +586,10 @@ add_test(NAME imgui_settings COMMAND snx-test-imgui-settings)
 add_executable(snx-test-nvn-objtab nvn/nvn_objtab.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_objtab.c")
 snx_test_target(snx-test-nvn-objtab 11)
 add_test(NAME nvn_objtab COMMAND snx-test-nvn-objtab)
+
+add_executable(snx-test-arceus-shot arceus_shot.c)
+snx_test_target(snx-test-arceus-shot 11)
+add_test(NAME arceus_shot COMMAND snx-test-arceus-shot)
 
 add_executable(snx-test-arceus-timing arceus_timing.c)
 snx_test_target(snx-test-arceus-timing 11)
@@ -704,6 +708,9 @@ add_test(NAME dlss_core COMMAND snx-test-temporal-dlss-core ${snx_dlss_core_msvc
 add_executable(snx-test-nvn-cmdlist nvn/nvn_cmdlist.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_cmdlist.c")
 snx_test_target(snx-test-nvn-cmdlist 11)
 add_test(NAME nvn_cmdlist COMMAND snx-test-nvn-cmdlist)
+add_executable(snx-test-nvn-marks nvn/nvn_marks.c) # includes nvn_cmdlist.c (PERF-33 part 2)
+snx_test_target(snx-test-nvn-marks 11)
+add_test(NAME nvn_marks COMMAND snx-test-nvn-marks)
 
 add_executable(snx-test-nvn-frame nvn/nvn_frame.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_frame.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_cmdlist.c")
 snx_test_target(snx-test-nvn-frame 11)
@@ -727,6 +734,41 @@ if(UNIX AND NOT CMAKE_CROSSCOMPILING AND Python3_Interpreter_FOUND)
     add_test(NAME vulkan_wsi COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/vulkan_wsi.py"
              "${CMAKE_C_COMPILER}")
 endif()
+
+add_executable(snx-test-nvn-dirty nvn/nvn_dirty.c)
+snx_test_target(snx-test-nvn-dirty 11)
+add_test(NAME nvn_dirty COMMAND snx-test-nvn-dirty)
+
+add_executable(snx-test-gpuprof-tail gpuprof_tail.c)
+snx_test_target(snx-test-gpuprof-tail 11)
+add_test(NAME gpuprof_tail COMMAND snx-test-gpuprof-tail)
+add_executable(snx-test-vulkan-landing vulkan_landing.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/landing.c")
+snx_test_target(snx-test-vulkan-landing 11)
+add_test(NAME vulkan_landing COMMAND snx-test-vulkan-landing)
+add_test(NAME vulkan_landing_timing COMMAND snx-test-vulkan-landing timing) # research 14:37: prints, always passes
+
+if(Python3_Interpreter_FOUND) # buffer.c's in-place reads (SNX_ARCEUS_PERF_INPLACE), its own code copied out and run
+    add_test(NAME vulkan_inplace COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/vulkan_inplace.py"
+             "${CMAKE_C_COMPILER}" -std=gnu11 -O1)
+    # the FPS play set's levels through their own code: COMPARE (buffer.c, writeback.c), QUERY (query.c), SAMPLE
+    # (buffer.c's buf_get)
+    foreach(t vulkan_compare vulkan_query vulkan_sample)
+        add_test(NAME ${t} COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/${t}.py"
+                 "${CMAKE_C_COMPILER}" -std=gnu11 -O1 -pthread)
+    endforeach()
+endif()
+
+add_executable(snx-test-perf-times perf_times.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/perf_times.c")
+snx_test_target(snx-test-perf-times 11)
+add_test(NAME perf_times COMMAND snx-test-perf-times)
+
+add_executable(snx-test-frame-log frame_log.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/frame_log.c")
+snx_test_target(snx-test-frame-log 11)
+add_test(NAME frame_log COMMAND snx-test-frame-log)
+
+add_executable(snx-test-profile-calc profile_calc.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/profile_calc.c")
+snx_test_target(snx-test-profile-calc 11)
+add_test(NAME profile_calc COMMAND snx-test-profile-calc)
 
 add_executable(snx-test-nvn-blend-slots nvn/nvn_blend_slots.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_params.c")
 snx_test_target(snx-test-nvn-blend-slots 11)
@@ -753,6 +795,13 @@ if(NOT WIN32)
     target_link_libraries(snx-test-nvn-params PRIVATE m)
 endif()
 add_test(NAME nvn_params COMMAND snx-test-nvn-params)
+# PERF-30: the replay's word sink and direct helpers against the array path (it includes nvn_params.c itself)
+add_executable(snx-test-nvn-sink nvn/nvn_sink.c)
+snx_test_target(snx-test-nvn-sink 11)
+if(NOT WIN32)
+    target_link_libraries(snx-test-nvn-sink PRIVATE m)
+endif()
+add_test(NAME nvn_sink COMMAND snx-test-nvn-sink)
 
 add_executable(snx-test-nvn-exectest nvn/nvn_exectest.c)
 snx_test_target(snx-test-nvn-exectest 11)
@@ -1531,7 +1580,8 @@ snx_test_target(snx-test-audren-host 23)
 add_test(NAME audren_host COMMAND snx-test-audren-host)
 
 add_executable(snx-test-render-enable render_enable.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/engines.c"
-    "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/maxwell3d.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/write_pages.c")
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/maxwell3d.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/write_pages.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/perf_times.c") # the record of GPU-side writes keeps them to the byte (PERF-23)
 snx_test_target(snx-test-render-enable 23)
 add_test(NAME render_enable COMMAND snx-test-render-enable)
 
@@ -1540,19 +1590,21 @@ snx_test_target(snx-test-clear-flags 23)
 add_test(NAME clear_flags COMMAND snx-test-clear-flags)
 
 add_executable(snx-test-instance-array instance_array.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/engines.c"
-    "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/maxwell3d.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/write_pages.c")
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/maxwell3d.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/write_pages.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/perf_times.c") # the record of GPU-side writes keeps them to the byte (PERF-23)
 snx_test_target(snx-test-instance-array 23)
 add_test(NAME instance_array COMMAND snx-test-instance-array)
 
 add_executable(snx-test-draw-texture draw_texture.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/engines.c"
-    "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/maxwell3d.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/write_pages.c")
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/maxwell3d.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/write_pages.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/perf_times.c") # the record of GPU-side writes keeps them to the byte (PERF-23)
 snx_test_target(snx-test-draw-texture 23)
 add_test(NAME draw_texture COMMAND snx-test-draw-texture)
 
 # gpu.c's queue over the real puller, 3D engine and macros: a channel waiting on a semaphore, a syncpoint, a fence or
 # inside a macro lets the others run, and goes on where it stopped (its platform stand-ins are pthreads)
 if(UNIX)
-    add_executable(snx-test-gpu-park gpu_park.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/gpu.c"
+    add_executable(snx-test-gpu-park gpu_park.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/gpu.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/perf_times.c"
         "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/engines.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/maxwell3d.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/write_pages.c"
         "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/mme.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/mme_hle.c"
         "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/dma.c"
@@ -1818,10 +1870,19 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
         add_test(NAME shaderdec_spec COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/shaderdec_test.py"
             $<TARGET_FILE:snx-shaderdec> "${PROJECT_SOURCE_DIR}/src/nx/gpu/shader/maxwell_opcodes.def")
     endif()
-    add_executable(snx-test-vulkan-release vulkan_release.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/pending_pages.c")
+    add_executable(snx-test-vulkan-release vulkan_release.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/pending_pages.c"
+        "${PROJECT_SOURCE_DIR}/src/nx/gpu/perf_times.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/landing.c")
     snx_test_target(snx-test-vulkan-release 11)
     target_link_libraries(snx-test-vulkan-release PRIVATE scarletnx-common) # release.c's snx_os_error
     add_test(NAME vulkan_release COMMAND snx-test-vulkan-release)
+    add_test(NAME vulkan_release_probes COMMAND snx-test-vulkan-release) # perform's split (PERF-32)
+    set_tests_properties(vulkan_release_probes PROPERTIES ENVIRONMENT SNX_TEST_PROBES=1)
+    if(NOT WIN32) # a model of release.c's wake with real threads
+        add_executable(snx-test-release-wake release_wake.c)
+        snx_test_target(snx-test-release-wake 11)
+        target_link_libraries(snx-test-release-wake PRIVATE pthread)
+        add_test(NAME release_wake COMMAND snx-test-release-wake)
+    endif()
     add_executable(snx-test-vulkan-backing vulkan_backing.c)
     snx_test_target(snx-test-vulkan-backing 11)
     add_test(NAME vulkan_backing COMMAND snx-test-vulkan-backing)

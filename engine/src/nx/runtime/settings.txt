@@ -735,7 +735,7 @@ setting Profiler
     default 0
     startup
     words Off|On
-    help 1 = writes profile.txt every 10 seconds (the CPU profiler is Windows only)
+    help 1 = writes profile.txt every 10 s, per thread for the last 10 s (the CPU profiler is Windows only)
 setting NVN trace
     key nvn_trace
     int 0 1
