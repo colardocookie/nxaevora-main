@@ -674,13 +674,6 @@ add_executable(snx-test-overlap-handoff nvn/overlap_handoff.c "${PROJECT_SOURCE_
     "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_cmdlist.c")
 snx_test_target(snx-test-overlap-handoff 11)
 add_test(NAME overlap_handoff COMMAND snx-test-overlap-handoff)
-add_executable(snx-test-submit-probe nvn/submit_probe.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/diag/submit_probe_calc.c"
-    "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/diag/overlap_check_calc.c"
-    "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/diag/perf_reuse_calc.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_cmdlist.c")
-snx_test_target(snx-test-submit-probe 11)
-# the stand-ins for the lock, the clock, the log and the hash come before the real headers
-target_include_directories(snx-test-submit-probe BEFORE PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/nvn/submit_probe_stub")
-add_test(NAME submit_probe COMMAND snx-test-submit-probe)
 
 add_executable(snx-test-perf-reuse nvn/perf_reuse.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/diag/perf_reuse_calc.c")
 snx_test_target(snx-test-perf-reuse 11)

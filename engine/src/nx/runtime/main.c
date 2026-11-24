@@ -19,7 +19,6 @@
 #include "nx/gpu/frame_log.h"
 #include "nx/gpu/vk/landing.h"
 #include "nx/gpu/nvn/diag/overlap_check.h"
-#include "nx/gpu/nvn/diag/submit_probe.h"
 #include "nx/gpu/nvn/nvn_native.h"
 #include "nx/gpu/nvn/diag/nvn_trace.h"
 #include "nx/gpu/renderer.h"
@@ -856,12 +855,6 @@ int snx_main(int argc, char** argv) {
         const char* check = getenv("SNX_ARCEUS_PERF_OVERLAP_CHECK");
         g_overlap_check = check && !strcmp(check, "1"); /* log only (gpu/nvn/diag/overlap_check.h) */
         if (g_overlap_check) LOG("nvn-overlap-check: on, a line every 600 presents, log only\n");
-        const char* submit = getenv("SNX_ARCEUS_PERF_SUBMIT_PROBE");
-        /* log only, 2 without the hashes (gpu/nvn/diag/submit_probe.h) */
-        g_submit_probe = submit && !strcmp(submit, "1") ? 1 : submit && !strcmp(submit, "2") ? 2 : 0;
-        if (g_submit_probe)
-            LOG("perf-submit-probe: on, %s, a line every 600 presents, log only\n",
-                g_submit_probe == 1 ? "with the hashes" : "the times alone");
         /* 1: the draw's bind walks stop early (gpu/nvn/nvn_dirty.h). 2: also the builders' words go to the replay as
            they are written (PERF-30, gpu/nvn/nvn_params.h). 3: also the header helpers act without their words */
         g_perf_replay = perf_level(replay, 1, 3); /* 3 by default, the play set's */
