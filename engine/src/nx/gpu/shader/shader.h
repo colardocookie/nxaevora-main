@@ -104,6 +104,14 @@ typedef struct {
     u32 early_fragment_tests;
     ShXfb xfb; /* key: transform feedback's capture of this program's outputs */
     int writes_viewport; /* the last vertex stage selects one of the 16 viewport/scissor pairs */
+    /* FS key, last (a corpus of the size before it loads with it zeroed): the size query of the one 2D slot whose
+       handle is at txq_fixed[0] - 1 words answers txq_fixed[1] x txq_fixed[2], with no scale applied. 0: none */
+    u32 txq_fixed[3];
+    /* the texture slots a size query of the program reads (bit i for tex[i]), as translated (D3-2 revision 4), and
+       those whose size the translation itself reads for texel offsets (direct_offset_coords), which no key rewrites:
+       last of all, a corpus of the size before them loads with both zeroed, one with the first alone (767cb91e) with
+       the second zeroed */
+    u64 tex_txq_mask, tex_offset_size_mask;
 } ShaderInfo;
 #define SH_DC_COLOR_MAX  10 /* slots tex_dc_color_funcs has room for */
 /* Each stage has a descriptor set (shader_vk_set), its bindings grouped by kind. */

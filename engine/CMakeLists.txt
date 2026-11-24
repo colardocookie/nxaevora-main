@@ -192,6 +192,10 @@ install(FILES dist/licenses/Ryujinx/LICENSE.txt DESTINATION ${licenses}/Ryujinx)
 install(FILES "${Vulkan-Headers_SOURCE_DIR}/LICENSE.md" DESTINATION ${licenses}/Vulkan-Headers)
 install(DIRECTORY "${Vulkan-Headers_SOURCE_DIR}/LICENSES" DESTINATION ${licenses}/Vulkan-Headers)
 install(FILES "${volk_SOURCE_DIR}/LICENSE.md" DESTINATION ${licenses}/volk)
+# the FidelityFX SDK's API headers (third_party/FidelityFX-SDK), which the FSR adapter is built with
+install(FILES third_party/FidelityFX-SDK/LICENSE.txt DESTINATION ${licenses}/FidelityFX-SDK)
+# the XeSS SDK's headers (third_party/XeSS), which the XeSS adapter is built with
+install(FILES third_party/XeSS/LICENSE.txt DESTINATION ${licenses}/XeSS)
 install(FILES "${VulkanMemoryAllocator_SOURCE_DIR}/LICENSE.txt" DESTINATION ${licenses}/VulkanMemoryAllocator)
 # renderdoc_app.h's license is the comment at the top of the header
 file(READ "${renderdoc_app_SOURCE_DIR}/renderdoc_app.h" renderdoc_app)

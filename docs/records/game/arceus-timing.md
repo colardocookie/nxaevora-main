@@ -71,6 +71,7 @@ The `SNX_ARCEUS_*` switches are environment variables, read with `getenv`. No `.
 | `SNX_ARCEUS_DEMO_PROBE` | off | `=0` keeps the read-only demo clock probe off. |
 | `SNX_ARCEUS_TEXT_PROBE` | off | `=0` keeps the read-only text reveal probe off. |
 | `SNX_ARCEUS_FIXED_RESOLUTION` | off | `=0` leaves the game's automatic 3D resolution governor enabled. |
+| `SNX_ARCEUS_SCENE_SCALE` | off | Not a boolean: a number from 0.5 to below 1.0, or `p/q` such as `2/3` (also written `2of3`), the game's own 3D buffer scale. Unset, or 1.0 and above, changes nothing. Needs `SNX_ARCEUS_FIXED_RESOLUTION=1`. See "Scene scale". |
 
 The default movement mask selects bits 2 through 8, the seven player movement sites, and bit 10, the player's horizontal position step. Bits 0 and 1 remain off. An explicit mask such as `7fc` adds bit 9's capped-fall selection while preserving the same sites. `1fc` leaves bit 10 out.
 
@@ -514,3 +515,42 @@ compiled function stale, and a stale function sends its entry through dispatch t
 one function of 0xA70 bytes starts there and three instruction words match. It logs its install, the first call
 that reaches it, and up to 16 guarded calls. In a native run at 30 FPS it guarded three calls, all with an empty
 reference, and the game did not crash.
+
+## Scene scale
+
+The game can draw its 3D passes into the top left part of its full-size targets. Two scales, width and height,
+say how much, and they change viewports and scissors only. Its mode setter (`main+CC3888`) takes the pair for the
+default mode from a table in the game's data, where it is 1.0 and 1.0 at `main+3978758`. Its automatic governor
+(`main+CC35A4`) lowers the pair under load.
+
+`SNX_ARCEUS_SCENE_SCALE` writes one number over that default pair, both ways the same, before any of the game's
+code runs. The game then applies it as its own scale. It is an experiment for an upscaler to come, and off unless
+set. On its own it gives a softer picture, since the game stretches the part it drew over the screen.
+
+Rules. The value is one finite number. From 0.5 to below 1.0 it is used as written. It may also be written as
+`p/q`, two whole numbers with 1 <= p < q <= 64 and nothing else, which is divided once (`pofq` is the same
+thing for a launcher that cannot pass a slash): two thirds has no short
+decimal, and the game draws a viewport of the target's size times the scale as it is, so `0.6667` ends inside
+a pixel where `2/3` does not. Unset, or 1.0 and above, is
+off: nothing is touched and no line is written. Anything else (below 0.5, text, text after the number, not finite)
+is refused with a line and nothing is touched: a value is never moved into the range. It needs
+`SNX_ARCEUS_FIXED_RESOLUTION=1` to have turned the governor off, and refuses otherwise. The pair is written only
+when both of its words are exactly 1.0 and the pair after it is exactly 0.5 and 0.5, which is the evidence that
+this is the table. A refusal by this guard logs the table's ten words.
+
+The table is in the game's read-only data. That is the guest's permission. The host commits every mapped guest
+page readable and writable, which the patches to the game's code rely on as well, so a table that lies wholly in
+mapped memory can be written, and one that does not is refused before anything is written. After the write both
+words are read back. If they are not what was written, 1.0 and 1.0 are put back and the switch refuses.
+
+What the game makes of it is logged by the renderer, read only (`arceus-scene-scale` lines): the used fraction
+the game puts into its scene block (constant bank 3, at +628 and +62C), and the viewport of draws with three
+colour targets or more and a depth target, per depth target. One line per change, 96 lines at most. The line of
+the write says what was asked. These lines say what the game uses. A written table alone does not show that the
+game's mode took the default pair.
+
+Limits. Not played. Whether every pass stays inside the part that is drawn is not known: borders and effects that
+sample neighbours (bloom, reflections, ambient occlusion, depth of field) are what to look at. With
+`SNX_ARCEUS_TEMPORAL` on, the temporal passes are as they were: their viewport gate refuses a frame whose scene
+viewport is not the whole target, so there is no jitter and no resolve under a scale below 1, and their lines
+count those frames.

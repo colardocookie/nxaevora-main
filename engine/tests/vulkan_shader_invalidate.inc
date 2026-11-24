@@ -25,7 +25,7 @@ static VkSh *invalidate_fragment(GpuChannel *channel, u64 address)
 
 	vk_lock();
 	shader = vk_shader_get(channel, address, 0, ST_FS, 0, 0, 0, 0,
-			       0, 0, 0, 0, NULL);
+			       0, 0, 0, 0, NULL, NULL);
 	vk_unlock();
 	return shader;
 }
