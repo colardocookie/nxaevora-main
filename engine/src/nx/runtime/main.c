@@ -937,6 +937,17 @@ int snx_main(int argc, char** argv) {
             LOG("perf-times: on, a line every %u presents (SNX_ARCEUS_PERF_TIMES)%s\n", PERF_TIMES_WINDOW,
                 g_perf_times > 1 ? ", with the record of every byte as written" : "");
     }
+    /* SNX_ARCEUS_NVN_BLEND_TARGETS: a blend slot per colour target in the native replay (nvn_blend_slots.h), on by
+       default (it repairs the over-bright opening), 0 turns it off */
+    {
+        const char* targets = getenv("SNX_ARCEUS_NVN_BLEND_TARGETS");
+        g_nvn_blend_targets = !(targets && !strcmp(targets, "0"));
+        if (g_nvn_blend_targets && targets && *targets && strcmp(targets, "1"))
+            WARN("nvn-blend-targets: SNX_ARCEUS_NVN_BLEND_TARGETS=%s is not 1 or 0, kept on\n", targets);
+        if (g_nvn_blend_targets)
+            LOG("nvn-blend-targets: on, the native replay keeps each colour target's blend bind and the draw sends "
+                "them all in bind order, a line every 600 presents (SNX_ARCEUS_NVN_BLEND_TARGETS, 0 turns it off)\n");
+    }
     /* the header the log summary reads (common/utilities/logscan.c): no folder in it, since players attach the log to
        public reports and the folder names their account */
     LOG(SNX_PROGRAM_NAME " - %s\n", title);

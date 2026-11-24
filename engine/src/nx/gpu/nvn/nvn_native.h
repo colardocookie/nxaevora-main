@@ -5,6 +5,7 @@
 
 #include "common/cpu/aarch64/cpu.h"
 #include "nx/gpu/gpu.h"
+#include "nx/gpu/nvn/nvn_blend_slots.h"
 #include "nx/gpu/nvn/nvn_replay.h"
 
 /* nvn_legacy=0: the host answers the NVN functions that the game resolves, and the game's NVN library does not run
@@ -13,6 +14,9 @@
 void nvn_native_init(void);
 /* at a clean exit: the functions that the game called and the host does not have */
 void nvn_native_report(void);
+/* SNX_ARCEUS_NVN_BLEND_TARGETS: a blend slot per colour target in the replay (nvn_blend_slots.h), read once at
+   start */
+extern int g_nvn_blend_targets;
 /* 1 once nvn_native_init found nvn_legacy=0 and hooked the loader */
 /* SNX_ARCEUS_PERF_REPLAY=1: the draw's bind walks stop at a table's last set flag (nvn_dirty.h), read once at start.
    2: also a draw's words go to the engine as they are written (nvn_word_sink, PERF-30). 3: also the header helpers
@@ -56,6 +60,8 @@ typedef struct {
     /* The bound state objects of one frame job, written by the replay and read by the pipeline stage later. */
     NvnBoundState state[NVN_STATE_COUNT];
     uint8_t state_dirty[NVN_STATE_COUNT];
+    /* The blend binds by colour target, unused with SNX_ARCEUS_NVN_BLEND_TARGETS=0 */
+    NvnBlendSlots blend;
     /* The draws, dispatches and program binds of one frame job. The replay thread writes them without a lock. */
     uint64_t draws[NVN_DRAW_KIND_COUNT];
     NvnOpDraw last_draw;
