@@ -52,94 +52,6 @@ static void test_window_sync_cycle_params(void) {
     CHECK(nvn_window_has_presented(presented2, 2));
 }
 
-/* SNX_ARCEUS_PERF_OVERLAP: only the last present's fence gets the value of the present before it. */
-static void test_present_values(void) {
-    NvnPresentValues p = {0};
-    uint32_t early = 0xAAAAAAAAu;
-    CHECK(!nvn_present_values_early(&p, 0, &early)); /* a queue that never presented */
-    CHECK(early == 0xAAAAAAAAu);
-    CHECK(!nvn_present_values_post(&p, 7, &early)); /* the first present has none before it */
-    CHECK(early == 0xAAAAAAAAu);
-    CHECK(p.has_last && p.last == 7 && !p.has_previous);
-    CHECK(!nvn_present_values_early(&p, 7, &early));
-    CHECK(nvn_present_values_post(&p, 9, &early)); /* 8 was a flush job: the present before 9 is 7, not 8 */
-    CHECK(early == 7);
-    CHECK(p.last == 9 && p.previous == 7 && p.has_previous);
-    early = 0;
-    CHECK(nvn_present_values_early(&p, 9, &early));
-    CHECK(early == 7);
-    early = 0xAAAAAAAAu;
-    CHECK(!nvn_present_values_early(&p, 10, &early)); /* a flush posted after the present: waited for whole */
-    CHECK(!nvn_present_values_early(&p, 7, &early));  /* an older present's fence */
-    CHECK(!nvn_present_values_early(&p, 8, &early));
-    CHECK(early == 0xAAAAAAAAu);
-    CHECK(nvn_present_values_post(&p, 10, &early));
-    CHECK(early == 9 && p.last == 10 && p.previous == 9);
-    /* the syncpoint wraps at 32 bits */
-    NvnPresentValues w = {0};
-    CHECK(!nvn_present_values_post(&w, 0xFFFFFFFFu, &early));
-    CHECK(nvn_present_values_post(&w, 0, &early));
-    CHECK(early == 0xFFFFFFFFu);
-    early = 1;
-    CHECK(nvn_present_values_early(&w, 0, &early));
-    CHECK(early == 0xFFFFFFFFu);
-    CHECK(!nvn_present_values_early(&w, 0xFFFFFFFFu, &early));
-}
-
-/* The experiment's table: a queue's values from its first present, a sync's early value by serial, one sync a slot. */
-static void test_overlap_table(void) {
-    static NvnOverlapTable t;
-    uint32_t early = 0;
-    CHECK(!nvn_overlap_queue(&t, 0x1000, 0));
-    NvnPresentValues* p = nvn_overlap_queue(&t, 0x1000, 1);
-    CHECK(p && nvn_overlap_queue(&t, 0x1000, 0) == p && nvn_overlap_queue(&t, 0x1000, 1) == p);
-    CHECK(!nvn_present_values_post(p, 5, &early));
-    CHECK(nvn_present_values_post(p, 6, &early) && early == 5);
-    CHECK(nvn_overlap_queue(&t, 0x2000, 1) && nvn_overlap_queue(&t, 0x3000, 1) && nvn_overlap_queue(&t, 0x4000, 1));
-    CHECK(nvn_overlap_queue(&t, 0x2000, 1) != p);
-    CHECK(!nvn_overlap_queue(&t, 0x5000, 1)); /* full: that queue's fences wait whole */
-    nvn_overlap_queue_drop(&t, 0x1000);
-    CHECK(!nvn_overlap_queue(&t, 0x1000, 0));
-    CHECK(nvn_overlap_queue(&t, 0x2000, 0)); /* the others stay */
-    p = nvn_overlap_queue(&t, 0x5000, 1);
-    CHECK(p && !p->has_last && !p->has_previous); /* a slot used again starts empty */
-    CHECK(!nvn_overlap_sync_get(&t, 0x7000, 1, &early));
-    nvn_overlap_sync_set(&t, 0x7000, 3, 1, 41);
-    early = 0;
-    CHECK(nvn_overlap_sync_get(&t, 0x7000, 3, &early) && early == 41);
-    early = 99;
-    CHECK(!nvn_overlap_sync_get(&t, 0x7000, 4, &early) && early == 99); /* a newer fence has no value yet */
-    CHECK(!nvn_overlap_sync_get(&t, 0x7008, 3, &early));
-    nvn_overlap_sync_set(&t, 0x7000, 4, 0, 0); /* a fence that is not a present's clears the sync's entry */
-    CHECK(!nvn_overlap_sync_get(&t, 0x7000, 3, &early) && !nvn_overlap_sync_get(&t, 0x7000, 4, &early));
-    nvn_overlap_sync_set(&t, 0x7000, 5, 1, 50);
-    CHECK(nvn_overlap_sync_get(&t, 0x7000, 5, &early) && early == 50);
-    nvn_overlap_sync_drop(&t, 0x7000);
-    CHECK(!nvn_overlap_sync_get(&t, 0x7000, 5, &early));
-    /* two syncs in one slot: the later one takes it, the earlier one waits whole, and a clear of the earlier one
-       leaves the later one's value */
-    const uint64_t a = 0x9000;
-    uint64_t b = 0;
-    for (uint64_t x = a + 8; !b && x < a + 8 * 4096; x += 8)
-        if (nvn_overlap_sync_slot(x) == nvn_overlap_sync_slot(a)) b = x;
-    CHECK(b);
-    nvn_overlap_sync_set(&t, a, 1, 1, 10);
-    nvn_overlap_sync_set(&t, b, 1, 1, 20);
-    CHECK(!nvn_overlap_sync_get(&t, a, 1, &early));
-    CHECK(nvn_overlap_sync_get(&t, b, 1, &early) && early == 20);
-    nvn_overlap_sync_set(&t, a, 2, 0, 0);
-    CHECK(nvn_overlap_sync_get(&t, b, 1, &early) && early == 20);
-    nvn_overlap_sync_drop(&t, b);
-    CHECK(!nvn_overlap_sync_get(&t, b, 1, &early));
-    uint32_t used[NVN_OVERLAP_SYNCS] = {0}, slots = 0;
-    for (uint64_t x = 0; x < 1 << 16; x += 8) {
-        const uint32_t slot = nvn_overlap_sync_slot(0x140000000ull + x);
-        CHECK(slot < NVN_OVERLAP_SYNCS);
-        if (slot < NVN_OVERLAP_SYNCS && !used[slot]++) slots++;
-    }
-    CHECK(slots == NVN_OVERLAP_SYNCS); /* neighbouring records spread over every slot */
-}
-
 static void test_sync_wait_limit(void) {
     const uint8_t acquired4[] = {NVN_IMAGE_ACQUIRED, NVN_IMAGE_ACQUIRED, NVN_IMAGE_ACQUIRED, NVN_IMAGE_ACQUIRED};
     const uint8_t mixed[] = {NVN_IMAGE_ACQUIRED, NVN_IMAGE_PRESENTED, NVN_IMAGE_ACQUIRED, NVN_IMAGE_ACQUIRED};
@@ -3758,8 +3670,6 @@ int main(int argc, char** argv) {
     test_window_params();
     test_window_sync_cycle_params();
     test_sync_wait_limit();
-    test_present_values();
-    test_overlap_table();
     test_window_present_args();
     test_sync_fence_value();
     test_u2_event_signal_value();

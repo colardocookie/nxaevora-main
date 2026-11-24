@@ -24,11 +24,6 @@ int nvn_native_active(void);
 GuestFn nvn_native_handler(const char* name);
 /* The device of the host record of a queue, for the execution test. 0 when the queue has no record. */
 uint64_t nvn_native_queue_device(uint64_t queue);
-/* SNX_ARCEUS_PERF_OVERLAP=1, a non-equivalent, unsafe experiment, off by default and not for default-on: nvnSyncWait
-   on a present's fence settles for the present before it, one frame job ahead at most. After that early return the
-   frame's reports, its landed shader outputs and its resource releases may not have happened yet, and the game may
-   rewrite memory the frame has not read (docs/arceus-timing.md). */
-extern int g_perf_overlap;
 
 /* The bind state of one buffer slot. bound follows the library: a size 0 uniform or vertex bind is stored but not active.
    plural is 1 when the bind came from a plural function and keeps the library's packet form at the draw. */

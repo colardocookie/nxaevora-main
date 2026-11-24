@@ -18,7 +18,6 @@
 #include "nx/gpu/perf_times.h"
 #include "nx/gpu/frame_log.h"
 #include "nx/gpu/vk/landing.h"
-#include "nx/gpu/nvn/diag/overlap_check.h"
 #include "nx/gpu/nvn/nvn_native.h"
 #include "nx/gpu/nvn/diag/nvn_trace.h"
 #include "nx/gpu/renderer.h"
@@ -849,12 +848,8 @@ int snx_main(int argc, char** argv) {
         if (profile && !strcmp(profile, "1")) g_settings.profiler = 1;
         if (gpu_profile && !strcmp(gpu_profile, "1")) g_settings.gpu_profile = 1;
         const char* landing = getenv("SNX_ARCEUS_PERF_LANDING");
-        const char* overlap = getenv("SNX_ARCEUS_PERF_OVERLAP");
         const char* validation = getenv("SNX_ARCEUS_VK_VALIDATION");
         const char* replay = getenv("SNX_ARCEUS_PERF_REPLAY");
-        const char* check = getenv("SNX_ARCEUS_PERF_OVERLAP_CHECK");
-        g_overlap_check = check && !strcmp(check, "1"); /* log only (gpu/nvn/diag/overlap_check.h) */
-        if (g_overlap_check) LOG("nvn-overlap-check: on, a line every 600 presents, log only\n");
         /* 1: the draw's bind walks stop early (gpu/nvn/nvn_dirty.h). 2: also the builders' words go to the replay as
            they are written (PERF-30, gpu/nvn/nvn_params.h). 3: also the header helpers act without their words */
         g_perf_replay = perf_level(replay, 1, 3); /* 3 by default, the play set's */
@@ -963,10 +958,6 @@ int snx_main(int argc, char** argv) {
             LOG("perf-landing: on (level 3), storage results land %s\n",
                 g_landing_masked ? "with 64-byte masked stores (AVX-512BW)"
                                  : "with word compares: no AVX-512BW on this CPU or OS");
-        g_perf_overlap = overlap && !strcmp(overlap, "1"); /* a present's fence a frame early (gpu/nvn/nvn_native.h) */
-        if (g_perf_overlap)
-            LOG("nvn-overlap: EXPERIMENT on, a sync wait on a present's fence settles for the present before it "
-                "(SNX_ARCEUS_PERF_OVERLAP)\n");
         /* PERF-36: the release thread's graphics landing written beside the GPU thread (gpu/vk/buffer.c) */
         const char* beside = getenv("SNX_ARCEUS_PERF_BESIDE");
         if (beside && !strcmp(beside, "1")) {
