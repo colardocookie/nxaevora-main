@@ -22,6 +22,7 @@
 #include "nx/runtime/platform/stats.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/scale.h"
+#include "nx/gpu/vk/shot.h"
 #include "nx/gpu/vk/debug_stats.h"
 #include "nx/gpu/vk/pass_guest.h"
 #include "nx/gpu/nvn/diag/nvn_measure.h"
@@ -787,36 +788,44 @@ static const u8* surf_read(Surf* s, u32 x, u32 y, u32 w, u32 h, u32 transform, u
     vmaDestroyImage(g_vk.vma, tmp, tmem);
     return p;
 }
-/* a part of a surface, blitted to RGBA8 and read back: its hash, and a .ppm at path if given */
-static u64 surf_save(Surf* s, u32 x, u32 y, u32 w, u32 h, u32 transform, const char* path) {
-    u64 hash = 1469598103934665603ull;
-    const u8* px = surf_read(s, x, y, w, h, transform, w, h);
-    if (!px) return hash;
-    /* the pixels as the device wrote them, little-endian words: the hash is the same on every host */
-    for (u64 i = 0; i < (u64)w * h; i++) hash = snx_fnv_step(hash, snx_ld_le32(px + i * 4));
+/* a screenshot's pixels, read back: their hash, and a .ppm at path if given (shot.h) */
+static u64 shot_finish(const u8* px, u32 w, u32 h, const char* path) {
+    const u64 hash = shot_hash(px, w, h);
     if (path) {
         char fn[1100];
         snprintf(fn, sizeof fn, "%s.ppm", path);
         FILE* f = fopen(fn, "wb");
-        int ok = f != NULL;
-        if (f) {
-            fprintf(f, "P6\n%u %u\n255\n", w, h);
-            for (u64 i = 0; i < (u64)w * h && ok; i++) {
-                u8 rgb[3] = {px[i * 4], px[i * 4 + 1], px[i * 4 + 2]};
-                ok = fwrite(rgb, 1, 3, f) == 3;
-            }
-            ok = fclose(f) == 0 && ok;
-        }
+        int ok = f != NULL && shot_write_ppm(f, px, w, h);
+        if (f) ok = fclose(f) == 0 && ok;
         if (!ok) WARN_LIMIT(1, "vulkan: the screenshot %s couldn't be written\n", fn);
     }
     return hash;
 }
-/* the last presented frame as PPM (path.ppm), and a hash of its pixels */
+/* the last presented frame as PPM (path.ppm), and a hash of its pixels. Only the readback holds vk_lock: the pixels
+   are copied out of the reused readback memory, and the hash and the file are made after the lock is let go, so the
+   GPU thread is not held for them (STEP-120: about 165 ms every screenshot) */
 static u64 vkr_screenshot(const char* path) {
+    u64 hash = SHOT_HASH_BASIS;
+    u8* copy = NULL;
+    u32 w = 0, h = 0;
+    size_t bytes = 0;
     vk_lock();
-    u64 hash = g_last ? surf_save(g_last, g_last_x, g_last_y, g_last_w, g_last_h, g_last_transform, path)
-                      : 1469598103934665603ull;
+    if (g_last) {
+        w = g_last_w;
+        h = g_last_h;
+        const u8* px = surf_read(g_last, g_last_x, g_last_y, w, h, g_last_transform, w, h);
+        if (px && shot_bytes(w, h, &bytes) && (copy = malloc(bytes)) != NULL)
+            memcpy(copy, px, bytes);
+        else if (px) { /* no memory for the copy: made under the lock, as before */
+            WARN_LIMIT(1, "vulkan: no memory to copy a screenshot out: it is made under the renderer's lock\n");
+            hash = shot_finish(px, w, h, path);
+        }
+    }
     vk_unlock();
+    if (copy) {
+        hash = shot_finish(copy, w, h, path);
+        free(copy);
+    }
     return hash;
 }
 
