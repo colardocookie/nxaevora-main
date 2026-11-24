@@ -273,6 +273,10 @@ void vk_rec_submit(VkCommandBuffer cb, const VkSemaphoreSubmitInfo* w, u32 nw, c
                    u32 ns);
 void vk_rec_sync(void);        /* until everything queued is recorded and submitted */
 void vk_rec_queue(VkQueue q);  /* before submitting to or presenting on q outside the ring (vk_lock) */
+/* Under vk_lock. A queued present may still need the window thread to dispatch a message. */
+int vk_wsi_present_pending(void);
+/* Under vk_lock. Returns zero when an optional window redraw must defer, otherwise supplies the Vulkan result. */
+int vk_wsi_acquire_locked(int game, VkSemaphore acq, u32* idx, VkResult* result);
 /* A library outside the runtime records on the frame's command buffer cb at once, in one stretch under vk_lock:
    before (may be NULL) queues what must come first, the ring is drained, direct records and says 1 when it did,
    all bound state is forgotten. Only OK and REFUSED mean direct was called. With every other answer before may

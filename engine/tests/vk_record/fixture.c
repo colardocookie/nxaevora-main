@@ -20,7 +20,7 @@
 
 /* ------------------------------------------------------------ what the recorder's file needs of the runtime */
 FixtureSettings g_settings;
-VkState g_vk = {(VkDevice)0x10, (VkQueue)0x20};
+VkState g_vk = {(VkDevice)0x10, (VkQueue)0x20, VK_NULL_HANDLE};
 /* the renderer's outer lock, as gpu/vk/device.c has it: reentrant on the thread that holds it */
 static PMutex g_vklock = PMUTEX_INIT;
 static __thread int t_vkdepth;
@@ -62,6 +62,15 @@ int plat_thread(PThreadFn fn, void* arg, size_t stack) {
     if (r) free(s);
     return r ? -1 : 0;
 }
+/* what the perf notes in the recorder's file ask (gpu/perf_times.c is linked whole): none of them is switched on */
+u64 plat_ns(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (u64)t.tv_sec * 1000000000u + (u64)t.tv_nsec;
+}
+void plat_thread_cpu(u64* kernel_ns, u64* user_ns) { *kernel_ns = *user_ns = 0; }
+void plat_prof_label_self(const char* name) { (void)name; }
+int gpu_on_gpu_thread(void) { return 0; }
 void plat_yield(void) { sched_yield(); }
 char* snx_os_error(char* out, size_t size) {
     snprintf(out, size, "the fixture has no reason");
@@ -154,6 +163,12 @@ VkResult vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* info) {
     (void)queue;
     (void)info;
     return VK_SUCCESS;
+}
+VkResult vkAcquireNextImageKHR(VkDevice dev, VkSwapchainKHR sc, uint64_t timeout, VkSemaphore sem, VkFence fence,
+                               u32* idx) {
+    (void)dev, (void)sc, (void)timeout, (void)sem, (void)fence, (void)idx;
+    assert(0); /* the WSI lock's acquire is not part of vk_rec_direct */
+    return VK_ERROR_DEVICE_LOST;
 }
 VkResult vkAllocateDescriptorSets(VkDevice dev, const VkDescriptorSetAllocateInfo* info, VkDescriptorSet* sets) {
     (void)dev;

@@ -516,7 +516,11 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game) {
         VkSemaphore acq = g_acquired[vk_frame_id() % VK_FRAMES];
         /* no wait: vk_lock is held (guest threads mapping memory take it too), and the game's pace is present_pace's.
            Every image still on the display or queued for it (FIFO behind) leaves this frame unshown */
-        VkResult r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, 0, acq, VK_NULL_HANDLE, &idx);
+        VkResult r;
+        if (g_vk_wsi_lock) {
+            if (!vk_wsi_acquire_locked(game, acq, &idx, &r)) return;
+        } else
+            r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, 0, acq, VK_NULL_HANDLE, &idx);
         if (r == VK_NOT_READY || r == VK_TIMEOUT) {
             /* the game faster than the display (vsync=1 with fps_limit over its refresh, or a 59.94 Hz one) */
             static u64 dropped;
@@ -837,6 +841,11 @@ static void vkr_refresh(void) {
         now - last < 33000000ull)
         return;
     if (!vk_trylock()) return;
+    /* Ending the pass or recycling a slot can wait on queued work. A published present may need the window pump. */
+    if (g_vk_wsi_lock && vk_wsi_present_pending()) {
+        vk_unlock();
+        return;
+    }
     last = now;
     vk_render_end();
     show(g_last, g_last_w, g_last_h, g_last_transform, 0);
