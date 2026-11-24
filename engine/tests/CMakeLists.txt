@@ -1710,16 +1710,11 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
     add_test(NAME vulkan_release COMMAND snx-test-vulkan-release)
     add_test(NAME vulkan_release_probes COMMAND snx-test-vulkan-release) # perform's split (PERF-32)
     set_tests_properties(vulkan_release_probes PROPERTIES ENVIRONMENT SNX_TEST_PROBES=1)
-    add_test(NAME vulkan_release_notice COMMAND snx-test-vulkan-release) # PERF-34 bit 4's one notice a hold
-    set_tests_properties(vulkan_release_notice PROPERTIES ENVIRONMENT SNX_TEST_SMALL=8)
-    add_test(NAME vulkan_release_notice_probes COMMAND snx-test-vulkan-release) # the T run's configuration
-    set_tests_properties(vulkan_release_notice_probes PROPERTIES ENVIRONMENT "SNX_TEST_SMALL=15;SNX_TEST_PROBES=1")
-    if(NOT WIN32) # a model of release.c's wake with real threads (PERF-34 bit 1)
+    if(NOT WIN32) # a model of release.c's wake with real threads
         add_executable(snx-test-release-wake release_wake.c)
         snx_test_target(snx-test-release-wake 11)
         target_link_libraries(snx-test-release-wake PRIVATE pthread)
-        add_test(NAME release_wake_off COMMAND snx-test-release-wake 0)
-        add_test(NAME release_wake_on COMMAND snx-test-release-wake 1)
+        add_test(NAME release_wake COMMAND snx-test-release-wake)
     endif()
     add_executable(snx-test-vulkan-backing vulkan_backing.c)
     snx_test_target(snx-test-vulkan-backing 11)

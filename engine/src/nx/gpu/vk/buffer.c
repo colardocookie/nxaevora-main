@@ -305,8 +305,6 @@ static VkAccessFlags2 out_access(void) {
 /* an output with its page lists and its original bytes after it, in one block */
 /* a result's block: the result, its two page lists and its original bytes (PERF-31 counts it at its free too) */
 static u64 out_block(u32 npages, u32 len) { return sizeof(GfxOut) + 2 * (u64)npages * sizeof(u64) + len; }
-/* SNX_ARCEUS_PERF_SMALL bit 2 (PERF-34): the block is not zeroed past the result itself. Both callers write its page
-   lists whole (out_map, or the 4 KB path's one page) and its original bytes (owned ranges zero them) before any read */
 /* PERF-36G: a result call made without vk_lock, counted by entry (log only, with the probes) */
 static void unlocked_note(int k) {
     if (g_perf_probes && !vk_lock_depth()) __atomic_fetch_add(&g_perf_vkx.unlocked[k], 1, __ATOMIC_RELAXED);
@@ -314,11 +312,9 @@ static void unlocked_note(int k) {
 static GfxOut* gfx_out_new(u32 npages, u32 len) {
     unlocked_note(VKU_OUT_NEW);
     const u64 a0 = g_perf_probes ? plat_ns() : 0;
-    GfxOut* o = g_perf_small & PSM_NOZERO ? malloc((size_t)out_block(npages, len))
-                                          : calloc(1, (size_t)out_block(npages, len));
+    GfxOut* o = calloc(1, (size_t)out_block(npages, len));
     if (!o) return NULL;
-    if (g_perf_small & PSM_NOZERO) memset(o, 0, sizeof *o);
-    if (a0) perf_wait_note(PW_ALLOC, NULL, plat_ns() - a0); /* PERF-34: the block made, zeroed or not */
+    if (a0) perf_wait_note(PW_ALLOC, NULL, plat_ns() - a0); /* PERF-34: the block made */
     if (g_perf_probes) perf_mem_alloc(&g_perf_mem, out_block(npages, len) >= 4096 ? PMA_RESULT : PMA_RESULT_SMALL,
                                       out_block(npages, len));
     if (g_perf_probes) o->gw0 = gpu_mem_generation(); /* PERF-35: before its caller reads org */
@@ -2398,9 +2394,7 @@ int vk_buf_copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off) {
     if (pending == 2) { /* guest memory's bytes, with the earlier results copied over them below (out_rebase) */
         read_untracked(gva, o->org, len);
         o->composed = 1;
-    } else if (owned) {
-        if (g_perf_small & PSM_NOZERO) memset(o->org, 0, len); /* as calloc left them (PERF-34 bit 2) */
-    } else {
+    } else if (!owned) {
         const u8* src = guest_bytes(gva, len);
         if (!src) {
             free(o);

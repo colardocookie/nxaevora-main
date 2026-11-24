@@ -10,7 +10,7 @@
 
 static uint32_t padded(uint32_t bytes) { return (bytes + NVN_OP_ALIGN - 1) & ~(NVN_OP_ALIGN - 1); }
 
-int g_nvn_oplist_marks, g_nvn_unref_marks;
+int g_nvn_oplist_marks;
 /* the op stored at pos is marked. One that cannot be (no memory, or past 32 bits) loses the list's marks, never
    the op */
 static void mark(NvnOpList* list, size_t pos) {
@@ -172,14 +172,7 @@ void nvn_list_unref(NvnListStore* s, uint64_t handle) {
             size_t pos = 0;
             NvnOpHeader header;
             const void* payload;
-            const int marked = g_nvn_unref_marks && nvn_oplist_marked(&slot->list);
-            /* every op, or with its marks only the marked ones (each CALL among them, in list order) */
-            for (uint32_t m = 0;;) {
-                if (marked) {
-                    if (m == slot->list.nmarks) break;
-                    pos = slot->list.marks[m++];
-                }
-                if (!nvn_oplist_next(&slot->list, &pos, &header, &payload)) break;
+            while (nvn_oplist_next(&slot->list, &pos, &header, &payload)) {
                 if (header.code != NVN_OP_CALL) continue;
                 if (depth == cap) {
                     size_t grown = cap ? cap * 2 : 16;

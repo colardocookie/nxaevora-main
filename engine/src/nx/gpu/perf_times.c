@@ -21,7 +21,6 @@ PerfP29 g_perf_p29;
 PerfMem g_perf_mem;
 PerfWaits g_perf_waits;
 PerfHandoff g_perf_handoff;
-int g_perf_small;
 _Thread_local int g_perf_release_thread;
 int g_perf_bind;
 uint64_t g_perf_exact;

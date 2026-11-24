@@ -633,12 +633,6 @@ enum { PW_VKWAIT = 5, PW_SCAN, PW_SUBMIT, PW_ENDCB, PW_N0 }; /* after host.h's P
    samples report's sum */
 /* PERF-34's probes: a result's block made, and a freed list's walk for its CALLs */
 enum { PW_HOOKS = PW_N0, PW_COPY, PW_WRITTEN, PW_QUERY, PW_ALLOC, PW_UNREF, PW_N };
-/* SNX_ARCEUS_PERF_SMALL (PERF-34, research 11:52): small exact steps, a bit each, read once at start. 1: release()
-   wakes the release thread only when it moved g_rheld. 2: a result's block is not zeroed where every byte is written
-   before it is read. 4: a freed list's CALLs are found at its marks. 8: one written notice for a release hold's
-   payload writes, each distinct page stamped once */
-extern int g_perf_small;
-enum { PSM_WAKE = 1, PSM_NOZERO = 2, PSM_UNREF = 4, PSM_NOTICE = 8 };
 #define PERF_WAIT_SLOTS 512u
 typedef struct {
     uint64_t key[PERF_WAIT_SLOTS]; /* atomic: 0 free, else 1 << 56 | kind << 52 | who << 48 | the caller's address */
