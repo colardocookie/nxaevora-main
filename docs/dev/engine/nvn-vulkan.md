@@ -133,7 +133,33 @@ The diagnostics are in `engine/src/nx/gpu/nvn/diag/`:
 
 The NVN settings and their defaults are in `engine/src/nx/runtime/settings.txt`: `nvn_trace` 0, `nvn_legacy` 0, `nvn_drawrec` 0, `nvn_measure` 0, `nvn_native_missing` 1, `nvn_selftest` 0, `nvn_selftest_mutate` empty and `nvn_exectest` 0.
 
-The in-game tests are in `engine/src/nx/gpu/nvn/test/`. `nvn_selftest.c` needs `nvn_trace=1` and `nvn_legacy=1`. `nvn_exectest.c` needs `nvn_trace=1` and `nvn_legacy=0`. Both are diagnostics and draw nothing. The host tests are in `engine/tests/nvn/`: `nvn_objtab`, `nvn_cmdlist`, `nvn_frame`, `nvn_replay`, `nvn_rt`, `draw_record`, `nvn_measure`, `nvn_params`, `nvn_exectest`, `nvn_enum_trace`, `nvn_command_gap` and `nvn_control`, with the selftest parts `nvn_selftest_cmp`, `nvn_selftest_mem`, `nvn_selftest_rec`, `nvn_selftest_dec` and `nvn_selftest_regdiff`. `engine/tests/CMakeLists.txt` adds them to `ctest`.
+The eight `SNX_ARCEUS_PERF_*` switches of the FPS play set are on by default. Unset gives the switch's default level, one of its levels gives that level, and any other value gives 0.
+
+| Switch | Default | What it changes |
+| --- | --- | --- |
+| `SNX_ARCEUS_PERF_LANDING` | 3 | Storage results land with 64-byte masked stores under a byte mask, or with word compares without AVX-512BW. The only level is 3. |
+| `SNX_ARCEUS_PERF_REPLAY` | 3 | The replay's bind walks stop at their last set flag (1), a draw's words go to the engine as they are written (2), and the header helpers set the decoder's state themselves (3). The levels are 1 to 3. |
+| `SNX_ARCEUS_PERF_QUERY` | 1 | A samples-passed report leaves the pass open and its counts are copied at the submission's end. The only level is 1. |
+| `SNX_ARCEUS_PERF_SAMPLE` | 1 | With write tracking, a buffer's full check takes no sampled hash. The only level is 1. |
+| `SNX_ARCEUS_PERF_COMPARE` | 2 | A landing's masked pass finds its changed runs, and the pending results are kept by mapped page. The only level is 2. |
+| `SNX_ARCEUS_PERF_SCAN` | 1 | A command list keeps the offsets of its fence, wait and call ops, and the submit reads them there. The only level is 1. |
+| `SNX_ARCEUS_PERF_STORAGE` | 1 | The release queue walks translate the range they look for once. The only level is 1. |
+| `SNX_ARCEUS_PERF_INPLACE` | 4 | Reads bind pending results in place (1), a vertex stream is looked up at its exact length (2), a read skips the reuse barrier (3), and a writable composition skips `gfx_overlay` (4). Each level adds to those below, and the levels are 1 to 4. |
+
+These log and profile switches are off unless set:
+
+| Switch | What it does |
+| --- | --- |
+| `SNX_ARCEUS_PERF_TIMES` | `1` logs a `perf-times:` line every 600 presents; `2` also records every byte as it is written. |
+| `SNX_ARCEUS_PERF_PROBES` | Adds the `perf-p29:` and the other probe lines; it needs `SNX_ARCEUS_PERF_TIMES`. |
+| `SNX_ARCEUS_FRAME_LOG` | Logs the interval between the game's present posts, every 600 presents. |
+| `SNX_ARCEUS_LATENCY_PROBE` | Logs a scripted press from the HID update to the presented frames. |
+| `SNX_ARCEUS_PROFILE` | `1` sets the `profiler` option. |
+| `SNX_ARCEUS_GPU_PROFILE` | `1` sets the `vk_gpu_profile` option. |
+| `SNX_ARCEUS_VK_VALIDATION` | `1` turns on the validation layer and its synchronisation checks; `2` does the same. |
+| `SNX_ARCEUS_PATCH_HASH` | `1` takes a buffer patched in place as changed at its next full check. |
+
+The in-game tests are in `engine/src/nx/gpu/nvn/test/`. `nvn_selftest.c` needs `nvn_trace=1` and `nvn_legacy=1`. `nvn_exectest.c` needs `nvn_trace=1` and `nvn_legacy=0`. Both are diagnostics and draw nothing. The host tests are in `engine/tests/nvn/`: `nvn_objtab`, `nvn_cmdlist`, `nvn_frame`, `nvn_replay`, `nvn_rt`, `nvn_dirty`, `nvn_marks`, `nvn_sink`, `nvn_blend_slots`, `draw_record`, `nvn_measure`, `nvn_params`, `nvn_exectest`, `nvn_enum_trace`, `nvn_command_gap` and `nvn_control`, with the selftest parts `nvn_selftest_cmp`, `nvn_selftest_mem`, `nvn_selftest_rec`, `nvn_selftest_dec` and `nvn_selftest_regdiff`. `engine/tests/CMakeLists.txt` adds them to `ctest`.
 
 ## Current state
 

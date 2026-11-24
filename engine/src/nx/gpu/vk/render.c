@@ -859,7 +859,7 @@ typedef struct {
 /* The frame pass census (SNX_PASS_CENSUS=1), read-only: every 1200 presents from the 900th, up to 10 times, the
    passes of two frames in a row are logged in order (a pass is a run of draws on one set of targets). Marks: PRESENT
    the first write to the surface shown last frame, HISTORY a sample that was a target last frame only, VELOCITY? a
-   two-channel target with depth bound, DEPTHREAD a sampled depth target of this frame (docs/arceus-pass-census.md). */
+   two-channel target with depth bound, DEPTHREAD a sampled depth target of this frame (docs/dev/engine/arceus-pass-census.md). */
 #define CENSUS_PASSES 384
 #define CENSUS_SAMPLED 12
 #define CENSUS_SEEN 96
