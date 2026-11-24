@@ -624,6 +624,13 @@ add_executable(snx-test-draw-record nvn/draw_record.c "${PROJECT_SOURCE_DIR}/src
 snx_test_target(snx-test-draw-record 11)
 add_test(NAME draw_record COMMAND snx-test-draw-record)
 
+add_executable(snx-test-nvn-blend-slots nvn/nvn_blend_slots.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_params.c")
+snx_test_target(snx-test-nvn-blend-slots 11)
+if(NOT WIN32)
+    target_link_libraries(snx-test-nvn-blend-slots PRIVATE m)
+endif()
+add_test(NAME nvn_blend_slots COMMAND snx-test-nvn-blend-slots)
+
 add_executable(snx-test-nvn-measure nvn/nvn_measure.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/diag/nvn_measure_calc.c")
 snx_test_target(snx-test-nvn-measure 11)
 add_test(NAME nvn_measure COMMAND snx-test-nvn-measure)
