@@ -337,8 +337,11 @@ static void fatal_code(int code, const char* msg) {
     crashing = __atomic_load_n(&g_crashing, __ATOMIC_SEQ_CST);
     ready = plat_window_is_ready();
     final_code = (crashing || ready) ? SNX_EXIT_CRASH : code; /* the code the process ends with */
-    /* a crash handler must not wait on the progress lock, which the crashed thread may hold */
-    if (!crashing) snx_progress_error(msg, final_code);
+    /* a crash handler must not wait on the progress lock, which the crashed thread may hold: the crash writer has none */
+    if (crashing)
+        snx_progress_crash_error(msg, final_code);
+    else
+        snx_progress_error(msg, final_code);
 #if !defined(_WIN32)
     /* from the crash handler: a box or a flush could wait on a lock the crashed code holds */
     if (crashing) _exit(final_code);

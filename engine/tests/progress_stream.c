@@ -186,12 +186,12 @@ int main(void) {
                 "{\"v\":1,\"event\":\"exit\",\"code\":4}\n");
     snx_progress_test_attach(NULL, SNX_PROGRESS_OFF);
     fclose(out);
-    /* a note that the restore clears, because the child started, gives no error line */
+    /* a child that ended by itself with a nonzero code wrote its own error line: the note is cleared */
     out = attach(SNX_PROGRESS_JSONL);
     snx_progress_stage(SNX_PROGRESS_STAGE_INPUT);
     snx_progress_done(SNX_PROGRESS_STAGE_INPUT);
-    snx_progress_note_error("a spawn note");
-    snx_progress_child_restore(1);
+    snx_progress_note_error("a child error line");
+    snx_progress_child_restore(SNX_CHILD_EXITED_ERROR);
     snx_progress_finish(5);
     expect(out, "{\"v\":1,\"stage\":\"input\",\"event\":\"start\"}\n"
                 "{\"v\":1,\"stage\":\"input\",\"event\":\"done\"}\n"
@@ -203,7 +203,7 @@ int main(void) {
     snx_progress_stage(SNX_PROGRESS_STAGE_INPUT);
     snx_progress_done(SNX_PROGRESS_STAGE_INPUT);
     snx_progress_note_error("cannot start the stage");
-    snx_progress_child_restore(0);
+    snx_progress_child_restore(SNX_CHILD_NOT_STARTED);
     snx_progress_finish(1);
     expect(out, "{\"v\":1,\"stage\":\"input\",\"event\":\"start\"}\n"
                 "{\"v\":1,\"stage\":\"input\",\"event\":\"done\"}\n"
@@ -212,10 +212,83 @@ int main(void) {
                 "{\"v\":1,\"event\":\"exit\",\"code\":1}\n");
     snx_progress_test_attach(NULL, SNX_PROGRESS_OFF);
     fclose(out);
+    /* an interrupt keeps the note: finish writes it under the stage the child's next work names */
+    out = attach(SNX_PROGRESS_JSONL);
+    snx_progress_stage(SNX_PROGRESS_STAGE_INPUT);
+    snx_progress_done(SNX_PROGRESS_STAGE_INPUT);
+    snx_progress_stage_name(SNX_PROGRESS_STAGE_RUN);
+    snx_progress_note_error("the recompile was interrupted");
+    snx_progress_child_restore(SNX_CHILD_INTERRUPTED);
+    snx_progress_finish(130);
+    expect(out, "{\"v\":1,\"stage\":\"input\",\"event\":\"start\"}\n"
+                "{\"v\":1,\"stage\":\"input\",\"event\":\"done\"}\n"
+                "{\"v\":1,\"stage\":\"run\",\"event\":\"error\",\"message\":\"the recompile was interrupted\","
+                "\"code\":130}\n"
+                "{\"v\":1,\"event\":\"exit\",\"code\":130}\n");
+    snx_progress_test_attach(NULL, SNX_PROGRESS_OFF);
+    fclose(out);
+    /* a signal-ended child keeps the note: finish writes it under the stage the child's next work names */
+    out = attach(SNX_PROGRESS_JSONL);
+    snx_progress_stage(SNX_PROGRESS_STAGE_INPUT);
+    snx_progress_done(SNX_PROGRESS_STAGE_INPUT);
+    snx_progress_stage_name(SNX_PROGRESS_STAGE_RUN);
+    snx_progress_note_error("the game was killed");
+    snx_progress_child_restore(SNX_CHILD_SIGNALED);
+    snx_progress_finish(143);
+    expect(out, "{\"v\":1,\"stage\":\"input\",\"event\":\"start\"}\n"
+                "{\"v\":1,\"stage\":\"input\",\"event\":\"done\"}\n"
+                "{\"v\":1,\"stage\":\"run\",\"event\":\"error\",\"message\":\"the game was killed\","
+                "\"code\":143}\n"
+                "{\"v\":1,\"event\":\"exit\",\"code\":143}\n");
+    snx_progress_test_attach(NULL, SNX_PROGRESS_OFF);
+    fclose(out);
+    /* the stage name writes no start line: a note after it is the error line of that stage, then the exit line */
+    out = attach(SNX_PROGRESS_JSONL);
+    snx_progress_stage(SNX_PROGRESS_STAGE_INPUT);
+    snx_progress_done(SNX_PROGRESS_STAGE_INPUT);
+    snx_progress_stage_name(SNX_PROGRESS_STAGE_RUN);
+    snx_progress_note_error("the game did not start");
+    snx_progress_finish(6);
+    expect(out, "{\"v\":1,\"stage\":\"input\",\"event\":\"start\"}\n"
+                "{\"v\":1,\"stage\":\"input\",\"event\":\"done\"}\n"
+                "{\"v\":1,\"stage\":\"run\",\"event\":\"error\",\"message\":\"the game did not start\","
+                "\"code\":6}\n"
+                "{\"v\":1,\"event\":\"exit\",\"code\":6}\n");
+    snx_progress_test_attach(NULL, SNX_PROGRESS_OFF);
+    fclose(out);
+    /* a stage name alone, with no note: no error line, only the exit line */
+    out = attach(SNX_PROGRESS_JSONL);
+    snx_progress_stage(SNX_PROGRESS_STAGE_INPUT);
+    snx_progress_done(SNX_PROGRESS_STAGE_INPUT);
+    snx_progress_stage_name(SNX_PROGRESS_STAGE_RUN);
+    snx_progress_finish(7);
+    expect(out, "{\"v\":1,\"stage\":\"input\",\"event\":\"start\"}\n"
+                "{\"v\":1,\"stage\":\"input\",\"event\":\"done\"}\n"
+                "{\"v\":1,\"event\":\"exit\",\"code\":7}\n");
+    snx_progress_test_attach(NULL, SNX_PROGRESS_OFF);
+    fclose(out);
+    /* the crash writer: one error line of the open stage, with the message and the code */
+    out = attach(SNX_PROGRESS_JSONL);
+    snx_progress_stage(SNX_PROGRESS_STAGE_RUN);
+    snx_progress_crash_error("a crash of the game", 6);
+    expect(out, "{\"v\":1,\"stage\":\"run\",\"event\":\"start\"}\n"
+                "{\"v\":1,\"stage\":\"run\",\"event\":\"error\",\"message\":\"a crash of the game\",\"code\":6}\n");
+    snx_progress_test_attach(NULL, SNX_PROGRESS_OFF);
+    fclose(out);
+    /* no open stage: the crash writer writes nothing */
+    out = attach(SNX_PROGRESS_JSONL);
+    snx_progress_stage(SNX_PROGRESS_STAGE_INPUT);
+    snx_progress_done(SNX_PROGRESS_STAGE_INPUT);
+    snx_progress_crash_error("ignored", 6);
+    expect(out, "{\"v\":1,\"stage\":\"input\",\"event\":\"start\"}\n"
+                "{\"v\":1,\"stage\":\"input\",\"event\":\"done\"}\n");
+    snx_progress_test_attach(NULL, SNX_PROGRESS_OFF);
+    fclose(out);
     /* the stream off writes nothing */
     out = attach(SNX_PROGRESS_OFF);
     snx_progress_stage(SNX_PROGRESS_STAGE_INPUT);
     snx_progress_error("ignored", 1);
+    snx_progress_crash_error("ignored", 6);
     snx_progress_exit(1);
     assert(!fseek(out, 0, SEEK_END));
     assert(ftell(out) == 0);

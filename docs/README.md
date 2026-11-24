@@ -21,6 +21,8 @@ These documents tell how the engine works now. They come from the code. The stat
 - [aot-recompiler.md](dev/engine/aot-recompiler.md): the input, the stages, the output, the dispatch table, the JIT fallback and the hints.
 - [nvn-vulkan.md](dev/engine/nvn-vulkan.md): the two NVN paths, the host objects, the command lists, the frame job, the replay and the shaders.
 - [arceus-timing.md](dev/engine/arceus-timing.md): the elapsed-time clocks of the game and the hook groups that follow the frame step.
+- [arceus-temporal.md](dev/engine/arceus-temporal.md): the temporal passes (`probe` and `taa`), the object vectors, the scene rectangle and the FSR, XeSS and DLSS adapters.
+- [arceus-pass-census.md](dev/engine/arceus-pass-census.md): the read-only frame pass census and its log lines.
 
 The launcher specification comes later.
 
@@ -48,7 +50,7 @@ AI agents. They are kept as history. They are not a specification and can be out
 ### game
 
 - [arceus-timing.md](records/game/arceus-timing.md): the change of the game's fixed 1/30 second clocks to the elapsed
-  time of the frame above 30 FPS.
+  time of the frame above 30 FPS, with Discord presence, the play set (`SNX_ARCEUS_PERF_*`) and the scene scale.
 
 ### graphics
 

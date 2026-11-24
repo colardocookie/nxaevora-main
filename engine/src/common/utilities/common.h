@@ -256,10 +256,11 @@ int snx_run_ticking(const char* const* argv, const char* cwd, const char* home, 
                     void* data);
 /* Foreground workflow stage with inherited stdio, interruption forwarding and diagnostics.
    A stopped POSIX child is aborted so a rerun can restart that stage. Not thread safe.
-   child_started, when not NULL, receives 1 when the child process started, 0 when it did not. */
-int snx_run_stage(const char* const* argv, const char* cwd, const char* stage, int* child_started);
+   child_result, when not NULL, receives one of progress.h's SNX_CHILD_* values.
+   SNX_CHILD_EXITED_ERROR only when the child ended by itself with a nonzero code. */
+int snx_run_stage(const char* const* argv, const char* cwd, const char* stage, int* child_result);
 /* As above, but intentional debugger stops do not abort the game. */
-int snx_run_debug_stage(const char* const* argv, const char* cwd, const char* stage, int* child_started);
+int snx_run_debug_stage(const char* const* argv, const char* cwd, const char* stage, int* child_result);
 FILE* snx_fopen(const char* path, const char* mode);
 /* The launcher's logs, in its state folder (docs/USAGE.md#folders): what it says, a file a day named after this one
    (gui/log.h's gui_log_console_name; this name the versions before wrote, kept), and a fatal error of it or of a game

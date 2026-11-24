@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
+#include "common/utilities/common.h"
 #include "common/utilities/exit_codes.h"
 #include "common/utilities/progress.h"
 #include "common/utilities/setup.h"
@@ -23,6 +24,7 @@ int snx_switch_main(int argc, char** argv) {
     int result;
     argc = snx_setup_options(argc, argv, why, sizeof why);
     if (argc < 0) {
+        snx_tool_console();
         fprintf(stderr, "scarletnx: %s\n", why);
         return SNX_EXIT_USAGE;
     }
@@ -38,6 +40,7 @@ int snx_switch_main(int argc, char** argv) {
         snx_progress_finish(result);
         return result;
     }
+    snx_tool_console();
     fputs("Pass a game folder with -r, or an NRO, or -h. This build contains host tools only.\n", stderr);
     return SNX_EXIT_USAGE;
 }

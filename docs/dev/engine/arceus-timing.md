@@ -19,7 +19,7 @@ Pokemon Legends Arceus runs its world at 30 updates per second. Most of its cloc
 
 The install has these checks in order:
 
-1. `SNX_ARCEUS_TIMING_FIXES` must be on. It is on by default.
+1. `SNX_ARCEUS_TIMING_FIXES` must be on. It is on by default. The fixed resolution and the bare Discord path act also with it off (they are outside the layer).
 2. An invalid `SNX_ARCEUS_TARGET_FPS` value logs one line and installs nothing.
 3. A target (`60`, `120`, `unlocked` or `game`) installs at any rate. With no target, the frame limit must be above 30 FPS or unlimited. A runtime limit of `game` or 1 to 30 FPS then logs one line and installs nothing.
 4. The game must have a module named `main` with build id `ae e8 f1 50 dd a1 b5 a8 38 80 6e 1a 5e a6 82 7a d9 f3 c5 1e` and 12 zero bytes. This is build 1.1.1. Another build logs `arceus-clock: refused unsupported main build` and nothing is installed. The code does not read the title ID.
@@ -30,7 +30,7 @@ A sub-fix installs only when the clocks installed. `arceus_clock_post_jit` start
 
 ### The switches
 
-Every Arceus switch is an environment variable. Most switches use `arceus_switch_enabled`, which reads the variable with `getenv` and treats `1` as on. The value switches (`SNX_ARCEUS_TARGET_FPS`, `SNX_ARCEUS_MOVEMENT_SITES`, `SNX_ARCEUS_CLIMB_STEP`, `SNX_ARCEUS_CAMERA_SPEED`, `SNX_ARCEUS_BATTLE_SEQUENCE_FIX`, `SNX_ARCEUS_CLOUD_FIX`, `SNX_ARCEUS_WAZA_SHOT_FIX`, `SNX_ARCEUS_SCRIPT_TICK` and `SNX_ARCEUS_SCRIPT_WINDOWS`) read `getenv` directly. No Arceus switch is an `.ini` setting. `engine/src/nx/runtime/settings.txt` has no `SNX_ARCEUS` row, so a settings UI cannot list or validate these switches.
+Every Arceus switch is an environment variable. Most switches use `arceus_switch_enabled`, which reads the variable with `getenv` and is on when the variable is unset or exactly `1`. The value switches (`SNX_ARCEUS_TARGET_FPS`, `SNX_ARCEUS_MOVEMENT_SITES`, `SNX_ARCEUS_CLIMB_STEP`, `SNX_ARCEUS_CAMERA_SPEED`, `SNX_ARCEUS_BATTLE_SEQUENCE_FIX`, `SNX_ARCEUS_CLOUD_FIX`, `SNX_ARCEUS_WAZA_SHOT_FIX`, `SNX_ARCEUS_SCRIPT_TICK` and `SNX_ARCEUS_SCRIPT_WINDOWS`) read `getenv` directly, as do `SNX_ARCEUS_SCENE_SCALE`, the `SNX_ARCEUS_TEMPORAL*` switches, `SNX_ARCEUS_UPSCALER` and the eight `SNX_ARCEUS_PERF_*` levels (`perf_level`). No Arceus switch is an `.ini` setting. `engine/src/nx/runtime/settings.txt` has no `SNX_ARCEUS` row, so a settings UI cannot list or validate these switches.
 
 The main switches:
 
@@ -78,7 +78,10 @@ The main switches:
 | `SNX_ARCEUS_TEXT_TICK` | on | Runs the text reveal and the glyph step on the text's own tick. `0` turns it off. |
 | `SNX_ARCEUS_PASS_GUEST` | on | `0` to turn off. It acts at render scale 2.0 only (PARTICLE-SQUARES): at any other scale it does nothing and says so in one line, a warning when `1` was set, and that scale renders as without it. At scale 2 the game's bloom blur fetches whole texels of scaled render targets, and the scaled fetch gives each pixel only the texels of its own parity, so a small sparkle leaves square dots (8, 16 and 32 px apart at 4K). When it is on, a draw of at most 4 vertices and one instance with a fragment program, into color targets that are each at most half the guest width and height of the last presented picture, reads each scaled color render target it samples through a copy of that region at guest size, made by one linear blit (the mean of each 2x2 block, which is why it is 2.0 only) and blitted again when the target was drawn to. Its texel fetches and size queries then see guest texels, as the blur expects. Depth and stencil textures, targets the draw also renders to, groups, 3D targets and reads in another format stay as they are. A format without linear blits, an integer format or no memory keeps today's binding and is counted. The copies sit in the target's copy list beside its crops, apart from them, and go after 60 presents unused. A texture that resolves to a crop of a target (a header smaller than the target) is copied for the crop and then blitted for the guest copy, so such a source costs both. Each blit ends the current rendering pass, as crop copies do. Not covered: blurs the game draws at full size, and reduced passes drawn with more than 4 vertices or with instances. At 1440p a blind look at four frame rates found no tiles, and 720p and 1080p are not scaled up. Other scales would need an area-correct reduction (chained 2:1 blits for powers of two, a box pass otherwise). `arceus-pass-guest:` lines: one at start, then every 600 presents the draws served and the textures read as copies, the blits, the fallbacks by reason and the first 16 fragment programs served with their draws. At `0`, it is read once and nothing else changes. |
 | `SNX_ARCEUS_NVN_BLEND_TARGETS` | on | `0` to turn off. Native NVN only. The replay keeps a blend state bind for each of the 8 colour targets and the next draw sends every target bound since the last draw, in bind order. It repairs the over-bright opening cutscene. Logs an `nvn-blend-targets:` line every 600 presents. |
-| `SNX_ARCEUS_FIXED_RESOLUTION` | on | Skips the automatic 3D resolution governor update, at every frame rate and with `SNX_ARCEUS_TIMING_FIXES=0` too. `0` keeps the governor. The game's scripted size changes stay either way. |
+| `SNX_ARCEUS_FIXED_RESOLUTION` | on | Skips the automatic 3D resolution governor update, at every frame rate and with `SNX_ARCEUS_TIMING_FIXES=0` too. It is on unless set to a value other than `1`; then the governor stays. The game's scripted size changes stay either way. |
+| `SNX_ARCEUS_DISCORD` | on | Discord presence. It is on unless set to a value other than `1`. It needs the player's `SNX_ARCEUS_DISCORD_APP`; with neither the application id nor the switch set, presence stays off. See `docs/records/game/arceus-timing.md`. |
+| `SNX_ARCEUS_DISCORD_APP` | none | The player's Discord application id, digits only. It is never in the repository, and only its last four digits are logged. |
+| `SNX_ARCEUS_DISCORD_BARE` | on | Discord presence without the timing layer (the game's own 30 FPS, another refused target, or `SNX_ARCEUS_TIMING_FIXES=0`). It is on unless set to a value other than `1`; without the timing layer, that value turns the presence off. |
 
 #### Probes and traces, off by default, observe only
 
@@ -180,7 +183,7 @@ The gravity site `198DA8C` in `198D7E4` loads the negated step. The movement sit
 - On the supported build with a frame limit above 30 FPS or unlimited, the elapsed-time clocks install by default.
 - The default sub-fixes install when the clocks install: physics, navigation, world timers, gravity, movement, capture, battle sequence, map cursor, fade, AI tick, turn, list scroll, ride swap, ride ramp, capped falls, air steering, direct move, field attacks, attack object, shot, cloud, climb, wall jump, ledge, event camera, blink, menu repeat, camera input and camera rate, script tick, script windows.
 - Water and effects install in the same post-JIT pass, near its end.
-- Off by default: the probes and traces and the fixed resolution switch. The probes and traces only observe. The fixed resolution switch needs an explicit value of `1`.
+- Off by default: the probes and traces. They only observe. The fixed resolution switch is on by default (on unless set to a value other than `1`).
 - Known issue, not fixed: with `SNX_ARCEUS_TEXT_TICK` on, the "next" prompt at the bottom right of the text box shows for a short time and then goes away.
 - At `fps_limit=game` or 1 to 30 FPS with no target, the whole layer installs nothing.
 - The layer supports only the `main` module of build 1.1.1. Another build logs one line and installs nothing.

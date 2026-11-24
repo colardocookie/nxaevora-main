@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the NXAevora contributors */
-/* SNX_ARCEUS_PASS_GUEST, on by default and 0 to turn off (PARTICLE-SQUARES, docs/arceus-timing.md): a pass the game
+/* SNX_ARCEUS_PASS_GUEST, on by default and 0 to turn off (PARTICLE-SQUARES, docs/dev/engine/arceus-timing.md): a pass the game
    draws at reduced size reads each scaled colour target it samples through a copy at guest size, so its texel fetches
    step guest texels as on the console. Only at a render scale of exactly 2.0, where the copy's one linear blit is the
    mean of each 2x2 block. The GPU thread calls all of it */
