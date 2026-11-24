@@ -87,7 +87,7 @@ The game's settings file is `<g_confdir><g_exename>.ini`. `snx_main` opens it wi
 
 `engine/src/nx/runtime/settings.txt` is the one schema for every setting of the runtime, the launcher and the recompiler. The build reads it and generates the `Settings` struct, `g_settings` and the `IniOpt` tables. `engine/cmake/settings.cmake` runs that step. A row with scope `recompile` also enters `g_recompile_game_ini`.
 
-A `--KEY=VALUE` argument overrides a value for one run. `ini_poll` reloads a changed file while the game runs. When the file is absent, the recompile makes it with a header and `[Display] language=1`.
+A `--KEY=VALUE` argument overrides a value for one run. `ini_poll` reloads a changed file while the game runs. When the file is absent, the recompile makes it with a header and `[Display] language=1`. The runtime writes the file back at a start, at a reload and when the game's menu changes a setting, but not while the last read found a key that the store cannot keep (more than 256 keys, a key of 64 bytes or more, or a value of 2048 bytes or more). In such a run the changes stay in memory only, and the log warns once. A reload of a complete file lets the writes start again.
 
 The CLI commands use `snx_settings_load`, `snx_settings_value` and `snx_settings_save` in `engine/src/nx/runtime/options.c`. `settings schema` prints one JSON document, `{"v":1,"settings":[...]}`, made at run time from the same tables.
 

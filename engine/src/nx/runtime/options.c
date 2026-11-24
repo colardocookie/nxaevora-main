@@ -154,6 +154,10 @@ static u64 g_seen;    /* a changed file seen by the last poll, read once a secon
 /* where the last write_file that failed stopped, and the system's reason: the CLI's settings set names the stage */
 static const char* g_write_stage;
 static char g_write_why[256];
+/* 1 when the last parse of the file did not keep every key: write_file then leaves the file alone, so a write cannot
+   erase a key the store refused. A missing file is not parsed and an empty one gives 0, so the default file is still
+   written */
+static int g_write_blocked;
 
 static u64 fnv1a(const unsigned char* p, size_t n) {
     u64 h = 0xCBF29CE484222325ull;
@@ -197,8 +201,8 @@ static int store_put(const char* key, const char* value) {
     memcpy(e->value, value, n + 1);
     return 0;
 }
-/* the text's keys into the store: 0, or -1 when it holds one the store could not keep (the CLI's settings commands
-   refuse such a file, since a write would lose that key; a game start keeps its old behavior, which leaves it out) */
+/* the text's keys into the store: 0, or -1 when it holds one the store could not keep. The CLI's settings commands
+   refuse such a file, and the runtime writes no file in such a run, since the write would lose that key */
 static int store_parse(char* text) {
     SnxIni ini;
     char *key, *value;
@@ -410,13 +414,15 @@ static int section_set(const IniSection* section) {
             if (o->def || store_find(o->key)) return 1;
     return 0;
 }
-/* the store into the file: beside it, then moved over it, so the file is always whole. 0, or -1 (warned once) */
+/* the store into the file: beside it, then moved over it, so the file is always whole. 0, -1 (warned once), or 1
+   with nothing written because the last parse of the file was incomplete */
 static int write_file(void) {
     char tmp[sizeof g_path + 8];
     FILE* f;
     int s, t, i, other = 0, failed;
     unsigned char* text;
     size_t size;
+    if (g_write_blocked) return 1;
     snprintf(tmp, sizeof tmp, "%s.tmp", g_path);
     f = fopen(tmp, "wb");
     if (!f) {
@@ -489,6 +495,18 @@ static void debug_shown(int reloaded) {
         LOG("debug: after the reload, every Debug setting is at its default\n");
 }
 
+/* Records whether the last parse kept every key. The change into the blocked state warns once, and the change out of
+   it says that writes start again; a blocked write itself makes no line */
+static void set_write_blocked(int blocked) {
+    if (blocked == g_write_blocked) return;
+    g_write_blocked = blocked;
+    if (blocked)
+        WARN("settings: %s has keys that the store cannot keep; the file is not written in this run, so changes made "
+             "in the game are not saved\n", g_path);
+    else
+        LOG("settings: %s was reloaded whole; the file is written again\n", g_path);
+}
+
 void ini_open(const char* path) {
     Pending taken[PENDING_MAX];
     unsigned char* text;
@@ -504,7 +522,7 @@ void ini_open(const char* path) {
     if (!text && !snx_path_missing(g_path))
         fatal("The settings file %s exists but cannot be read (%s)", g_path, why);
     if (text) {
-        store_parse((char*)text);
+        set_write_blocked(store_parse((char*)text) != 0);
         g_hash = g_seen = fnv1a(text, size);
         free(text);
     }
@@ -596,7 +614,7 @@ void ini_poll(int final) {
     h = fnv1a(text, size);
     if (h != g_hash && (final ? pending : h == g_seen)) {
         /* changed, and settled (seen the same a second before), or the menu's changes are to be saved at exit */
-        store_parse((char*)text);
+        set_write_blocked(store_parse((char*)text) != 0);
         n = pending_take(taken);
         apply_all();
         LOG("settings: %s reloaded\n", g_path);

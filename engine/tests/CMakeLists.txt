@@ -1162,6 +1162,11 @@ snx_test_target(snx-test-runtime-module-abi 99)
 target_link_libraries(snx-test-runtime-module-abi PRIVATE snx_test_common)
 add_test(NAME runtime_module_abi COMMAND snx-test-runtime-module-abi $<TARGET_FILE:scarletnx>
     $<TARGET_FILE:snx-test-module-abi> $<TARGET_FILE:snx-test-module-abi-arm>)
+# a settings file with a key the store cannot keep is not written back; one the store keeps is (runtime/options.c)
+add_test(NAME runtime_settings_partial COMMAND "${CMAKE_COMMAND}" "-DRUNTIME=$<TARGET_FILE:scarletnx>"
+         "-DMODULE=$<TARGET_FILE:snx-test-module-abi>"
+         "-DABI_HEADER=${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu.h"
+         -P "${CMAKE_CURRENT_SOURCE_DIR}/settings_partial.cmake")
 # the module contract's layout as recorded when SNX_ABI last rose (docs/ARCHITECTURE.md, Module ABI)
 add_executable(snx-test-module-contract module_contract.c)
 snx_test_target(snx-test-module-contract 99)
