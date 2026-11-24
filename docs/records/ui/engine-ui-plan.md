@@ -296,6 +296,10 @@ relative path argument uses the current directory. Every other path does not dep
 
 `settings list` refuses other arguments with exit 2. It does not ignore them.
 
+`settings get` and `settings set` are exit 1 when the `.ini` cannot be read, or when it has a key that the store
+cannot keep; `set` is exit 1 when the `.ini` cannot be written. They are exit 2 for a bad argument or a key that is not
+a setting, and exit 3 when there is no game or no `.ini` at `PATH`.
+
 `settings schema` comes from the `settings.txt` tables at run time. It is not a file made at build time. The
 top level is `{"v":1,"settings":[...]}`. Each setting has these fields:
 

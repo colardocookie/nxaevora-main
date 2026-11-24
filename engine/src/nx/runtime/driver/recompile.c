@@ -41,7 +41,7 @@ int snx_recompile_value_taken(const IniOpt* o, const char* value, char* out, siz
     return 1;
 }
 static void usage(void) {
-    puts("Usage: nxaevora-engine -r INPUT [NAME] [OPTIONS]\n"
+    puts("Usage: nxaevora-engine -r|--recompile INPUT [NAME] [OPTIONS]\n"
          "  INPUT                  Game/ExeFS folder (exefs/, romfs/, control.nacp) or .nro\n"
          "  --name NAME            Output name (default: the title ID, else the NPDM's or input name)\n"
          "  --outdir DIR           Where the game's folder goes (default: recompiled/)\n"
