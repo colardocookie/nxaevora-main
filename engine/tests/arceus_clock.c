@@ -95,7 +95,7 @@ int mem_map(u64 address, u64 size, u32 state, u32 perm) {
     (void)address; (void)size; (void)state; (void)perm;
     assert(0); return -1;
 }
-/* The JIT is asked only by the throw guard's and the bare presence path's install tests (jit_allowed: jit_wait
+/* The JIT is asked only by the throw guard's, the fixed resolution's and the bare presence path's install tests (jit_allowed: jit_wait
    answers jit_answer for the last change) and by the text probe's (jit_stub_on: each jit_wait answers the next of
    jit_bodies). Every change is noted both ways, and each test sets the counts it reads */
 static int jit_allowed, jit_stub_on;
@@ -332,6 +332,76 @@ static void unset_flag(const char* name) {
     assert(!unsetenv(name));
 #endif
 }
+/* The governor patch at CC35A4 (the user, 2026-11-20: fixed resolution by default): unset or 1 turns its range
+   check's SUB into MOV W9,#3, the governor's early return, 0 or any other value leaves it. */
+static void test_fixed_resolution(void) {
+    static u64 lo[1];
+    static const u32 len[1] = {0x2c8};
+    static u8 stale[1];
+    static GuestFn entry[1];
+    const u64 pc = 256;
+    SnxModInfo info = {.name = "main", .base = pc - 0xcc35a4};
+    memcpy(info.build_id, arceus_main_id, sizeof info.build_id < sizeof arceus_main_id ? sizeof info.build_id
+                                                                                        : sizeof arceus_main_id);
+    const SnxModule module = {.nmods = 1, .mods = &info, .nfns = 1, .fn_lo = lo, .fn_len = len, .stale = stale,
+                              .entry_fn = entry};
+    const SnxModule* const saved_mod = g_mod;
+    const u64 saved_base = main_base, saved_lo = g_code_lo, saved_hi = g_code_hi;
+    const int saved_timing = timing_enabled, saved_clocks = clocks_installed, saved_active = fixed_resolution_active;
+    const char* const values[] = {NULL, "1", "0", "2"};
+    g_mod = &module, main_base = 0, lo[0] = pc, g_code_lo = 0, g_code_hi = sizeof memory; /* main_base unused */
+    jit_answer = jit_compiled;
+    for (unsigned i = 0; i < sizeof values / sizeof values[0]; i++) {
+        memset(memory + pc, 0, 0x2c8);
+        gw32(pc, 0xd10103ff), gw32(pc + 0x20, 0x51000509), gw32(pc + 0x24, 0x7100093f);
+        gw32(pc + 0x28, 0x54000308), gw32(pc + 0x94, 0xd65f03c0);
+        if (values[i]) flag("SNX_ARCEUS_FIXED_RESOLUTION", values[i]);
+        else unset_flag("SNX_ARCEUS_FIXED_RESOLUTION");
+        const int on = i < 2;
+        jit_allowed = 1, jit_changes = 0, fixed_resolution_active = 0;
+        fixed_resolution_init();
+        jit_allowed = 0;
+        assert(gr32(pc + 0x20) == (on ? 0x52800069u : 0x51000509u) && jit_changes == (unsigned)on);
+        assert(gr32(pc) == 0xd10103ff && gr32(pc + 0x24) == 0x7100093f && gr32(pc + 0x94) == 0xd65f03c0);
+        /* the scene scale's guard reads this: set exactly when the patch went in */
+        assert(fixed_resolution_active == on);
+    }
+    /* At the game's own 30 FPS the timing layer is off and main_base stays 0, and with SNX_ARCEUS_TIMING_FIXES=0
+       post_jit returns before every timing fix: it still patches the governor first, and =0 still keeps it */
+    for (int master_off = 0; master_off < 2; master_off++)
+        for (int keep = 0; keep < 2; keep++) {
+            memset(memory + pc, 0, 0x2c8);
+            gw32(pc, 0xd10103ff), gw32(pc + 0x20, 0x51000509), gw32(pc + 0x24, 0x7100093f);
+            gw32(pc + 0x28, 0x54000308), gw32(pc + 0x94, 0xd65f03c0);
+            if (keep) flag("SNX_ARCEUS_FIXED_RESOLUTION", "0");
+            else unset_flag("SNX_ARCEUS_FIXED_RESOLUTION");
+            if (master_off) flag("SNX_ARCEUS_TIMING_FIXES", "0");
+            else unset_flag("SNX_ARCEUS_TIMING_FIXES");
+            timing_enabled = clocks_installed = 0, main_base = 0;
+            jit_allowed = 1, jit_changes = 0, fixed_resolution_active = 0;
+            arceus_clock_post_jit();
+            jit_allowed = 0;
+            assert(gr32(pc + 0x20) == (keep ? 0x51000509u : 0x52800069u) && jit_changes == (unsigned)!keep);
+            assert(fixed_resolution_active == !keep);
+        }
+    unset_flag("SNX_ARCEUS_TIMING_FIXES");
+    jit_answer = NULL;
+    /* Another main build is left alone */
+    gw32(pc + 0x20, 0x51000509);
+    unset_flag("SNX_ARCEUS_FIXED_RESOLUTION");
+    info.build_id[0] ^= 1;
+    fixed_resolution_init();
+    assert(gr32(pc + 0x20) == 0x51000509u);
+    info.build_id[0] ^= 1;
+    /* A changed function is refused with the switch on */
+    gw32(pc + 0x20, 0x51000509), gw32(pc + 0x24, 0);
+    fixed_resolution_init();
+    assert(gr32(pc + 0x20) == 0x51000509u);
+    memset(memory + pc, 0, 0x2c8);
+    g_mod = saved_mod, main_base = saved_base, g_code_lo = saved_lo, g_code_hi = saved_hi;
+    timing_enabled = saved_timing, clocks_installed = saved_clocks, fixed_resolution_active = saved_active;
+}
+
 /* Discord presence is on by default, needs an application id, and says why it is off only when asked for */
 static void test_discord_default(void) {
     static GuestFn table[1];
@@ -879,7 +949,8 @@ static void test_defaults_on(void) {
         "SNX_ARCEUS_LIST_SCROLL_FIX", "SNX_ARCEUS_WALL_JUMP_FIX", "SNX_ARCEUS_LEDGE_FIX",
         "SNX_ARCEUS_MOVEMENT_FIX", "SNX_ARCEUS_CAPPED_FALL_FIX", "SNX_ARCEUS_AIR_STEERING_FIX",
         "SNX_ARCEUS_RIDE_SWAP_FIX", "SNX_ARCEUS_RIDE_RAMP_FIX",
-        "SNX_ARCEUS_DIRECT_MOVE_FIX", "SNX_ARCEUS_FIELD_WAZA_FIX", "SNX_ARCEUS_WAZA_OBJECT_FIX"
+        "SNX_ARCEUS_DIRECT_MOVE_FIX", "SNX_ARCEUS_FIELD_WAZA_FIX", "SNX_ARCEUS_WAZA_OBJECT_FIX",
+        "SNX_ARCEUS_FIXED_RESOLUTION"
     };
     for (unsigned i = 0; i < sizeof enabled / sizeof enabled[0]; i++)
         assert(arceus_switch_enabled(enabled[i], 1));
@@ -921,8 +992,7 @@ static void test_defaults_on(void) {
     unset_flag("SNX_ARCEUS_BATTLE_SEQUENCE_FIX");
     static const char* const probes[] = {
         "SNX_ARCEUS_CLOCK_TRACE", "SNX_ARCEUS_DIALOGUE_TRACE", "SNX_ARCEUS_CAMERA_TRACE",
-        "SNX_ARCEUS_TIMING_RESEARCH", "SNX_ARCEUS_CADENCE_CENSUS", "SNX_ARCEUS_GRAVITY_PROBE",
-        "SNX_ARCEUS_FIXED_RESOLUTION"
+        "SNX_ARCEUS_TIMING_RESEARCH", "SNX_ARCEUS_CADENCE_CENSUS", "SNX_ARCEUS_GRAVITY_PROBE"
     };
     for (unsigned i = 0; i < sizeof probes / sizeof probes[0]; i++)
         assert(!arceus_switch_enabled(probes[i], 0));
@@ -3236,6 +3306,144 @@ static void test_tick_end(void) {
     tick_end(1);
 }
 
+/* SNX_ARCEUS_SCENE_SCALE: what the switch's text means, when the game's table may be written, and the real install
+   on a table laid out in the test's memory. */
+static void scene_table(u64 table) {
+    const float pairs[ARCEUS_SCENE_SCALE_WORDS] = {0.9f, 0.85f, 0.85f, 0.8f, 0.8f, 0.7f, 1.0f, 1.0f, 0.5f, 0.5f};
+    memset(memory, 0, sizeof memory);
+    for (int i = 0; i < ARCEUS_SCENE_SCALE_WORDS; i++) guest_float_write(table + 4 * (u64)i, pairs[i]);
+}
+static void test_scene_scale(void) {
+    float scale = 0.0f;
+    /* unset, 1.0 and above: off, and the scale stays 1 */
+    assert(arceus_scene_scale_parse(NULL, &scale) == ARCEUS_SCENE_SCALE_OFF && scale == 1.0f);
+    assert(arceus_scene_scale_parse("1", &scale) == ARCEUS_SCENE_SCALE_OFF && scale == 1.0f);
+    assert(arceus_scene_scale_parse("1.0", &scale) == ARCEUS_SCENE_SCALE_OFF && scale == 1.0f);
+    assert(arceus_scene_scale_parse("2.5", &scale) == ARCEUS_SCENE_SCALE_OFF && scale == 1.0f);
+    /* from 0.5 to below 1.0: used as written */
+    assert(arceus_scene_scale_parse("0.5", &scale) == ARCEUS_SCENE_SCALE_USED && scale == 0.5f);
+    assert(arceus_scene_scale_parse("0.75", &scale) == ARCEUS_SCENE_SCALE_USED && scale == 0.75f);
+    assert(arceus_scene_scale_parse(".9", &scale) == ARCEUS_SCENE_SCALE_USED && scale == 0.9f);
+    assert(arceus_scene_scale_parse("0.999", &scale) == ARCEUS_SCENE_SCALE_USED && scale == 0.999f);
+    assert(arceus_scene_scale_parse("7.5e-1", &scale) == ARCEUS_SCENE_SCALE_USED && scale == 0.75f);
+    /* Everything else is refused and leaves the scale at 1: below 0.5 (never raised to it), nothing, text, text
+       after a number, and what is not finite. */
+    static const char* const bad[] = {"0.49", "0", "-0.75", "",     "abc",  "0.75x", "0.75 ", "0,75",
+                                      "nan",  "NAN", "inf",  "-inf", "1e99", "-1e99", "0x",    " "};
+    for (unsigned i = 0; i < sizeof bad / sizeof *bad; i++) {
+        scale = 0.25f;
+        assert(arceus_scene_scale_parse(bad[i], &scale) == ARCEUS_SCENE_SCALE_BAD);
+        assert(scale == 1.0f);
+    }
+    /* Written as p/q, whole numbers with 1 <= p < q <= 64 and nothing else: divided in double, narrowed once.
+       Two thirds times 3840 and 2160 then lands on 2560 and 1440 in the float the game is given. */
+    assert(arceus_scene_scale_parse("2/3", &scale) == ARCEUS_SCENE_SCALE_USED && scale == (float)(2.0 / 3.0));
+    assert(fabsf(3840.0f * scale - 2560.0f) < 0.001f && fabsf(2160.0f * scale - 1440.0f) < 0.001f);
+    assert(arceus_scene_scale_parse("3/4", &scale) == ARCEUS_SCENE_SCALE_USED && scale == 0.75f);
+    assert(arceus_scene_scale_parse("1/2", &scale) == ARCEUS_SCENE_SCALE_USED && scale == 0.5f);
+    assert(arceus_scene_scale_parse("63/64", &scale) == ARCEUS_SCENE_SCALE_USED && scale == 0.984375f);
+    assert(arceus_scene_scale_parse("32/64", &scale) == ARCEUS_SCENE_SCALE_USED && scale == 0.5f);
+    assert(arceus_scene_scale_parse("02/03", &scale) == ARCEUS_SCENE_SCALE_USED && scale == (float)(2.0 / 3.0));
+    /* Written as pofq, for a launcher that cannot pass a slash: the same rules, the same arithmetic and the
+       very same float. */
+    {
+        static const char* const pairs[][2] = {{"2of3", "2/3"}, {"3of4", "3/4"}, {"1of2", "1/2"}, {"63of64", "63/64"},
+                                               {"02of03", "02/03"}, {"5of8", "5/8"}};
+        for (unsigned i = 0; i < sizeof pairs / sizeof *pairs; i++) {
+            float slash = 0.0f;
+            assert(arceus_scene_scale_parse(pairs[i][0], &scale) == ARCEUS_SCENE_SCALE_USED);
+            assert(arceus_scene_scale_parse(pairs[i][1], &slash) == ARCEUS_SCENE_SCALE_USED);
+            assert(!memcmp(&scale, &slash, sizeof scale));
+        }
+        static const char* const words[] = {"2of",   "of3",   "2 of 3", "2OF3",  "2of3x", "2Of3",  "2oF3",  "2o3",
+                                            "2f3",   "2ofof3", "2of/3", "2/of3", "1of3",  "3of2",  "0of5",  "2of0",
+                                            "65of66", "2of3 ", " 2of3", "of",    "o",     "2of3of4", "002of3", "-2of3"};
+        for (unsigned i = 0; i < sizeof words / sizeof *words; i++) {
+            scale = 0.25f;
+            assert(arceus_scene_scale_parse(words[i], &scale) == ARCEUS_SCENE_SCALE_BAD);
+            assert(scale == 1.0f);
+        }
+    }
+    /* refused: under 0.5, p not under q, a part of 0 or over 64, a missing part, and anything else in the value */
+    static const char* const parts[] = {"1/3",  "3/2",   "3/3",  "0/5",  "2/0",   "2/3x", " 2/3", "2/3 ",  "65/66",
+                                        "1/65", "31/64", "/3",   "2/",   "/",     "2//3", "2/3/4", "-2/3", "2/-3",
+                                        "+2/3", "2.0/3", "2/3.0", "2 /3", "002/3", "2/003", "a/b",  "1e0/2"};
+    for (unsigned i = 0; i < sizeof parts / sizeof *parts; i++) {
+        scale = 0.25f;
+        assert(arceus_scene_scale_parse(parts[i], &scale) == ARCEUS_SCENE_SCALE_BAD);
+        assert(scale == 1.0f);
+    }
+    /* the guard on the table's words: the governor first, then both words of the pair, then the pair after it */
+    const float table[ARCEUS_SCENE_SCALE_WORDS] = {0.9f, 0.85f, 0.85f, 0.8f, 0.8f, 0.7f, 1.0f, 1.0f, 0.5f, 0.5f};
+    uint32_t words[ARCEUS_SCENE_SCALE_WORDS], changed[ARCEUS_SCENE_SCALE_WORDS];
+    memcpy(words, table, sizeof words);
+    assert(ARCEUS_SCENE_SCALE_TABLE + 4 * ARCEUS_SCENE_SCALE_PAIR == 0x3978758u);
+    assert(arceus_scene_scale_guard(1, words) == ARCEUS_SCENE_GUARD_OK);
+    assert(arceus_scene_scale_guard(0, words) == ARCEUS_SCENE_GUARD_GOVERNOR);
+    for (int word = 0; word < 2; word++)
+        for (int kind = 0; kind < 3; kind++) {
+            memcpy(changed, words, sizeof changed);
+            /* one bit above 1.0, one bit below, and 0.75 as if already scaled */
+            changed[ARCEUS_SCENE_SCALE_PAIR + word] = kind == 0 ? 0x3f800001u : kind == 1 ? 0x3f7fffffu : 0x3f400000u;
+            assert(arceus_scene_scale_guard(1, changed) == ARCEUS_SCENE_GUARD_PAIR);
+        }
+    for (int word = 2; word < 4; word++) {
+        memcpy(changed, words, sizeof changed);
+        changed[ARCEUS_SCENE_SCALE_PAIR + word] = 0x3f800000u;
+        assert(arceus_scene_scale_guard(1, changed) == ARCEUS_SCENE_GUARD_TABLE);
+    }
+    /* the three pairs before are not tested: other values there do not refuse */
+    memcpy(changed, words, sizeof changed);
+    for (int word = 0; word < ARCEUS_SCENE_SCALE_PAIR; word++) changed[word] = 0;
+    assert(arceus_scene_scale_guard(1, changed) == ARCEUS_SCENE_GUARD_OK);
+    /* the write took only when both words read back as written */
+    assert(arceus_scene_scale_took(0x3f400000u, 0x3f400000u, 0x3f400000u));
+    assert(!arceus_scene_scale_took(0x3f400000u, 0x3f400000u, 0x3f800000u));
+    assert(!arceus_scene_scale_took(0x3f400000u, 0x3f800000u, 0x3f400000u));
+
+    /* The install itself. The module's base is chosen so that the table lies at 256 in the test's memory. */
+    const u64 saved_base = main_base, at = 256, pair = at + 4 * ARCEUS_SCENE_SCALE_PAIR;
+    const int saved_active = fixed_resolution_active;
+    u8 before[sizeof memory];
+    main_base = at - ARCEUS_SCENE_SCALE_TABLE;
+    /* 0: all in order. Then what must leave every byte as it was: 1 the switch unset, 2 at 1.0, 3 not a number,
+       4 below 0.5, 5 the governor not off, 6 and 7 one word of the pair not 1.0, 8 the pair after it not 0.5,
+       9 the table outside mapped memory. */
+    for (int kind = 0; kind < 10; kind++) {
+        scene_table(at);
+        fixed_resolution_active = kind != 5;
+        if (kind == 1) unset_flag("SNX_ARCEUS_SCENE_SCALE");
+        else flag("SNX_ARCEUS_SCENE_SCALE", kind == 2 ? "1.0" : kind == 3 ? "0.75x" : kind == 4 ? "0.4" : "0.75");
+        if (kind == 6) guest_float_write(pair, 0.9f);
+        if (kind == 7) guest_float_write(pair + 4, 0.9f);
+        if (kind == 8) guest_float_write(pair + 8, 1.0f);
+        if (kind == 9) main_base = sizeof memory - 8 - ARCEUS_SCENE_SCALE_TABLE;
+        memcpy(before, memory, sizeof memory);
+        scene_scale_init();
+        if (kind == 9) main_base = at - ARCEUS_SCENE_SCALE_TABLE;
+        if (kind) {
+            assert(!memcmp(before, memory, sizeof memory));
+            continue;
+        }
+        /* both words of the pair are the number, and nothing else moved */
+        assert(guest_float(pair) == 0.75f && guest_float(pair + 4) == 0.75f);
+        guest_float_write(pair, 1.0f);
+        guest_float_write(pair + 4, 1.0f);
+        assert(!memcmp(before, memory, sizeof memory));
+    }
+    /* a second install finds the pair already changed and leaves it */
+    scene_table(at);
+    fixed_resolution_active = 1;
+    flag("SNX_ARCEUS_SCENE_SCALE", "0.75");
+    scene_scale_init();
+    flag("SNX_ARCEUS_SCENE_SCALE", "0.5");
+    scene_scale_init();
+    assert(guest_float(pair) == 0.75f && guest_float(pair + 4) == 0.75f);
+    unset_flag("SNX_ARCEUS_SCENE_SCALE");
+    main_base = saved_base;
+    fixed_resolution_active = saved_active;
+    memset(memory, 0, sizeof memory);
+}
 static unsigned throw_original_calls;
 static void throw_original(CPU* c, u64 entry) {
     assert(entry == 0x16e33ec);
@@ -4558,6 +4766,7 @@ int main(void) {
     test_tick_end();
     test_mon_read();
     test_battle_mon();
+    test_scene_scale();
     test_throw_guard();
     test_throw_guard_init();
     test_probe_master_switch();
@@ -4572,6 +4781,7 @@ int main(void) {
     test_text_tick();
     test_ride_swap();
     test_defaults_on();
+    test_fixed_resolution();
     test_discord_default();
     test_tick_switch_defaults();
     test_discord_layer_off();

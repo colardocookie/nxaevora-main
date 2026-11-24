@@ -26,14 +26,45 @@ typedef struct {
     const char* const* extensions;
     uint32_t extension_count;
     bool validation, portability;
+    /* with validation: the layer's synchronisation checks too, where the layer lists the extension for them */
+    bool synchronization;
+    /* with validation: the layer's limit of repeated messages asked off, where the layer lists its settings */
+    bool message_limit_off;
     PFN_vkDebugUtilsMessengerCallbackEXT debug;
 } SnxVkInstanceInfo;
 typedef struct {
     VkInstance instance;
     VkDebugUtilsMessengerEXT messenger;
-    bool validation;  /* the layer is on: false when it was asked for and is not installed */
+    bool validation;  /* the layer is on: false when it was asked for and was not found */
+    /* when it was asked for and is not on, why: SNX_VK_LAYER_* of the loader's list, and the last call's result.
+       Only "the whole list does not hold it" means that it is not installed. */
+    int validation_why;
+    VkResult validation_result;
     bool portability; /* VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR */
+    /* the synchronisation checks were asked for and the instance was made with them. What the layer then does
+       cannot be read back. When they were wanted and not asked for, why: SNX_VK_LAYER_* below, and the result
+       of the call that failed. */
+    bool synchronization;
+    int synchronization_why;
+    VkResult synchronization_result;
+    /* The layer's limit of repeated messages was asked off (enable_message_limit = false) and the instance was
+       made with that. Asked, not confirmed: a setting cannot be read back. When it was wanted and not asked:
+       SNX_VK_LAYER_* of the layer's list for its settings' extension with the last call's result, or
+       limit_built false when the headers this was built with do not have the extension. */
+    bool limit_asked, limit_built;
+    int limit_why;
+    VkResult limit_result;
+    bool messenger_asked;      /* a messenger was to be made: the layer is on and a callback was given */
+    VkResult messenger_result; /* what making it gave: the messenger is there only with VK_SUCCESS */
 } SnxVkInstance;
+/* How a layer's own list of instance extensions answered for one name: it is in the list (also in a part of
+   it), the list was read whole and does not hold it, the list stayed incomplete after three tries so that its
+   absence is not known, or a call failed (the count's, the list's, or no memory for the list). */
+enum { SNX_VK_LAYER_HAS, SNX_VK_LAYER_LACKS, SNX_VK_LAYER_PART, SNX_VK_LAYER_COUNT_FAILED, SNX_VK_LAYER_LIST_FAILED,
+       SNX_VK_LAYER_NO_MEMORY };
+int snx_vk_layer_extension(const char* layer, const char* name, VkResult* result);
+/* the same answers for a layer's own name in the loader's list of layers */
+int snx_vk_layer_search(const char* name, VkResult* result);
 VkResult snx_vk_instance_create(const SnxVkInstanceInfo* info, SnxVkInstance* out);
 void snx_vk_instance_free(SnxVkInstance* instance);
 
