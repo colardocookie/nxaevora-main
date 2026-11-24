@@ -429,3 +429,45 @@ void gui_settings_arceus_note(GuiSettings* s) {
         if (!s->values[i].kind && s->keys[i].section && !strcmp(s->keys[i].section, GUI_SETTINGS_ARCEUS))
             s->keys[i].about = note;
 }
+
+void gui_settings_arceus_capabilities(GuiSettings* s, const char* text) {
+    static const char* const names[3] = {"fsr", "dlss", "xess"};
+    static const char* const values[3] = {"2", "3", "4"}; /* settings.txt's arceus_upscaling: FSR, DLSS, XeSS */
+    static const char* marked[16];
+    static char labels[3][GUI_SETTING_TEXT];
+    static char help[2048];
+    static const char* const* words;
+    static const char* about;
+    int row = -1, n = 0;
+    for (int i = 0; i < s->count && row < 0; ++i)
+        if (!s->values[i].kind && s->values[i].key && !strcmp(s->values[i].key, "arceus_upscaling")) row = i;
+    if (row < 0 || !s->keys[row].words || !s->values[row].values) return;
+    GuiThemeKey* k = &s->keys[row];
+    if (k->words != marked) { /* the row's own, kept for every later check */
+        words = k->words;
+        about = k->about;
+    }
+    while (words[n] && n < 15) ++n;
+    for (int w = 0; w < n; ++w) marked[w] = words[w];
+    marked[n] = NULL;
+    size_t at = (size_t)snprintf(help, sizeof help, "%s\n", about ? about : "");
+    for (int u = 0; u < 3; ++u) {
+        char want[48], line[512] = "";
+        const char* c = text ? text : "";
+        snprintf(want, sizeof want, "arceus-capabilities: %s: ", names[u]);
+        for (; *c; c += strcspn(c, "\n"), c += *c == '\n')
+            if (!strncmp(c, want, strlen(want))) snprintf(line, sizeof line, "%.*s", (int)strcspn(c, "\r\n"), c);
+        const char* what = line[0] ? line + strlen(want) : "could not be checked";
+        if (at < sizeof help - 1)
+            at += (size_t)snprintf(help + at, sizeof help - at, "%s%s: %s", u ? "\n" : "", names[u], what);
+        if (!strncmp(what, "available", 9)) continue;
+        for (int w = 1; w < n; ++w)
+            if (s->values[row].values[w] && !strcmp(s->values[row].values[w], values[u])) {
+                snprintf(labels[u], sizeof labels[u], "%s - %s", words[w],
+                         line[0] ? "not available" : "not checked");
+                marked[w] = labels[u];
+            }
+    }
+    k->words = marked;
+    k->about = help;
+}

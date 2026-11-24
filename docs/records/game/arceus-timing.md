@@ -604,3 +604,13 @@ the device is made, is left out as before, and the scene stays at its chosen siz
 value, such as the temporal code's lines about `SNX_ARCEUS_FIXED_RESOLUTION=0`, can come from the page's rows: the
 start line says which. While the environment sets one of the seven, the launcher's help for each row and the in-game
 window's lock say so.
+
+Which upscalers the PC can run. The launcher asks the program that runs the game, `--arceus-capabilities`, each
+time its Settings open, and waits five seconds at most. That mode (`gpu/vk/capabilities.c`) makes no device, no
+window and no game. For each of FSR, DLSS and XeSS it asks what the game asks at its start: the adapter and its
+library (`vk_upscaler_present`), an instance with the adapter's names, the card the game's rule picks without a window
+(Vulkan 1.3, the swapchain, a graphics and compute queue, a discrete card first), and the adapter's needs of that
+card. It prints `arceus-capabilities: NAME: available on CARD` or `arceus-capabilities: NAME: not available on CARD:
+REASON`. The launcher adds " - not available" to that choice's word, or " - not checked" when the mode gave no
+answer, and ends the row's help with each line. The choice stays selectable. The game asks again at its start either
+way. With two cards the pick can differ from the game's where only one of them can present to the window.

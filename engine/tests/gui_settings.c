@@ -585,6 +585,36 @@ int main(int argc, char** argv) {
         set_env("SNX_ARCEUS_MENU", NULL);
         gui_settings_free(&g);
     }
+    { /* the page's upscaling row after --arceus-capabilities: a choice not available is marked after its word, the
+         help ends with each upscaler's line, a second check starts from the row's own words, and no answer marks
+         every upscaler not checked */
+        static const char arceus[] = "Arceus graphics\tarceus_upscaling\t\tint\t0\t4\tThe row's help\t"
+                                     "Anti-aliasing and upscaling\t0=Off|1=TAA|2=FSR|3=DLSS|4=XeSS\n";
+        static const char lines[] = "arceus-upscaler: dlss is not available: no module\n"
+                                    "arceus-capabilities: fsr: available on Card A\n"
+                                    "arceus-capabilities: dlss: not available on Card A: no module\r\n"
+                                    "arceus-capabilities: xess: available on Card A";
+        GuiSettings g = {0};
+        const GuiThemeKey* k;
+        assert(!gui_settings_read(&g, arceus));
+        gui_settings_arceus_capabilities(&g, lines);
+        k = key(&g, "arceus_upscaling");
+        assert(k && !strcmp(k->words[0], ".ini") && !strcmp(k->words[2], "TAA") && !strcmp(k->words[3], "FSR"));
+        assert(!strcmp(k->words[4], "DLSS - not available") && !strcmp(k->words[5], "XeSS") && !k->words[6]);
+        assert(!strcmp(k->about, "The row's help\nfsr: available on Card A\ndlss: not available on Card A: no "
+                                 "module\nxess: available on Card A"));
+        gui_settings_arceus_capabilities(&g, "arceus-capabilities: xess: not available on Card A: no library\n");
+        k = key(&g, "arceus_upscaling");
+        assert(!strcmp(k->words[3], "FSR - not checked") && !strcmp(k->words[4], "DLSS - not checked") &&
+               !strcmp(k->words[5], "XeSS - not available"));
+        assert(strstr(k->about, "The row's help\nfsr: could not be checked") && !strstr(k->about, "Card A\nThe"));
+        gui_settings_arceus_capabilities(&g, NULL);
+        k = key(&g, "arceus_upscaling");
+        assert(!strcmp(k->words[3], "FSR - not checked") && !strcmp(k->words[5], "XeSS - not checked"));
+        assert(!strcmp(k->about, "The row's help\nfsr: could not be checked\ndlss: could not be checked\nxess: could "
+                                 "not be checked"));
+        gui_settings_free(&g);
+    }
     puts("GUI settings: the runtime's list, picks and a run's options passed");
     return 0;
 }

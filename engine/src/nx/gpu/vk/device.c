@@ -13,6 +13,7 @@
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/perf_times.h"
 #include "nx/gpu/vk/upscaler_needs.h"
+#include "nx/gpu/vk/upscaler.h"
 #include "nx/gpu/vk/validation_lines.h"
 #include "common/gpu/vk/swapchain.h"
 #include "common/gpu/vk/vk_common.h"
@@ -624,18 +625,8 @@ static int create_device(void) {
     u32 with_count = next;
     int accepted = 0;
     if (upscaler && upscaler[0] && strcmp(upscaler, "0") && strcmp(upscaler, "off") && !g_upscaler_instance_skipped) {
-        /* the core bits the physical device has, as its own 1.0 and 1.2 questions answered, and its 1.3 features
-           asked here alone, with the switch on */
-        VkPhysicalDeviceVulkan13Features q13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
-        VkPhysicalDeviceFeatures2 a13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &q13};
-        vkGetPhysicalDeviceFeatures2(g_vk.phys, &a13);
-        const u32 has = (q12.separateDepthStencilLayouts ? SNX_NEEDS_CORE_SEPARATE_DEPTH_STENCIL : 0) |
-                        (q12.bufferDeviceAddress ? SNX_NEEDS_CORE_BUFFER_DEVICE_ADDRESS : 0) |
-                        (f2.features.shaderStorageImageWriteWithoutFormat ? SNX_NEEDS_CORE_STORAGE_WRITE_WITHOUT_FORMAT
-                                                                          : 0) |
-                        (q12.shaderInt8 ? SNX_NEEDS_CORE_SHADER_INT8 : 0) |
-                        (q12.scalarBlockLayout ? SNX_NEEDS_CORE_SCALAR_BLOCK_LAYOUT : 0) |
-                        (q13.shaderIntegerDotProduct ? SNX_NEEDS_CORE_INTEGER_DOT_PRODUCT : 0);
+        /* the core bits the physical device has, asked as --arceus-capabilities asks them (upscaler_host.c) */
+        const u32 has = vk_upscaler_core_has(g_vk.phys);
         accepted = vk_upscaler_device_ask(upscaler, g_vk.instance, g_vk.phys, vkGetInstanceProcAddr, has, &ask) &&
                    vk_upscaler_device_names(&ask, ext, &with_count, room);
     }

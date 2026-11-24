@@ -9,6 +9,7 @@
    MIT, it can be part of the runtime and load the SDK's own library by name. For DLSS it is a separate module
    that the runtime loads. No SDK's library is ever in this repository: the user supplies it. */
 #include <stdint.h>
+#include <stdio.h>
 #ifndef VULKAN_CORE_H_
 #include <vulkan/vulkan_core.h>
 #endif
@@ -192,6 +193,18 @@ void* vk_upscaler_library_symbol(void* library, const char* name);
    and its question of the instance's needs, which loads the library. The lines they log are caught, then written to
    the log again in their order, and why gets the last arceus-upscaler line's words. 1 when it is there */
 int vk_upscaler_present(const char* name, char* why, size_t size);
+/* The lines this thread logs between begin and end go to a file, and end writes them to the log again in their order,
+   with why the last arceus-upscaler line's words ("the adapter gave no reason" for none; why NULL with size 0: none
+   kept). For the questions whose refusals the host only logs */
+typedef struct {
+    FILE *file, *was;
+} VkUpscalerCatch;
+void vk_upscaler_catch_begin(VkUpscalerCatch* c);
+void vk_upscaler_catch_end(VkUpscalerCatch* c, char* why, size_t size);
+/* the core bits (SNX_NEEDS_CORE_*) the physical device has, from its own 1.0, 1.2 and 1.3 feature questions */
+uint32_t vk_upscaler_core_has(VkPhysicalDevice device);
+/* gpu/vk/capabilities.c: --arceus-capabilities, a line on stdout for each of fsr, dlss and xess. 0 */
+int vk_arceus_capabilities(void);
 #ifdef __cplusplus
 }
 #endif

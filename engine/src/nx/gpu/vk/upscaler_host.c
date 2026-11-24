@@ -142,35 +142,58 @@ void* vk_upscaler_library_symbol(void* library, const char* name) {
 #endif
     return p;
 }
-int vk_upscaler_present(const char* name, char* why, size_t size) {
+void vk_upscaler_catch_begin(VkUpscalerCatch* c) {
+    c->file = tmpfile();
+    c->was = tls_log_redirect;
+    if (c->file) tls_log_redirect = c->file; /* this thread's lines alone */
+}
+void vk_upscaler_catch_end(VkUpscalerCatch* c, char* why, size_t size) {
     static const char prefix[] = "arceus-upscaler: ";
-    FILE* caught = tmpfile();
-    FILE* const was = tls_log_redirect;
-    SnxUpscalerExtensions more = {0};
-    int there = 0;
+    tls_log_redirect = c->was;
     if (size) why[0] = 0;
-    if (caught) tls_log_redirect = caught; /* this thread's lines alone */
+    if (!c->file) {
+        if (size) snprintf(why, size, "its reason could not be kept");
+        return;
+    }
+    char line[4096];
+    rewind(c->file);
+    while (fgets(line, sizeof line, c->file)) {
+        LOG("%s", line);
+        if (size && !strncmp(line, prefix, sizeof prefix - 1)) {
+            line[strcspn(line, "\r\n")] = 0;
+            snprintf(why, size, "%s", line + sizeof prefix - 1);
+        }
+    }
+    fclose(c->file);
+    c->file = NULL;
+    if (size && !why[0]) snprintf(why, size, "the adapter gave no reason");
+}
+int vk_upscaler_present(const char* name, char* why, size_t size) {
+    SnxUpscalerExtensions more = {0};
+    VkUpscalerCatch c;
+    int there = 0;
+    vk_upscaler_catch_begin(&c);
     if (name && !vk_upscaler_not_in_game(name)) {
         const SnxUpscalerApi* api = vk_upscaler_adapter(name);
         there = api && api->abi == SNX_UPSCALER_ABI && api->instance_extensions &&
                 api->instance_extensions(&more) == SNX_UPSCALER_OK;
     }
-    tls_log_redirect = was;
-    if (caught) {
-        char line[4096];
-        rewind(caught);
-        while (fgets(line, sizeof line, caught)) {
-            LOG("%s", line);
-            if (!there && size && !strncmp(line, prefix, sizeof prefix - 1)) {
-                line[strcspn(line, "\r\n")] = 0;
-                snprintf(why, size, "%s", line + sizeof prefix - 1);
-            }
-        }
-        fclose(caught);
-    }
-    if (!there && size && !why[0])
-        snprintf(why, size, "%s", caught ? "the adapter gave no reason" : "its reason could not be kept");
+    vk_upscaler_catch_end(&c, there ? NULL : why, there ? 0 : size);
+    if (there && size) why[0] = 0;
     return there;
+}
+uint32_t vk_upscaler_core_has(VkPhysicalDevice device) {
+    VkPhysicalDeviceVulkan13Features q13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+    VkPhysicalDeviceVulkan12Features q12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
+                                            .pNext = &q13};
+    VkPhysicalDeviceFeatures2 f2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &q12};
+    vkGetPhysicalDeviceFeatures2(device, &f2);
+    return (q12.separateDepthStencilLayouts ? SNX_NEEDS_CORE_SEPARATE_DEPTH_STENCIL : 0) |
+           (q12.bufferDeviceAddress ? SNX_NEEDS_CORE_BUFFER_DEVICE_ADDRESS : 0) |
+           (f2.features.shaderStorageImageWriteWithoutFormat ? SNX_NEEDS_CORE_STORAGE_WRITE_WITHOUT_FORMAT : 0) |
+           (q12.shaderInt8 ? SNX_NEEDS_CORE_SHADER_INT8 : 0) |
+           (q12.scalarBlockLayout ? SNX_NEEDS_CORE_SCALAR_BLOCK_LAYOUT : 0) |
+           (q13.shaderIntegerDotProduct ? SNX_NEEDS_CORE_INTEGER_DOT_PRODUCT : 0);
 }
 /* The self-test's lookup: the same as the game's */
 const SnxUpscalerApi* vk_upscaler_adapter_selftest(const char* name) { return vk_upscaler_adapter(name); }

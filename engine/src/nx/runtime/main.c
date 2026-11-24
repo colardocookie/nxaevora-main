@@ -806,6 +806,10 @@ int snx_main(int argc, char** argv) {
         status = SNX_EXIT_OK;
         goto done;
     }
+    if (argc == 2 && !strcmp(argv[1], "--arceus-capabilities")) { /* for the launcher's Arceus graphics page */
+        status = vk_arceus_capabilities();
+        goto done;
+    }
     if (argc == 2 && !strcmp(argv[1], "--settings=recompile")) {
         ini_list(g_launch_sections, g_launch_sections_count);
         status = SNX_EXIT_OK;

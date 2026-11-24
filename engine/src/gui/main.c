@@ -5947,13 +5947,13 @@ static unsigned loads_off(App* app) {
     app->loads_at = SDL_max(now, 1);
     return app->loads_off;
 }
-/* what argv prints, NULL unless it ends with 0, killed after ten seconds; owned. On a process of its own: the menu's
-   run and the queue's recompile go on */
-static char* capture(App* app, const char* const* argv) {
+/* what argv prints, NULL unless it ends with 0, killed after ms milliseconds; owned. On a process of its own: the
+   menu's run and the queue's recompile go on */
+static char* capture_within(App* app, const char* const* argv, Uint64 ms) {
     char buffer[4096], *out = snx_strdup("");
     size_t size = 0;
     int status = 1, n;
-    Uint64 until = SDL_GetTicks() + 10000;
+    Uint64 until = SDL_GetTicks() + ms;
     GuiProcess* process = gui_process_create();
     if (!process) {
         snprintf(app->message, sizeof app->message, "%s", snx_tr("Cannot start the run: out of memory"));
@@ -6000,7 +6000,7 @@ static GuiSettings* settings_of(App* app) {
     else {
         driver = find_driver(app, GUI_SWITCH);
         const char* argv[] = {driver, "--settings", NULL};
-        list = driver ? capture(app, argv) : NULL;
+        list = driver ? capture_within(app, argv, 10000) : NULL;
     }
     gui_settings_read(&app->settings, list ? list : "");
     gui_settings_arceus_note(&app->settings);
@@ -6550,6 +6550,17 @@ static void settings_groups(App* app) {
         snprintf(about + n, sizeof app->group_about[g] - n, "%s%s", n ? ", " : "", s->keys[r].key);
         ++app->group_rows[g];
     }
+}
+/* Pokemon Legends: Arceus's graphics page: which upscalers this PC can run, asked of the program that runs the game
+   (--arceus-capabilities), five seconds at most. No answer: each one not checked */
+static void settings_arceus_check(App* app) {
+    char* driver = find_driver(app, GUI_SWITCH);
+    const char* argv[] = {driver, "--arceus-capabilities", NULL};
+    char* lines = driver ? capture_within(app, argv, 5000) : NULL;
+    gui_settings_arceus_capabilities(settings_of(app), lines);
+    gui_settings_arceus_note(settings_of(app)); /* the environment's note wins over the check's */
+    free(lines);
+    free(driver);
 }
 /* the groups, row on the focus */
 static void settings_top(App* app, int row) {
@@ -7359,6 +7370,7 @@ static void open_page(App* app, int row) {
 }
 static void open_settings(App* app) {
     app->group = 0;
+    settings_arceus_check(app); /* again at each opening: the PC's answer as it is now */
     settings_top(app, 0);
     space_start(app);
 }

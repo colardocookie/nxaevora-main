@@ -47,6 +47,10 @@ void gui_settings_free(GuiSettings* settings);
    own */
 #define GUI_SETTINGS_ARCEUS "Arceus graphics"
 void gui_settings_arceus_note(GuiSettings* settings);
+/* the lines of --arceus-capabilities (gpu/vk/capabilities.c) on the page's upscaling row: a choice not available, or
+   not checked, gets that after its word, and the row's help ends with each upscaler's line. text NULL: no answer,
+   every one not checked. Again with each check, from the row's own words */
+void gui_settings_arceus_capabilities(GuiSettings* settings, const char* text);
 /* the row of key set to value, a word or a text as the row takes: 1 when it did */
 int gui_settings_set(GuiSettings* settings, const char* key, const char* value);
 /* the rows as they are, the launcher's own choices among them, as the values to start from */
