@@ -411,7 +411,9 @@ int options_change(const char* key, const char* value) {
         WARN_LIMIT(1, "settings: %s=%s is not taken: %s\n", key, value, why);
         return OPTIONS_REJECTED;
     }
-    /* the store holds the value before apply, so a reload in between re-applies it and memory keeps the game's value */
+    /* The store gets the new value before apply, so a backend_ini handler or a set hook that reads the store
+       while apply runs sees the new value (case_store_before_apply checks this). A reload cannot run in between:
+       ini_poll and every caller of options_change run on the frontend thread. */
     ini_set(key, value);
     apply(key, value);
     if (g_started && (o->flags & INI_STARTUP)) restart_note(key, value);
