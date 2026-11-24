@@ -5,7 +5,9 @@
 #include "nx/runtime/options.h"
 #include "nx/runtime/arceus_step.h"
 #include "nx/runtime/arceus_camera.h"
+#include "nx/runtime/arceus_scene_scale.h"
 #include "nx/runtime/guest_jit.h"
+#include "nx/runtime/discord_presence.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
@@ -193,9 +195,27 @@ static int readable(u64 address, u64 size) {
     return 1;
 }
 
+/* Discord presence's tick, once a second from the engine clock's reads (DRP P3, below) */
+static int drp_ticking;
+static void drp_tick(void);
+static int event_probe, demo_probe, demo_tick, text_probe;
+static u64 event_probe_frames;
+static void event_probe_line(void);
+/* The main-loop frames the probes and the demo tick's line count, while one of them is on */
+static int probe_frames_wanted(void) { return event_probe || demo_probe || demo_tick || text_probe; }
+/* The probes' frame count, once a main-loop frame; the event probe's line only when that probe is on */
+static void text_probe_frame(void);
+static void probe_frame(void) {
+    __atomic_add_fetch(&event_probe_frames, 1, __ATOMIC_RELAXED);
+    if (event_probe) event_probe_line();
+    if (text_probe) text_probe_frame();
+}
 static void trace_call(CPU* c, u64 entry, unsigned kind) {
     u64 object = c->x[0], channel = c->x[1], input = c->x[2], caller = c->x[30];
     u64 count = __atomic_add_fetch(&counts[kind], 1, __ATOMIC_RELAXED);
+    if (kind == 0 && __atomic_load_n(&drp_ticking, __ATOMIC_RELAXED)) drp_tick();
+    /* The channel 0 duration write comes once per main-loop frame. */
+    if (probe_frames_wanted() && kind == 2 && channel == 0 && caller == main_base + 0x278150c) probe_frame();
     if (kind == 2) adjust_duration(c);
     originals[kind](c, entry);
     /* At this exact call site X19 is the UI animation owner and X21 is its
@@ -239,12 +259,12 @@ static void message_view_probe(CPU* c, u64 entry) {
             (unsigned long long)object, before, after, (unsigned long long)(caller - main_base));
 }
 
-/* The Arceus 1.1.1 main module's build id. */
-static const u8 arceus_main_id[32] = {0xae,0xe8,0xf1,0x50,0xdd,0xa1,0xb5,0xa8,0x38,0x80,0x6e,0x1a,0x5e,0xa6,0x82,0x7a,
-                                      0xd9,0xf3,0xc5,0x1e,0,0,0,0,0,0,0,0,0,0,0,0};
-
 /* The default probe only observes virtual calls. The optional experiment changes the four verified
    main-loop duration writes. Build and instruction guards precede both hooks and the 60 FPS pacing override. */
+static const SnxModInfo* throw_guard_mod;
+/* The supported main module's build id: 1.1.1 */
+static const u8 arceus_main_id[32] = {0xae,0xe8,0xf1,0x50,0xdd,0xa1,0xb5,0xa8,0x38,0x80,0x6e,0x1a,0x5e,0xa6,0x82,0x7a,
+                                      0xd9,0xf3,0xc5,0x1e,0,0,0,0,0,0,0,0,0,0,0,0};
 void arceus_clock_init(void) {
     const u8* id = arceus_main_id;
     static const u64 offsets[3] = {0x278303c, 0x2783048, 0x277bef4};
@@ -253,6 +273,12 @@ void arceus_clock_init(void) {
     const ArceusClockConfig config = arceus_clock_config(__atomic_load_n(&g_opt_fps, __ATOMIC_RELAXED));
     timing_enabled = clocks_installed = experimental = tracing = 0;
     target_fps_explicit = config.write_fps;
+    /* The throw guard's module, taken before the master and the target are checked, which it does not depend on. */
+    throw_guard_mod = NULL;
+    for (u32 i = 0; g_mod && i < g_mod->nmods; i++)
+        if (!strcmp(g_mod->mods[i].name, "main") &&
+            !memcmp(g_mod->mods[i].build_id, id, sizeof arceus_main_id))
+            throw_guard_mod = &g_mod->mods[i];
     if (!config.master) return;
     if (config.invalid) {
         WARN("arceus-clock: refused unsupported target FPS (use 60, 120 or unlocked)\n");
@@ -1553,6 +1579,7 @@ static void timing_research_init(void) {
    Keep those setters intact and skip only this automatic governor's update, by default on the PC port (=0 keeps
    the governor). The native Vulkan render scale still controls the allocated image size. It needs nothing of the
    clocks, so it finds the main module itself and runs at every rate, the game's own 30 FPS included */
+static int fixed_resolution_active; /* the governor's patch went in */
 static void fixed_resolution_init(void) {
     if (!arceus_switch_enabled("SNX_ARCEUS_FIXED_RESOLUTION", 1)) return;
     const SnxModInfo* mod = NULL;
@@ -1579,7 +1606,62 @@ static void fixed_resolution_init(void) {
         WARN("arceus-resolution: governor JIT failed\n");
         return;
     }
+    fixed_resolution_active = 1;
     LOG("arceus-resolution: automatic 3D resolution governor disabled; explicit scene modes unchanged\n");
+}
+
+/* SNX_ARCEUS_SCENE_SCALE=<0.5 to below 1.0, p/q or pofq>: the game's own 3D buffer scale for its default mode. The mode
+   setter (CC3888) takes the default pair from a table in the game's data, and this puts the number there, both ways the
+   same. Run before any guest code, so before the setter's first use. Rules and refusals: arceus_scene_scale.h. */
+static void scene_scale_init(void) {
+    float scale;
+    const char* text = getenv("SNX_ARCEUS_SCENE_SCALE");
+    const int asked = arceus_scene_scale_parse(text, &scale);
+    if (!main_base || asked == ARCEUS_SCENE_SCALE_OFF) return;
+    if (asked == ARCEUS_SCENE_SCALE_BAD) {
+        WARN("arceus-scene-scale: refused, \"%s\" is not a number from 0.5 to below 1.0, nor p/q or pofq in that "
+             "range with whole numbers 1 <= p < q <= %d. Nothing changed\n", text, ARCEUS_SCENE_SCALE_PARTS);
+        return;
+    }
+    const u64 table = main_base + ARCEUS_SCENE_SCALE_TABLE, pair = table + 4 * ARCEUS_SCENE_SCALE_PAIR;
+    /* Whether the host can write there is settled before anything is written. The table is in the game's read-only
+       data, but that is the guest's permission: the host commits every mapped guest page readable and writable
+       (mem.c commit_nl, plat_vm_commit), as the patches to the game's code here rely on. So mapped is writable,
+       and a table that is not wholly in mapped memory is refused unwritten. */
+    if (!readable(table, 4 * ARCEUS_SCENE_SCALE_WORDS)) {
+        WARN("arceus-scene-scale: refused, the table at main+%x is not in mapped memory. Nothing changed\n",
+             ARCEUS_SCENE_SCALE_TABLE);
+        return;
+    }
+    uint32_t words[ARCEUS_SCENE_SCALE_WORDS];
+    for (int i = 0; i < ARCEUS_SCENE_SCALE_WORDS; i++) words[i] = gr32(table + 4 * (u64)i);
+    const int guard = arceus_scene_scale_guard(fixed_resolution_active, words);
+    if (guard != ARCEUS_SCENE_GUARD_OK) {
+        WARN("arceus-scene-scale: refused (%s). Nothing changed. The table's words: %08x %08x, %08x %08x, %08x "
+             "%08x, %08x %08x, %08x %08x\n",
+             guard == ARCEUS_SCENE_GUARD_GOVERNOR ? "the governor is not off: SNX_ARCEUS_FIXED_RESOLUTION=0, or its patch was refused"
+             : guard == ARCEUS_SCENE_GUARD_PAIR   ? "the default pair is not 1.0 and 1.0"
+                                                  : "the pair after the default one is not 0.5 and 0.5",
+             words[0], words[1], words[2], words[3], words[4], words[5], words[6], words[7], words[8], words[9]);
+        return;
+    }
+    uint32_t bits;
+    memcpy(&bits, &scale, sizeof bits);
+    gw32(pair, bits);
+    gw32(pair + 4, bits);
+    if (!arceus_scene_scale_took(bits, gr32(pair), gr32(pair + 4))) {
+        /* it did not read back: the pair goes back to 1.0 and 1.0, which the guard found there */
+        const uint32_t first = gr32(pair), second = gr32(pair + 4);
+        gw32(pair, words[ARCEUS_SCENE_SCALE_PAIR]);
+        gw32(pair + 4, words[ARCEUS_SCENE_SCALE_PAIR + 1]);
+        WARN("arceus-scene-scale: refused, the write to main+%x read back as %08x %08x. The pair is put back and "
+             "now reads %08x %08x\n",
+             ARCEUS_SCENE_SCALE_TABLE + 4 * ARCEUS_SCENE_SCALE_PAIR, first, second, gr32(pair), gr32(pair + 4));
+        return;
+    }
+    LOG("arceus-scene-scale: EXPERIMENT: asked %g, the default pair at main+%x is now %g and %g. What the game "
+        "uses of it is in the renderer's arceus-scene-scale lines\n",
+        (double)scale, ARCEUS_SCENE_SCALE_TABLE + 4 * ARCEUS_SCENE_SCALE_PAIR, (double)scale, (double)scale);
 }
 
 /* The main rigid-body wrapper runs once per rendered frame and normally selects
@@ -4299,13 +4381,1424 @@ static void waza_shot_init(void) {
         waza_shot_fix == 2 ? "between ticks" : "at the tick rate");
 }
 
+/* Discord presence (SNX_ARCEUS_DISCORD, D1 to D5). Each wrapper runs the game's function and only reads what it was
+   given or returned. The region and the battle kind files come from fs.c (D2, D3). */
+enum { DRPS_AREA, DRPS_BATTLE, DRPS_TEXT_SET, DRPS_SITES };
+static GuestFn drp_original[DRPS_SITES];
+/* drp_presence: on. The state for the host half is written under drp_lock by whichever game thread runs a wrapper or
+   the tick. */
+static int drp_presence;
+static PMutex drp_lock = PMUTEX_INIT;
+static SnxDrpValues drp_values = {.region = -1, .activity = DRP_TITLE};
+static u64 drp_unread;
+static int drp_party_due = 1; /* read the party at the next tick: at the start, and when a battle starts or ends */
+/* the activity, under drp_lock. Leaving a battle forgets its opponent, active Pokémon and trainer. */
+static void drp_set_locked(uint32_t activity) {
+    if (drp_values.activity != activity) drp_party_due = 1;
+    drp_values.activity = activity;
+    if (activity != DRP_BATTLE) {
+        drp_values.foe = drp_values.active = (SnxDrpMon){0};
+        drp_values.kind = DRP_KIND_RECORD;
+        memset(drp_values.trainer, 0, sizeof drp_values.trainer);
+    }
+    snx_drp_write(&g_drp_state, &drp_values);
+}
+static void drp_set(uint32_t activity) {
+    pm_lock(&drp_lock);
+    drp_set_locked(activity);
+    pm_unlock(&drp_lock);
+}
+/* a guest string of printable bytes, at most size - 1, empty when unreadable */
+static void drp_string(u64 at, char* out, size_t size) {
+    size_t n = 0;
+    for (; at && n + 1 < size; n++, at++) {
+        if ((n == 0 || !(at & 0xfff)) && !readable(at, 1)) break;
+        const u8 c = *(const u8*)GP(at);
+        if (c < 0x20 || c > 0x7e) break;
+        out[n] = (char)c;
+    }
+    out[n] = 0;
+}
+/* GetAreaName (1EB2A7C). An area's name comes on the return to the field after a battle (DRP-D1, research 08:20), so
+   it ends the battle. It is never the region: travel does not call it. */
+static void drp_area_name(CPU* c, u64 entry) {
+    drp_original[DRPS_AREA](c, entry);
+    char name[64];
+    drp_string(c->x[0], name, sizeof name);
+    if (name[0]) drp_set(DRP_FIELD);
+    else if (__atomic_add_fetch(&drp_unread, 1, __ATOMIC_RELAXED) % 600 == 1)
+        LOG("arceus-discord: an area name could not be read (%llu so far)\n", (unsigned long long)drp_unread);
+}
+/* The party, as the script's GetMonsNo and GetLevel bindings reach it (D92288 with -1): a singleton through the slot
+   main+4279680, +D0, +58. That object holds the six Pokémon objects at +58 to +80 and their count at +88. */
+static u64 drp_party_object(void) {
+    const u64 slot = main_base + 0x4279680, holder = readable(slot, 8) ? gr64(slot) : 0;
+    const u64 single = readable(holder, 8) ? gr64(holder) : 0, p = readable(single + 0xd0, 8) ? gr64(single + 0xd0) : 0;
+    return readable(p + 0x58, 8) ? gr64(p + 0x58) : 0;
+}
+
+/* D2 (research 08:35 and 18:10): a Pokémon object (vtable main+418AE40) has its data object at +98, the one the
+   game's getters take (2B6849C, 2B5FB2C, 2B6D5B0): +8 the party extension, +10 the record, +18 enciphered, +30 the
+   lock's owner. A copy of the record and the extension is deciphered by our own code. Never a call, never a write,
+   and nothing of a record is logged. The waiters' object at +24 is the system's and is not read. */
+#define DRP_MON_VTABLE 0x418ae40
+enum { DRP_MON_OK, DRP_MON_NONE, DRP_MON_BUSY, DRP_MON_DROPPED };
+static int drp_d2 = -1; /* -1 not checked yet, 0 off (the game's block order is not ours), 1 on */
+static u64 drp_drops;
+static int drp_d2_on(void) {
+    int on = __atomic_load_n(&drp_d2, __ATOMIC_RELAXED);
+    if (on >= 0) return on;
+    const u64 table = main_base + 0x3984e57; /* the getters' table of block positions, 32 rows of 4 */
+    on = readable(table, 128) && snx_pk_table_same((const uint8_t*)GP(table));
+    if (!on) WARN("arceus-discord: the game's block order differs from ours: no species, levels or party\n");
+    __atomic_store_n(&drp_d2, on, __ATOMIC_RELAXED);
+    return on;
+}
+static int drp_mon_read(u64 object, SnxDrpMon* out) {
+    if (!drp_d2_on() || !readable(object, 0xa0) || gr64(object) != main_base + DRP_MON_VTABLE) return DRP_MON_NONE;
+    const u64 data = gr64(object + 0x98);
+    if (!readable(data, 0x38)) return DRP_MON_NONE;
+    const u64 lock = __atomic_load_n((const u64*)GP(data + 0x30), __ATOMIC_ACQUIRE);
+    const unsigned flag = __atomic_load_n((const u8*)GP(data + 0x18), __ATOMIC_ACQUIRE);
+    const u64 record = gr64(data + 0x10), extension = gr64(data + 0x8);
+    if (!readable(record, SNX_PK_RECORD) || (extension && !readable(extension, SNX_PK_EXTENSION))) return DRP_MON_NONE;
+    uint8_t copy[SNX_PK_RECORD], more[SNX_PK_EXTENSION];
+    memcpy(copy, GP(record), sizeof copy);
+    if (extension) memcpy(more, GP(extension), sizeof more);
+    __atomic_thread_fence(__ATOMIC_ACQUIRE);
+    int state = snx_pk_copy_state(lock, flag, __atomic_load_n((const u64*)GP(data + 0x30), __ATOMIC_RELAXED),
+                                  __atomic_load_n((const u8*)GP(data + 0x18), __ATOMIC_RELAXED));
+    if (state == SNX_PK_STEADY && (gr64(data + 0x10) != record || gr64(data + 0x8) != extension)) state = SNX_PK_TORN;
+    int result = state == SNX_PK_BUSY ? DRP_MON_BUSY : DRP_MON_DROPPED;
+    if (state == SNX_PK_STEADY && snx_pk_decode(copy, extension ? more : NULL, flag != 0, out) == SNX_PK_OK)
+        result = DRP_MON_OK;
+    memset(copy, 0, sizeof copy);
+    memset(more, 0, sizeof more);
+    if (result == DRP_MON_DROPPED && __atomic_add_fetch(&drp_drops, 1, __ATOMIC_RELAXED) % 600 == 1)
+        LOG("arceus-discord: a Pok\xc3\xa9mon's copy failed its checks and was dropped (%llu so far)\n",
+            (unsigned long long)drp_drops);
+    return result;
+}
+/* The party in the hover text: read on the tick when its members or count changed, or when drp_party_due says so.
+   A member the game holds is kept as it was and read again next second, one that fails its checks is left out. */
+static u64 drp_party_seen[7];
+static void drp_party_read(void) {
+    const u64 q = drp_party_object();
+    if (!readable(q + 0x58, 0x38)) return;
+    u64 now[7];
+    for (unsigned i = 0; i < 7; i++) now[i] = gr64(q + 0x58 + i * 8ull);
+    pm_lock(&drp_lock);
+    const int due = drp_party_due;
+    SnxDrpMon party[6];
+    memcpy(party, drp_values.party, sizeof party);
+    pm_unlock(&drp_lock);
+    if (!due && !memcmp(now, drp_party_seen, sizeof now)) return;
+    int again = 0;
+    for (unsigned i = 0; i < 6; i++) {
+        SnxDrpMon m = {0};
+        const int r = i < now[6] ? drp_mon_read(now[i], &m) : DRP_MON_NONE;
+        if (r == DRP_MON_BUSY) again = 1;
+        else party[i] = r == DRP_MON_OK ? m : (SnxDrpMon){0};
+    }
+    memcpy(drp_party_seen, now, sizeof now);
+    pm_lock(&drp_lock);
+    drp_party_due = again;
+    if (memcmp(party, drp_values.party, sizeof party)) {
+        memcpy(drp_values.party, party, sizeof party);
+        snx_drp_write(&g_drp_state, &drp_values);
+    }
+    pm_unlock(&drp_lock);
+}
+
+/* D3 (research 19:35): a battle's kind from the files its start reads (fs.c notes them in g_drp_files, cleared at
+   the start). Decided by snx_drp_decide on the start's calls and on the tick: a kind file and the opponent's record
+   settled, or 3 s. drp_kind_start, the start, is atomic, as the line wrapper reads it on other threads. */
+static u64 drp_foe_object, drp_kind_start;
+static void drp_battle_decide(u64 now) {
+    const int settled = !__atomic_load_n(&drp_foe_object, __ATOMIC_RELAXED);
+    const uint32_t files = __atomic_load_n(&g_drp_files.kinds, __ATOMIC_RELAXED);
+    const u64 start = __atomic_load_n(&drp_kind_start, __ATOMIC_RELAXED);
+    pm_lock(&drp_lock);
+    const int pending = drp_values.activity == DRP_BATTLE && drp_values.kind == DRP_KIND_PENDING;
+    const uint32_t kind = pending ? snx_drp_decide(files, settled, now, start) : DRP_KIND_PENDING;
+    if (kind != DRP_KIND_PENDING) {
+        drp_values.kind = kind;
+        snx_drp_write(&g_drp_state, &drp_values);
+    }
+    pm_unlock(&drp_lock);
+}
+
+/* The player's battle Pokémon (P8, research 20:35 and 21:05) as the move menu finds it (7B8114 -> 834074 with index
+   0), read on the tick: the battle context X = [[[[main+4279580]]+B0]+E0] (882D58), its container [X+D0] (823C00),
+   the table T = [[[[c+68]+98]+370]+8], index 0's side from 2847B84's table for the mode at [T]+110 and slot 0. Its
+   Pokémon P = [T + side*38 + 8], present when the byte at T + side*38 + 38 is above 0. */
+static u64 drp_rd(u64 at) { return at && readable(at, 8) ? gr64(at) : 0; }
+/* the table T from the global slot: the slot holds the singleton's address, S = [[slot]], X = [[S+B0]+E0] as 882D58
+   reads it, then [X+D0] (823C00) and 834074's [[[[c+68]+98]+370]+8]. 0 when a link is missing or the table is not
+   readable for its five sides. */
+static u64 drp_battle_table(void) {
+    const u64 x = drp_rd(drp_rd(drp_rd(drp_rd(main_base + 0x4279580)) + 0xb0) + 0xe0);
+    const u64 t = drp_rd(drp_rd(drp_rd(drp_rd(drp_rd(x + 0xd0) + 0x68) + 0x98) + 0x370) + 8);
+    return readable(t, 5 * 0x38 + 1) ? t : 0;
+}
+/* a side's first Pokémon, 0 when the side's count byte is 0 */
+static u64 drp_battle_first(u64 t, unsigned side) {
+    const unsigned n = *(const u8*)GP(t + side * 0x38ull + 0x38);
+    return n ? drp_rd(t + side * 0x38ull + 8) : 0;
+}
+static int drp_index0_side(u64 m) {
+    if (!readable(m + 0x110, 4)) return -1;
+    const u32 mode = *(const u32*)GP(m + 0x110);
+    u64 table = mode == 0 ? main_base + 0x397eb50 : mode == 2 ? main_base + 0x397ebc8 : 0;
+    if (mode == 1) {
+        const u64 b = drp_rd(m + 0x58);
+        const unsigned kind = readable(b + 0x55, 1) ? *(const u8*)GP(b + 0x55) : 0;
+        table = kind - 1 < 5 ? drp_rd(main_base + 0x41767f8 + (kind - 1) * 8ull) : main_base + 0x397eb68;
+    }
+    return table && readable(table, 4) ? (int)*(const u32*)GP(table) : -1;
+}
+
+/* D3d (research 22:05 and 22:15): the second line in a battle, "Active: <species> Lv. <n>". The Pokémon P for index
+   0 holds at +60 a Pokémon object (vtable 418AE40, the battle's own copy, in all six battles of the D3c look), read
+   once a second by D2's copy rules. A failed check empties the line, a busy record keeps it for the next second. */
+static void drp_active_read(void) {
+    const u64 t = drp_battle_table();
+    const int side = t ? drp_index0_side(drp_rd(t)) : -1;
+    const u64 p = side >= 0 && side < 5 ? drp_battle_first(t, (unsigned)side) : 0;
+    SnxDrpMon m = {0};
+    const int r = p ? drp_mon_read(drp_rd(p + 0x60), &m) : DRP_MON_NONE;
+    if (r == DRP_MON_BUSY) return;
+    pm_lock(&drp_lock);
+    if (drp_values.activity == DRP_BATTLE && memcmp(&m, &drp_values.active, sizeof m)) {
+        drp_values.active = m;
+        snx_drp_write(&g_drp_state, &drp_values);
+    }
+    pm_unlock(&drp_lock);
+}
+
+/* A battle ends when the battle effect sequences (9DBEAC, the battle sequence fix's wrapper and its counter) have
+   not run for 3 s, or at an area call, whichever first (DRP-P3, research 09:00). Inside the battles seen they ran in
+   every second, menus included, and outside them never. drp_battle_since: the start, or the counter's last move. */
+static u64 drp_next_tick, drp_battle_seen, drp_battle_since;
+static void drp_tick(void) {
+    const u64 now = plat_ns(), next = __atomic_load_n(&drp_next_tick, __ATOMIC_RELAXED);
+    if (now < next || !__atomic_compare_exchange_n(&drp_next_tick, &(u64){next}, now + 1000000000ull, 0,
+                                                     __ATOMIC_RELAXED, __ATOMIC_RELAXED))
+        return;
+    const u64 calls = battle_sequence_original ? __atomic_load_n(&battle_sequence_calls, __ATOMIC_RELAXED) : 0;
+    pm_lock(&drp_lock);
+    if (calls != drp_battle_seen) drp_battle_seen = calls, drp_battle_since = now;
+    const int quiet = battle_sequence_original && snx_drp_battle_over(1, now, drp_battle_since);
+    /* the title screen until the player's camera first takes input in the field (the camera input fix's wrapper,
+       20 to 46 s into DRP-P3 to P4), or an area call. The party's data is there from the boot, so it cannot tell
+       (DRP-P4). Both ends are decided and made in one hold of the lock, so a battle starting meanwhile stays. */
+    const int title_over = drp_values.activity == DRP_TITLE && __atomic_load_n(&camera_input_calls, __ATOMIC_RELAXED);
+    if ((quiet && snx_drp_in_battle(drp_values.activity)) || title_over) drp_set_locked(DRP_FIELD);
+    const uint32_t activity = drp_values.activity;
+    pm_unlock(&drp_lock);
+    drp_battle_decide(now);
+    if (activity == DRP_BATTLE) drp_active_read();
+    drp_party_read();
+}
+
+/* D5 (research 01:10): the text object's vtable slot +58, FC20C8, takes each message line as UTF-16 in x1 (0x10
+   starts a tag whose next unit is its length, 0 ends it). From a trainer battle's start until its name is found or
+   20 s pass, each line's first 96 units are matched by snx_drp_sent_out, tags left out. The first match is the
+   battle's trainer, "Battling <name>". Nothing of a line is logged. */
+static u32 drp_name_battle; /* the battle whose trainer's name was found */
+static void drp_text_set(CPU* c, u64 entry) {
+    const u64 line = c->x[1], now = plat_ns(), start = __atomic_load_n(&drp_kind_start, __ATOMIC_RELAXED);
+    const u32 battle = __atomic_load_n(&g_drp_battle, __ATOMIC_RELAXED);
+    if ((__atomic_load_n(&g_drp_files.kinds, __ATOMIC_RELAXED) & DRP_FILE_TRAINER) && now >= start &&
+        now - start < 20000000000ull && __atomic_load_n(&drp_name_battle, __ATOMIC_RELAXED) != battle) {
+        u16 units[96];
+        size_t count = 0;
+        for (; count < 96 && readable(line + count * 2, 2); count++)
+            if (!(units[count] = (u16)gr16(line + count * 2))) break;
+        char out[320], found[SNX_DRP_NAME] = {0};
+        if (snx_drp_utf16_line(units, count, out, sizeof out) && snx_drp_sent_out(out, found, sizeof found)) {
+            pm_lock(&drp_lock);
+            if (drp_values.activity == DRP_BATTLE && __atomic_load_n(&g_drp_battle, __ATOMIC_RELAXED) == battle) {
+                memcpy(drp_values.trainer, found, sizeof found);
+                snx_drp_write(&g_drp_state, &drp_values);
+                __atomic_store_n(&drp_name_battle, battle, __ATOMIC_RELAXED);
+            }
+            pm_unlock(&drp_lock);
+        }
+    }
+    drp_original[DRPS_TEXT_SET](c, entry);
+}
+
+/* UpdateBattleStartCoroutine (1DD7C68), called each frame of a battle's start with one object per battle. D2: the
+   first call decides the opponent, record 0's Pokémon object ([+78]+90). In P1b's trainer battle that record was
+   empty, so a battle without one says "In battle". Its copy is tried on the calls after, while the game holds it. */
+static u64 drp_last_battle;
+static unsigned drp_foe_tries;
+static void drp_battle_start(CPU* c, u64 entry) {
+    const u64 object = c->x[0];
+    const int fresh = object != __atomic_exchange_n(&drp_last_battle, object, __ATOMIC_RELAXED);
+    const u64 records = readable(object + 0x78, 8) ? gr64(object + 0x78) : 0;
+    if (fresh) {
+        /* a new battle forgets the last one's opponent and kind files, even when it starts before that one was seen
+           to end */
+        __atomic_add_fetch(&g_drp_battle, 1, __ATOMIC_RELAXED);
+        __atomic_store_n(&g_drp_files.kinds, 0, __ATOMIC_RELAXED);
+        pm_lock(&drp_lock);
+        drp_battle_since = plat_ns(); /* the effects begin about 0.7 s after the start (DRP-P3) */
+        __atomic_store_n(&drp_kind_start, drp_battle_since, __ATOMIC_RELAXED);
+        drp_party_due = 1;
+        drp_values.activity = DRP_BATTLE;
+        drp_values.kind = DRP_KIND_PENDING;
+        drp_values.foe = drp_values.active = (SnxDrpMon){0};
+        memset(drp_values.trainer, 0, sizeof drp_values.trainer);
+        snx_drp_write(&g_drp_state, &drp_values);
+        pm_unlock(&drp_lock);
+        __atomic_store_n(&drp_foe_object, readable(records + 0x90, 8) ? gr64(records + 0x90) : 0, __ATOMIC_RELAXED);
+        __atomic_store_n(&drp_foe_tries, 0, __ATOMIC_RELAXED);
+    }
+    const u64 foe_object = __atomic_load_n(&drp_foe_object, __ATOMIC_RELAXED);
+    if (foe_object && __atomic_fetch_add(&drp_foe_tries, 1, __ATOMIC_RELAXED) < 32) {
+        SnxDrpMon foe;
+        const int r = drp_mon_read(foe_object, &foe);
+        if (r == DRP_MON_OK) {
+            pm_lock(&drp_lock);
+            if (drp_values.activity == DRP_BATTLE) {
+                drp_values.foe = foe;
+                snx_drp_write(&g_drp_state, &drp_values);
+            }
+            pm_unlock(&drp_lock);
+        }
+        if (r != DRP_MON_BUSY) __atomic_store_n(&drp_foe_object, 0, __ATOMIC_RELAXED);
+    }
+    drp_battle_decide(plat_ns());
+    drp_original[DRPS_BATTLE](c, entry);
+}
+/* On by default (SNX_ARCEUS_DISCORD=0 turns it off). It needs the player's own application id: with neither the switch
+   nor an id set it stays off without a word, and only a 1 without an id says why */
+static void discord_presence_init(void) {
+    const char* presence = getenv("SNX_ARCEUS_DISCORD");
+    const char* app = getenv("SNX_ARCEUS_DISCORD_APP");
+    drp_presence = arceus_switch_enabled("SNX_ARCEUS_DISCORD", 1) && (presence || (app && *app));
+    if (!drp_presence || !main_base || !g_disp) return;
+    if (!snx_discord_start(app)) {
+        WARN("arceus-discord: presence off: SNX_ARCEUS_DISCORD_APP is missing or not an application id\n");
+        drp_presence = 0;
+        return;
+    }
+    static const struct { u32 offset, word; GuestFn wrapper; const char* name; } sites[DRPS_SITES] = {
+        {0x1eb2a7c, 0xf9403408, drp_area_name, "GetAreaName"},
+        {0x1dd7c68, 0xd103c3ff, drp_battle_start, "UpdateBattleStartCoroutine"},
+        {0xfc20c8, 0xf81d0ff5, drp_text_set, "the message text's line (FC20C8)"},
+    };
+    for (unsigned k = 0; k < DRPS_SITES; k++) {
+        const u64 pc = main_base + sites[k].offset;
+        if (pc < g_code_lo || pc >= g_code_hi || !readable(pc, 4) || gr32(pc) != sites[k].word ||
+            !g_disp[(pc - g_code_lo) / 4]) {
+            WARN("arceus-discord: %s left alone: missing or changed entry\n", sites[k].name);
+            continue;
+        }
+        drp_original[k] = g_disp[(pc - g_code_lo) / 4];
+        __atomic_store_n(&g_disp[(pc - g_code_lo) / 4], sites[k].wrapper, __ATOMIC_RELEASE);
+        LOG("arceus-discord: read-only reader on %s (main+%x)\n", sites[k].name, sites[k].offset);
+    }
+    /* the tick needs the clock layer's read wrapper, which runs it on the game's threads. The clock layer is on here
+       (arceus_clock_post_jit), its two fixes may not be (research 01:25 item 4). */
+    __atomic_store_n(&drp_ticking, 1, __ATOMIC_RELEASE);
+    if (!battle_sequence_original)
+        WARN("arceus-discord: without SNX_ARCEUS_BATTLE_SEQUENCE_FIX a battle ends only at an area name, which most "
+             "battles never reach\n");
+    if (!camera_input_original)
+        WARN("arceus-discord: without SNX_ARCEUS_CAMERA_INPUT_FIX the title screen status stays until the first "
+             "battle\n");
+}
+
+/* SNX_ARCEUS_THROW_OWNER_GUARD: 16E33EC makes a throwable in heap 4 of the owner its weak reference Q+0x88 names,
+   and never checks that the owner still lives. Its controller can release the owner before the throw is made, and the
+   call then faults at 16E34FC. A dead owner gets the empty handle the call starts from, which its caller accepts. */
+#define THROW_GUARD_LINES 16u
+static GuestFn throw_guard_original;
+static unsigned throw_guard_lines, throw_guard_reached;
+static u64 throw_guard_count;
+static void throw_guard_update(CPU* c, u64 entry) {
+    const u64 q = c->x[0], out = c->x[8];
+    const u64 w = readable(q + 0x88, 8) ? gr64(q + 0x88) : 0;
+    const int known = readable(q + 0x88, 8) && (!w || readable(w, 0x20));
+    const char* why = !known ? NULL : !w ? "no reference" : !gr32(w + 0xc) ? "use count 0" :
+                      !gr64(w + 0x18) ? "object cleared" : NULL;
+    if (!why || !writable(out, 16)) {
+        if (!__atomic_exchange_n(&throw_guard_reached, 1, __ATOMIC_RELAXED))
+            LOG("arceus-throw-guard: first call reached the wrapper, owner %s\n",
+                !known ? "unreadable" : why ? "dead, handle unwritable" : "live");
+        throw_guard_original(c, entry);
+        return;
+    }
+    gw64(out, 0);
+    gw64(out + 8, 0);
+    c->pc = c->x[30];
+    const u64 count = __atomic_add_fetch(&throw_guard_count, 1, __ATOMIC_RELAXED);
+    const unsigned line = __atomic_fetch_add(&throw_guard_lines, 1, __ATOMIC_RELAXED);
+    if (line < THROW_GUARD_LINES)
+        LOG("arceus-throw-guard: dead owner, throw not made Q=%llx W=%llx (%s) guarded=%llu t=%.3f s%s\n",
+            (unsigned long long)q, (unsigned long long)w, why, (unsigned long long)count, (double)plat_ns() / 1e9,
+            line + 1 == THROW_GUARD_LINES ? ", later ones not logged" : "");
+}
+/* On by default and on its own gates, not the master's or the target's: the crash comes with the timing layer off
+   too. The only caller is a direct BL at 19D2448: changing a line marks the AOT function stale, and a stale function
+   sends its entry through dispatch. */
+static void throw_guard_init(void) {
+    const SnxModInfo* mod = throw_guard_mod;
+    if (!mod || !arceus_switch_enabled("SNX_ARCEUS_THROW_OWNER_GUARD", 1)) return;
+    if (!g_disp || !g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale) {
+        WARN("arceus-throw-guard: refused, no function table\n");
+        return;
+    }
+    const u64 pc = mod->base + 0x16e33ec;
+    unsigned covered = 0;
+    for (u32 i = 0; i < g_mod->nfns; i++)
+        if (g_mod->fn_lo[i] == pc) covered += g_mod->fn_len[i] == 0xa70 ? 1 : 2;
+    if (pc >= g_code_lo && pc < g_code_hi && g_disp[(pc - g_code_lo) / 4] == throw_guard_update) return;
+    if (covered != 1 || pc < g_code_lo || pc + 0xa70 > g_code_hi || !readable(pc, 0xa70) ||
+        gr32(pc + 0x1c) != 0xaa0003f5 || gr32(pc + 0x20) != 0xf9404400 || gr32(pc + 0x2c) != 0xb5002040) {
+        WARN("arceus-throw-guard: refused instruction/function guard\n");
+        return;
+    }
+    /* Equivalent MOV X21,X0 -> ADD X21,X0,#0 selects an independent JIT body. */
+    gw32(pc + 0x1c, 0x91000015);
+    jit_code_changed(pc, 0xa70);
+    throw_guard_original = jit_wait(pc);
+    if (!throw_guard_original) {
+        WARN("arceus-throw-guard: compile failed\n");
+        return;
+    }
+    __atomic_store_n(&g_disp[(pc - g_code_lo) / 4], throw_guard_update, __ATOMIC_RELEASE);
+    LOG("arceus-throw-guard: a throw whose owner is gone is not made (SNX_ARCEUS_THROW_OWNER_GUARD=0 turns it off)\n");
+}
+/* SNX_ARCEUS_EVENT_PROBE=1, read-only (research 01:05): the calls of the event script job 15BA460 (vtable
+   4124CE0 +40) and of F7EC80, which resumes its Lua script, counted. Every 5 s one line gives each a second and the
+   main-loop frames a second, counted only while the clock wrappers are in. Is the job once a frame? */
+static GuestFn event_probe_original[2];
+static u64 event_probe_calls[2], event_probe_logged[3], event_probe_ns;
+static void event_probe_line(void) {
+    const u64 now = plat_ns();
+    u64 last = __atomic_load_n(&event_probe_ns, __ATOMIC_RELAXED);
+    if (!last) { /* the first window starts here, with the counts so far */
+        if (__atomic_compare_exchange_n(&event_probe_ns, &last, now, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
+            event_probe_logged[0] = __atomic_load_n(&event_probe_calls[0], __ATOMIC_RELAXED);
+            event_probe_logged[1] = __atomic_load_n(&event_probe_calls[1], __ATOMIC_RELAXED);
+            event_probe_logged[2] = __atomic_load_n(&event_probe_frames, __ATOMIC_RELAXED);
+        }
+        return;
+    }
+    if (now - last < 5000000000ull ||
+        !__atomic_compare_exchange_n(&event_probe_ns, &last, now, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED))
+        return;
+    /* only the thread that moved the time on gets here, so the logged counts are its own */
+    const u64 job = __atomic_load_n(&event_probe_calls[0], __ATOMIC_RELAXED);
+    const u64 resume = __atomic_load_n(&event_probe_calls[1], __ATOMIC_RELAXED);
+    const u64 frames = __atomic_load_n(&event_probe_frames, __ATOMIC_RELAXED);
+    const double seconds = (double)(now - last) / 1e9;
+    char frame_rate[32] = "- (no clock wrappers)";
+    if (clocks_installed)
+        snprintf(frame_rate, sizeof frame_rate, "%.2f", (double)(frames - event_probe_logged[2]) / seconds);
+    LOG("arceus-event-probe: seconds=%.2f job_15ba460_per_s=%.2f resume_f7ec80_per_s=%.2f frames_per_s=%s "
+        "job_total=%llu resume_total=%llu\n", seconds, (double)(job - event_probe_logged[0]) / seconds,
+        (double)(resume - event_probe_logged[1]) / seconds, frame_rate, (unsigned long long)job,
+        (unsigned long long)resume);
+    event_probe_logged[0] = job;
+    event_probe_logged[1] = resume;
+    event_probe_logged[2] = frames;
+}
+static void event_probe_count(CPU* c, u64 entry, unsigned kind) {
+    __atomic_add_fetch(&event_probe_calls[kind], 1, __ATOMIC_RELAXED);
+    event_probe_original[kind](c, entry);
+    event_probe_line();
+}
+static void event_job_probe(CPU* c, u64 entry) { event_probe_count(c, entry, 0); }
+static void event_resume_probe(CPU* c, u64 entry) { event_probe_count(c, entry, 1); }
+/* The main module's base for a read-only probe, also at 30 FPS and below, where the timing layer is skipped and
+   main_base is not set: found by the supported build id, main_base left alone. 0 for another build. */
+static u64 arceus_probe_base(void) {
+    u64 base = main_base;
+    for (u32 i = 0; !base && g_mod && i < g_mod->nmods; i++)
+        if (!strcmp(g_mod->mods[i].name, "main") &&
+            !memcmp(g_mod->mods[i].build_id, arceus_main_id, sizeof arceus_main_id))
+            base = g_mod->mods[i].base;
+    return base;
+}
+/* SNX_ARCEUS_TEXT_PROBE=1, read-only (recon 12:52, research): the message text processor's reveal FBFBD0 (T = x0)
+   runs once a message update and does up to T+A4 glyph steps (2B315E8), one every T+9D+1 calls, with no time read.
+   Every 5 s a line: the reveal's calls, its glyph steps (a step from its loop that used the quota: out-status 0,
+   return 1) and the frames a second, the texts seen, the speed int main+40F0138, the language byte and the last
+   text's bytes. One line when a text ends (its first call answering 0 after steps): its calls, steps and time. */
+#define TEXT_PROBE_TEXTS 16
+typedef struct {
+    u64 text, first_ns, last_ns, calls, steps;
+    int known;      /* bytes[] hold the previous call's +9D, +A4 and +A6 */
+    u8 bytes[3];
+} TextProbeText;
+static TextProbeText text_probe_texts[TEXT_PROBE_TEXTS];
+static GuestFn text_probe_original[2];
+static PMutex text_probe_lock = PMUTEX_INIT;
+static u64 text_probe_base, text_probe_calls, text_probe_steps, text_probe_ns, text_probe_logged[3], text_probe_last;
+static unsigned text_probe_seen;
+static _Thread_local u64 text_probe_running; /* the text whose reveal runs on this thread, 0 for none */
+static _Thread_local u64 text_probe_own;     /* that reveal's own glyph steps, not a nested reveal's */
+static unsigned text_probe_setup_lines, text_probe_first_lines, text_probe_change_lines;
+/* research (recon 13:58): bits 0-1 of the options word [[[main+4279560]]+230]+68, a candidate for the text speed: the
+   value at install and every change, polled on each reveal call and counted frame. -1 while it cannot be read. */
+static int text_probe_option = -2;
+static u64 text_probe_option_ns;
+static int text_probe_option_read(u64 base) {
+    if (!readable(base + 0x4279560, 8)) return -1;
+    const u64 holder = gr64(base + 0x4279560);
+    if (!holder || !readable(holder, 8)) return -1;
+    const u64 owner = gr64(holder);
+    if (!owner || !readable(owner + 0x230, 8)) return -1;
+    const u64 options = gr64(owner + 0x230);
+    if (!options || !readable(options + 0x68, 4)) return -1;
+    return (int)(gr32(options + 0x68) & 3);
+}
+static void text_probe_option_poll(u64 now) {
+    const int value = text_probe_option_read(text_probe_base);
+    if (value == text_probe_option) return;
+    LOG("arceus-text-probe: options word bits 0-1 %s%d -> %d at %.3f s (%.3f s after the previous)\n",
+        text_probe_option == -2 ? "at install " : "", text_probe_option == -2 ? -1 : text_probe_option, value,
+        (double)now / 1e9, text_probe_option_ns ? (double)(now - text_probe_option_ns) / 1e9 : 0.0);
+    text_probe_option = value;
+    text_probe_option_ns = now;
+}
+/* Whether then lies more than a second before now. Never when then is later: another thread may store a later time
+   after this one read its clock. */
+static int past_second(u64 now, u64 then) { return now > then && now - then > 1000000000ull; }
+/* A text's record, retired when it has not been seen for a second, as a text not shown any more. A text seen again
+   after that starts a new record, also in its old slot. */
+static TextProbeText* text_probe_text(u64 text, u64 now) {
+    TextProbeText* tp = NULL;
+    for (unsigned k = 0; k < TEXT_PROBE_TEXTS && !tp; k++)
+        if (text_probe_texts[k].text == text) tp = &text_probe_texts[k];
+    if (tp && !past_second(now, tp->last_ns)) {
+        tp->last_ns = now;
+        return tp;
+    }
+    for (unsigned k = 0; k < TEXT_PROBE_TEXTS && !tp; k++)
+        if (!text_probe_texts[k].text || past_second(now, text_probe_texts[k].last_ns)) tp = &text_probe_texts[k];
+    if (!tp) return NULL;
+    *tp = (TextProbeText){.text = text, .last_ns = now};
+    text_probe_seen++;
+    /* research (recon 13:18): each T's first quota, to settle 2 or 4 at speed 1 */
+    if (text_probe_first_lines < 64 && readable(text + 0x9d, 0xa)) {
+        text_probe_first_lines++;
+        LOG("arceus-text-probe: text %llx first seen: +9D=%u +A4=%u +A5=%u +A6=%u\n", (unsigned long long)text,
+            *GP(text + 0x9d), *GP(text + 0xa4), *GP(text + 0xa5), *GP(text + 0xa6));
+    }
+    return tp;
+}
+static unsigned text_probe_byte(u64 address) { return address && readable(address, 1) ? *GP(address) : 0xffu; }
+static void text_probe_line(u64 now) {
+    const double seconds = (double)(now - text_probe_ns) / 1e9;
+    const u64 frames = __atomic_load_n(&event_probe_frames, __ATOMIC_RELAXED), base = text_probe_base;
+    char frame_rate[32] = "- (no clock wrappers)";
+    if (clocks_installed)
+        snprintf(frame_rate, sizeof frame_rate, "%.2f", (double)(frames - text_probe_logged[2]) / seconds);
+    /* every live T (seen in the last second) with its +9D/+A4/+A6 (research) */
+    char live[16 * 40 + 1] = "";
+    int at = 0;
+    for (unsigned k = 0; k < TEXT_PROBE_TEXTS && at >= 0 && at < (int)sizeof live - 40; k++) {
+        const TextProbeText* tp = &text_probe_texts[k];
+        if (tp->text && now - tp->last_ns <= 1000000000ull && tp->known)
+            at += snprintf(live + at, sizeof live - (size_t)at, " %llx:%u/%u/%u", (unsigned long long)tp->text,
+                           tp->bytes[0], tp->bytes[1], tp->bytes[2]);
+    }
+    const u64 holder = readable(base + 0x427b188, 8) ? gr64(base + 0x427b188) : 0;
+    const u64 inner = holder && readable(holder, 8) ? gr64(holder) : 0;
+    const int speed = readable(base + 0x40f0138, 4) ? (int)gr32(base + 0x40f0138) : -1;
+    const u64 t = text_probe_last;
+    const int known = t && readable(t + 0x90, 0x110);
+    LOG("arceus-text-probe: seconds=%.2f reveal_fbfbd0_per_s=%.2f glyph_steps_per_s=%.2f frames_per_s=%s texts=%u "
+        "speed=%d language=%u language_inner=%u last=%llx +9D=%u +A4=%u +A5=%u +A6=%u +90=%u +19C=%u "
+        "live(+9D/+A4/+A6)=%s\n", seconds,
+        (double)(text_probe_calls - text_probe_logged[0]) / seconds,
+        (double)(text_probe_steps - text_probe_logged[1]) / seconds, frame_rate, text_probe_seen, speed,
+        text_probe_byte(holder ? holder + 0x50 : 0), text_probe_byte(inner ? inner + 0x50 : 0), (unsigned long long)t,
+        known ? *GP(t + 0x9d) : 0u, known ? *GP(t + 0xa4) : 0u, known ? *GP(t + 0xa5) : 0u, known ? *GP(t + 0xa6) : 0u,
+        known ? *GP(t + 0x90) : 0u, known ? (unsigned)gr16(t + 0x19c) : 0u, *live ? live + 1 : "-");
+    text_probe_ns = now;
+    text_probe_logged[0] = text_probe_calls;
+    text_probe_logged[1] = text_probe_steps;
+    text_probe_logged[2] = frames;
+}
+static void text_probe_reveal(CPU* c, u64 entry) {
+    const u64 text = c->x[0], outer = text_probe_running, caller = c->x[30];
+    const int readable_bytes = readable(text + 0x9d, 0xa);
+    const u8 bytes[3] = {readable_bytes ? *GP(text + 0x9d) : 0, readable_bytes ? *GP(text + 0xa4) : 0,
+                         readable_bytes ? *GP(text + 0xa6) : 0};
+    const u64 outer_steps = text_probe_own;
+    text_probe_running = text;
+    text_probe_own = 0;
+    text_probe_original[0](c, entry);
+    const u64 steps = text_probe_own;
+    text_probe_running = outer;
+    text_probe_own = outer_steps;
+    const int done = !(c->x[0] & 1);
+    pm_lock(&text_probe_lock);
+    const u64 now = plat_ns(); /* under the lock, so no record holds a later time */
+    text_probe_calls++;
+    text_probe_last = text;
+    text_probe_option_poll(now);
+    TextProbeText* tp = text_probe_text(text, now);
+    if (tp) {
+        if (!tp->calls) tp->first_ns = now;
+        tp->calls++;
+        /* a change of +9D, +A4 or +A6 since the previous call (research), at most 64 lines */
+        if (readable_bytes && tp->known && memcmp(tp->bytes, bytes, 3) && text_probe_change_lines < 64) {
+            text_probe_change_lines++;
+            LOG("arceus-text-probe: text %llx bytes changed at call %llu: +9D %u -> %u, +A4 %u -> %u, +A6 %u -> %u "
+                "(FBFBD0 called from main+%llx)\n", (unsigned long long)text, (unsigned long long)tp->calls,
+                tp->bytes[0], bytes[0], tp->bytes[1], bytes[1], tp->bytes[2], bytes[2],
+                (unsigned long long)(caller - text_probe_base));
+        }
+        if (readable_bytes) {
+            memcpy(tp->bytes, bytes, 3);
+            tp->known = 1;
+        }
+        tp->steps += steps;
+        if (done && tp->steps) {
+            LOG("arceus-text-probe: text %llx ended: calls=%llu glyph_steps=%llu ms=%.1f (%.1f steps a second)\n",
+                (unsigned long long)text, (unsigned long long)tp->calls, (unsigned long long)tp->steps,
+                (double)(now - tp->first_ns) / 1e6,
+                now > tp->first_ns ? (double)tp->steps * 1e9 / (double)(now - tp->first_ns) : 0.0);
+            *tp = (TextProbeText){.text = text, .last_ns = now};
+        }
+    }
+    if (!text_probe_ns) {
+        text_probe_ns = now;
+        text_probe_logged[0] = text_probe_calls;
+        text_probe_logged[1] = text_probe_steps;
+        text_probe_logged[2] = __atomic_load_n(&event_probe_frames, __ATOMIC_RELAXED);
+    } else if (now - text_probe_ns >= 5000000000ull)
+        text_probe_line(now);
+    pm_unlock(&text_probe_lock);
+}
+static void text_probe_frame(void) {
+    pm_lock(&text_probe_lock);
+    text_probe_option_poll(plat_ns());
+    pm_unlock(&text_probe_lock);
+}
+/* FBF57C(T, speed w1, mode w2), from FBEFE4 when a text is built, fills +9D/+A5 and +A4/+A6 from its tables: logged
+   with the language byte it reads ([[[main+427B188]]+50]) and what it set, for the first 64 calls */
+static GuestFn text_probe_setup_original;
+static void text_probe_setup(CPU* c, u64 entry) {
+    const u64 text = c->x[0], base = text_probe_base;
+    const u32 speed = (u32)c->x[1], mode = (u32)c->x[2];
+    const u64 holder = readable(base + 0x427b188, 8) ? gr64(base + 0x427b188) : 0;
+    const u64 inner = holder && readable(holder, 8) ? gr64(holder) : 0;
+    const unsigned language = text_probe_byte(inner ? inner + 0x50 : 0);
+    text_probe_setup_original(c, entry);
+    pm_lock(&text_probe_lock);
+    if (text_probe_setup_lines < 64) {
+        text_probe_setup_lines++;
+        const int known = readable(text + 0x9d, 0xa);
+        LOG("arceus-text-probe: setup FBF57C text=%llx w1=%d w2=%d language=%u: +9D=%u +A4=%u +A5=%u +A6=%u\n",
+            (unsigned long long)text, (int)speed, (int)mode, language, known ? *GP(text + 0x9d) : 0u,
+            known ? *GP(text + 0xa4) : 0u, known ? *GP(text + 0xa5) : 0u, known ? *GP(text + 0xa6) : 0u);
+    }
+    pm_unlock(&text_probe_lock);
+}
+/* The glyph step: one that used the quota, called from the reveal's loop (return address FBFC24) */
+static void text_probe_step(CPU* c, u64 entry) {
+    const u64 status = c->x[1], caller = c->x[30];
+    text_probe_original[1](c, entry);
+    if (text_probe_running && caller == text_probe_base + 0xfbfc24 && (c->x[0] & 0xffffffffu) == 1 &&
+        readable(status, 4) && gr32(status) == 0) {
+        text_probe_own++;
+        __atomic_add_fetch(&text_probe_steps, 1, __ATOMIC_RELAXED);
+    }
+}
+static void text_probe_init(u64 base) {
+    if (!arceus_switch_enabled("SNX_ARCEUS_TEXT_PROBE", 0)) return;
+    if (!base || !g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) {
+        WARN("arceus-text-probe: refused without the main build or AOT invalidation\n");
+        return;
+    }
+    /* MOV Xd,Xn -> ADD Xd,Xn,#0 for independent JIT bodies; recon's guards (pass 5) and the step's first store */
+    static const struct { u32 offset, size, head, patch, word, replacement, extra[3], extra_word[3]; } sites[2] = {
+        {0xfbfbd0, 0x15c, 0xd100c3ff, 0x10, 0xaa0003f3, 0x91000013, {0x24, 0x12c, 0x158},
+         {0xb9418a68, 0x7100053f, 0x17ffffe7}},
+        {0x2b315e8, 0x9c4, 0xfc1b0fe8, 0x3c, 0xaa0103f4, 0x91000034, {0x18, 0x868, 0x18},
+         {0xb900003f, 0xd65f03c0, 0xb900003f}},
+    };
+    static const GuestFn wrappers[2] = {text_probe_reveal, text_probe_step};
+    GuestFn bodies[2];
+    for (unsigned k = 0; k < 2; k++) {
+        const u64 pc = base + sites[k].offset;
+        int covered = 0;
+        for (u32 i = 0; i < g_mod->nfns; i++)
+            if (g_mod->fn_lo[i] == pc && g_mod->fn_len[i] >= sites[k].size) covered = 1;
+        int guarded = covered && pc >= g_code_lo && pc + sites[k].size <= g_code_hi && readable(pc, sites[k].size) &&
+                      gr32(pc) == sites[k].head && gr32(pc + sites[k].patch) == sites[k].word;
+        for (unsigned e = 0; guarded && e < 3; e++) guarded = gr32(pc + sites[k].extra[e]) == sites[k].extra_word[e];
+        if (!guarded) {
+            WARN("arceus-text-probe: refused instruction/function guard site=main+%x\n", sites[k].offset);
+            return;
+        }
+    }
+    for (unsigned k = 0; k < 2; k++) {
+        const u64 pc = base + sites[k].offset;
+        gw32(pc + sites[k].patch, sites[k].replacement);
+        jit_code_changed(pc, sites[k].size);
+        bodies[k] = jit_wait(pc);
+        if (!bodies[k]) {
+            /* Nothing is published, so the words go back: the text tick's guards expect the stock ones */
+            for (unsigned r = 0; r <= k; r++) {
+                gw32(base + sites[r].offset + sites[r].patch, sites[r].word);
+                jit_code_changed(base + sites[r].offset, sites[r].size);
+            }
+            WARN("arceus-text-probe: compile failed site=main+%x\n", sites[k].offset);
+            return;
+        }
+    }
+    text_probe_base = base;
+    for (unsigned k = 0; k < 2; k++) {
+        text_probe_original[k] = bodies[k];
+        __atomic_store_n(&g_disp[(base + sites[k].offset - g_code_lo) / 4], wrappers[k], __ATOMIC_RELEASE);
+    }
+    text_probe = 1;
+    text_probe_option_poll(plat_ns()); /* the value at install */
+    /* FBF57C, log only: its own guards (head, the store of +A4, the RET); MOV X0,X8 -> ADD at +D4. Not needed for the
+       rest of the probe, so a failed guard only leaves it out */
+    const u64 setup = base + 0xfbf57c;
+    int covered = 0;
+    for (u32 i = 0; i < g_mod->nfns; i++)
+        if (g_mod->fn_lo[i] == setup && g_mod->fn_len[i] >= 0x130) covered = 1;
+    if (covered && setup >= g_code_lo && setup + 0x130 <= g_code_hi && readable(setup, 0x130) &&
+        gr32(setup) == 0xd100c3ff && gr32(setup + 0xb4) == 0x39029008 && gr32(setup + 0xc4) == 0xd65f03c0 &&
+        gr32(setup + 0xd4) == 0xaa0803e0) {
+        gw32(setup + 0xd4, 0x91000100);
+        jit_code_changed(setup, 0x130);
+        text_probe_setup_original = jit_wait(setup);
+        if (text_probe_setup_original)
+            __atomic_store_n(&g_disp[(setup - g_code_lo) / 4], text_probe_setup, __ATOMIC_RELEASE);
+    }
+    if (!text_probe_setup_original) WARN("arceus-text-probe: the text setup FBF57C is not logged (guard or compile)\n");
+    LOG("arceus-text-probe: read-only, the text reveal FBFBD0 and its glyph step 2B315E8, a line every 5 s and one "
+        "when a text ends%s\n", clocks_installed ? "" : ", frames not counted without the clock wrappers");
+}
+/* SNX_ARCEUS_DEMO_PROBE=1, read-only (recon 11:12, research): the demo controller's step 1458300 adds 2 to the demo
+   clock C+7EC ([this +3B0]) once a call while playing (state +3B8 == 3), unless a name slot C+7F0..810 holds it.
+   Every 5 s a line with its calls and frames a second, the state, the clock and its growth a second, and whether the
+   slots are empty; one line when playing ends, with the clock then. Does the demo end on a count of calls? */
+#define DEMO_EMPTY_NAME 0xcbf29ce484222645ull
+static GuestFn demo_probe_original;
+static PMutex demo_probe_lock = PMUTEX_INIT;
+static u64 demo_probe_calls, demo_probe_ns, demo_probe_logged[2], demo_probe_object, demo_probe_played_ns;
+static int64_t demo_probe_clock, demo_probe_played_clock;
+/* The controller's state, its context, the clock and whether the five name slots are empty: 0 when unreadable */
+static int demo_probe_read(u64 object, u32* state, u64* context, int32_t* clock, int* empty) {
+    if (!readable(object + 0x3b0, 0x10)) return 0;
+    *state = gr32(object + 0x3b8);
+    *context = gr64(object + 0x3b0);
+    if (!*context || !readable(*context + 0x7ec, 0x2c)) return 0;
+    *clock = (int32_t)gr32(*context + 0x7ec);
+    *empty = 1;
+    for (unsigned k = 0; k < 5; k++) *empty &= gr64(*context + 0x7f0 + 8 * k) == DEMO_EMPTY_NAME;
+    return 1;
+}
+static void demo_probe_step(CPU* c, u64 entry) {
+    const u64 object = c->x[0];
+    u32 before = 0, after = 0;
+    u64 context = 0;
+    int32_t clock = 0;
+    int empty = 0;
+    const int seen = demo_probe_read(object, &before, &context, &clock, &empty);
+    const u64 calls = __atomic_add_fetch(&demo_probe_calls, 1, __ATOMIC_RELAXED);
+    demo_probe_original(c, entry);
+    const int read = seen && demo_probe_read(object, &after, &context, &clock, &empty);
+    const u64 now = plat_ns();
+    pm_lock(&demo_probe_lock);
+    if (read && after == 3 && (before != 3 || demo_probe_object != object)) {
+        demo_probe_object = object;
+        demo_probe_played_ns = now;
+        demo_probe_played_clock = clock;
+    }
+    if (read && before == 3 && after != 3 && demo_probe_object == object) {
+        LOG("arceus-demo-probe: playing ended: state=%u clock=%d (from %lld, %.2f s at %.1f a second)\n", after,
+            clock, (long long)demo_probe_played_clock, (double)(now - demo_probe_played_ns) / 1e9,
+            now > demo_probe_played_ns
+                ? (double)(clock - demo_probe_played_clock) * 1e9 / (double)(now - demo_probe_played_ns) : 0.0);
+        demo_probe_object = 0;
+    }
+    const u64 last = demo_probe_ns;
+    if (!last) {
+        demo_probe_ns = now;
+        demo_probe_logged[0] = calls;
+        demo_probe_logged[1] = __atomic_load_n(&event_probe_frames, __ATOMIC_RELAXED);
+        demo_probe_clock = read ? clock : 0;
+    } else if (now - last >= 5000000000ull) {
+        const double seconds = (double)(now - last) / 1e9;
+        const u64 frames = __atomic_load_n(&event_probe_frames, __ATOMIC_RELAXED);
+        char frame_rate[32] = "- (no clock wrappers)";
+        if (clocks_installed)
+            snprintf(frame_rate, sizeof frame_rate, "%.2f", (double)(frames - demo_probe_logged[1]) / seconds);
+        LOG("arceus-demo-probe: seconds=%.2f step_1458300_per_s=%.2f frames_per_s=%s state=%u context=%llx clock=%d "
+            "clock_per_s=%.1f slots_empty=%d calls_total=%llu\n", seconds,
+            (double)(calls - demo_probe_logged[0]) / seconds, frame_rate, read ? after : 0u,
+            (unsigned long long)context, read ? clock : 0, read ? (double)(clock - demo_probe_clock) / seconds : 0.0,
+            read ? empty : -1, (unsigned long long)calls);
+        demo_probe_ns = now;
+        demo_probe_logged[0] = calls;
+        demo_probe_logged[1] = frames;
+        demo_probe_clock = read ? clock : 0;
+    }
+    pm_unlock(&demo_probe_lock);
+}
+static void demo_probe_init(u64 base) {
+    if (!arceus_switch_enabled("SNX_ARCEUS_DEMO_PROBE", 0)) return;
+    if (!base || !g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) {
+        WARN("arceus-demo-probe: refused without the main build or AOT invalidation\n");
+        return;
+    }
+    /* The census's own equivalent rewrite (B -> CBZ XZR at +1D8), so that the census leaves this owner to the probe */
+    const u64 pc = base + 0x1458300, size = 0x1154;
+    int covered = 0;
+    for (u32 i = 0; i < g_mod->nfns; i++)
+        if (g_mod->fn_lo[i] == pc && g_mod->fn_len[i] >= size) covered = 1;
+    if (!covered || pc < g_code_lo || pc + size > g_code_hi || !readable(pc, size) || gr32(pc) != 0xd10343ff ||
+        gr32(pc + 0x1d8) != 0x14000069) {
+        WARN("arceus-demo-probe: refused instruction/function guard\n");
+        return;
+    }
+    gw32(pc + 0x1d8, 0xb4000d3f);
+    jit_code_changed(pc, size);
+    demo_probe_original = jit_wait(pc);
+    if (!demo_probe_original) {
+        /* Nothing is published, so the stock branch goes back: the demo tick's guard expects it */
+        gw32(pc + 0x1d8, 0x14000069);
+        jit_code_changed(pc, size);
+        WARN("arceus-demo-probe: compile failed\n");
+        return;
+    }
+    __atomic_store_n(&g_disp[(pc - g_code_lo) / 4], demo_probe_step, __ATOMIC_RELEASE);
+    demo_probe = 1;
+    LOG("arceus-demo-probe: read-only, the demo controller's step 1458300 and its clock C+7EC, a line every 5 s and "
+        "one when playing ends%s\n", clocks_installed ? "" : ", frames not counted without the clock wrappers");
+}
+/* Also at 30 FPS and below, where the timing layer is skipped and main_base is not set: the probe finds the module
+   itself and leaves main_base alone (the reviewer's note on 471fe69d) */
+static void event_probe_init(void) {
+    const char* enabled = getenv("SNX_ARCEUS_EVENT_PROBE");
+    if (!enabled || strcmp(enabled, "1")) return;
+    const u64 base = arceus_probe_base();
+    if (!base) {
+        WARN("arceus-event-probe: refused unsupported main build\n");
+        return;
+    }
+    if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) {
+        WARN("arceus-event-probe: refused without AOT invalidation\n");
+        return;
+    }
+    /* Equivalent MOV Xd,X0 -> ADD Xd,X0,#0 selects an independent JIT body; the RET is a second guard */
+    static const struct { u64 offset; u32 size, head, patch, word, replacement, extra, extra_word; } sites[2] = {
+        {0x15ba460, 0x138, 0xd10703ff, 0xa4, 0xaa0003f3, 0x91000013, 0x134, 0xd65f03c0},
+        {0xf7ec80, 0x134, 0xd10143ff, 0x18, 0xaa0003f4, 0x91000014, 0x74, 0xd65f03c0},
+    };
+    static const GuestFn wrappers[2] = {event_job_probe, event_resume_probe};
+    unsigned installed = 0;
+    for (unsigned k = 0; k < 2; k++) {
+        const u64 pc = base + sites[k].offset;
+        int covered = 0;
+        for (u32 i = 0; i < g_mod->nfns; i++)
+            if (g_mod->fn_lo[i] == pc && g_mod->fn_len[i] >= sites[k].size) covered = 1;
+        if (!covered || pc < g_code_lo || pc + sites[k].size > g_code_hi || !readable(pc, sites[k].size) ||
+            gr32(pc) != sites[k].head || gr32(pc + sites[k].patch) != sites[k].word ||
+            gr32(pc + sites[k].extra) != sites[k].extra_word) {
+            WARN("arceus-event-probe: refused instruction/function guard site=main+%llx\n",
+                 (unsigned long long)sites[k].offset);
+            continue;
+        }
+        gw32(pc + sites[k].patch, sites[k].replacement);
+        jit_code_changed(pc, sites[k].size);
+        event_probe_original[k] = jit_wait(pc);
+        if (!event_probe_original[k]) {
+            /* Nothing is published at this site, so its stock word goes back: the event tick's guard expects it */
+            gw32(pc + sites[k].patch, sites[k].word);
+            jit_code_changed(pc, sites[k].size);
+            WARN("arceus-event-probe: compile failed site=main+%llx\n", (unsigned long long)sites[k].offset);
+            continue;
+        }
+        __atomic_store_n(&g_disp[(pc - g_code_lo) / 4], wrappers[k], __ATOMIC_RELEASE);
+        installed++;
+    }
+    event_probe = installed != 0;
+    LOG("arceus-event-probe: read-only, %u of 2 installed (the event script job 15BA460, its resume F7EC80), a line "
+        "every 5 s%s\n", installed, clocks_installed ? "" : ", frames not counted without the clock wrappers");
+}
+/* SNX_ARCEUS_EVENT_TICK=1 (EVENT-TICK-DESIGN.md, 9a82c3de): the event script job 15BA460 runs its Lua script once a
+   call, and the scripts' waits count calls, so at 60 FPS a cutscene's waits were half as long. Each job is run 30 times
+   a second of elapsed time by the script tick's own decision, on a budget of its own. A frame without a run answers 0,
+   as a suspended script does, and writes nothing. At 30 FPS every frame runs. */
+#define EVENT_TICK_JOBS 8
+#define EVENT_TICK_PAD 0x42796c0 /* the pad singleton's slot, as IsPadTrigger D8EDCC reads it */
+/* The pad's edge words the event natives read: IsPadTrigger +118, IsPadRelease +B0, IsPadRepeat +A8 and +B8. */
+static const u32 event_tick_edges[4] = {0x118, 0xb0, 0xa8, 0xb8};
+typedef struct {
+    u64 object, generation; /* the job, and its script context [job +140] at its first call */
+    ScriptTick tick;
+    u64 latch[4]; /* the edges of the frames since this job's last run */
+    u64 sampled;  /* the frame whose edges are in the latch already */
+    int fresh;    /* not called yet: its first call runs, the budget then starts empty */
+} EventTickJob;
+static EventTickJob event_tick_jobs[EVENT_TICK_JOBS];
+static PMutex event_tick_lock = PMUTEX_INIT;
+static GuestFn event_tick_original;
+static GuestFn event_tick_pad_original[3];
+static u64 event_tick_ran, event_tick_skipped, event_tick_full, event_tick_carried, event_tick_calls;
+static u64 event_tick_logged[4], event_tick_line_frame, event_tick_fed_ns, event_tick_cut_ns;
+/* While a job runs on this thread: the edges its natives see on top of the pad's own, else NULL. A job run inside
+   it sees none (event_tick_nested), and the pointer still marks the thread as inside a run. */
+static _Thread_local const u64* event_tick_running;
+static const u64 event_tick_nested[4];
+static u64 event_tick_pad(void) {
+    const u64 slot = main_base + EVENT_TICK_PAD;
+    if (!readable(slot, 8)) return 0;
+    const u64 holder = gr64(slot);
+    if (!holder || !readable(holder, 8)) return 0;
+    const u64 pad = gr64(holder);
+    return pad && readable(pad, 0x120) ? pad : 0;
+}
+/* EVENT_TICK-2 (research): the decision on the clocks' measured step, up to 100 ms, not the 1/30 s cap, so a slow
+   frame's time is not lost (a step within 1/32 of 1/30 s counts as exactly 1/30 s). A run when the budget is within
+   half a step, at most 1/30 s, of a tick. After the decision the budget is capped at two ticks (research), so a hitch
+   up to the clocks' 100 ms is caught up one run a frame and nothing runs ahead. Returns the run, the cut in *cut. */
+static int event_tick_decide(ScriptTick* t, u64 frame, u64 step_ns, u64* cut) {
+    *cut = 0;
+    if (t->decided && t->frame == frame) return t->tick;
+    int64_t step = (int64_t)step_ns;
+    if (step > SCRIPT_TICK_NS - SCRIPT_TICK_NS / 32 && step < SCRIPT_TICK_NS + SCRIPT_TICK_NS / 32)
+        step = SCRIPT_TICK_NS;
+    t->budget += step;
+    t->tick = t->budget + (step < SCRIPT_TICK_NS ? step : SCRIPT_TICK_NS) / 2 >= SCRIPT_TICK_NS;
+    if (t->tick) {
+        t->budget -= SCRIPT_TICK_NS;
+        t->ticks++;
+    }
+    if (t->budget > 2 * SCRIPT_TICK_NS) {
+        *cut = (u64)(t->budget - 2 * SCRIPT_TICK_NS);
+        t->budget = 2 * SCRIPT_TICK_NS;
+    }
+    t->frames++;
+    t->frame = frame;
+    t->decided = 1;
+    return t->tick;
+}
+/* The job's state: found by the job and its generation, else made fresh in a free slot (its first call runs at
+   once, as at 30 FPS), else NULL when the table is full. */
+static EventTickJob* event_tick_job(u64 object, u64 generation) {
+    for (unsigned k = 0; k < EVENT_TICK_JOBS; k++)
+        if (event_tick_jobs[k].object == object) {
+            if (event_tick_jobs[k].generation == generation) return &event_tick_jobs[k];
+            event_tick_jobs[k].object = 0; /* the address reused by another job: it starts fresh */
+        }
+    for (unsigned k = 0; k < EVENT_TICK_JOBS; k++)
+        if (!event_tick_jobs[k].object) {
+            event_tick_jobs[k] = (EventTickJob){.object = object, .generation = generation, .sampled = ~0ull,
+                                                .fresh = 1};
+            return &event_tick_jobs[k];
+        }
+    return NULL;
+}
+/* Every 600th frame, however many jobs are called in a frame (the reviewer's note on 9041f04d) */
+static void event_tick_line(u64 frame) {
+    const u64 calls = __atomic_add_fetch(&event_tick_calls, 1, __ATOMIC_RELAXED);
+    u64 last = __atomic_load_n(&event_tick_line_frame, __ATOMIC_RELAXED);
+    if (!last) { /* the first window starts here, with the counts so far */
+        if (__atomic_compare_exchange_n(&event_tick_line_frame, &last, frame, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
+            event_tick_logged[0] = __atomic_load_n(&event_tick_ran, __ATOMIC_RELAXED);
+            event_tick_logged[1] = __atomic_load_n(&event_tick_skipped, __ATOMIC_RELAXED);
+            event_tick_logged[2] = __atomic_load_n(&event_tick_fed_ns, __ATOMIC_RELAXED);
+            event_tick_logged[3] = __atomic_load_n(&event_tick_cut_ns, __ATOMIC_RELAXED);
+        }
+        return;
+    }
+    if (frame - last < 600 ||
+        !__atomic_compare_exchange_n(&event_tick_line_frame, &last, frame, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED))
+        return;
+    const u64 ran = __atomic_load_n(&event_tick_ran, __ATOMIC_RELAXED);
+    const u64 skipped = __atomic_load_n(&event_tick_skipped, __ATOMIC_RELAXED);
+    const u64 fed = __atomic_load_n(&event_tick_fed_ns, __ATOMIC_RELAXED);
+    const u64 cut = __atomic_load_n(&event_tick_cut_ns, __ATOMIC_RELAXED);
+    LOG("arceus-event-tick: calls=%llu ran=%llu skipped=%llu (in the last 600 frames: ran %llu, skipped %llu, fed "
+        "%.1f ms, cut by the cap %.1f ms) carried=%llu full=%llu\n", (unsigned long long)calls,
+        (unsigned long long)ran, (unsigned long long)skipped, (unsigned long long)(ran - event_tick_logged[0]),
+        (unsigned long long)(skipped - event_tick_logged[1]), (double)(fed - event_tick_logged[2]) / 1e6,
+        (double)(cut - event_tick_logged[3]) / 1e6,
+        (unsigned long long)__atomic_load_n(&event_tick_carried, __ATOMIC_RELAXED),
+        (unsigned long long)__atomic_load_n(&event_tick_full, __ATOMIC_RELAXED));
+    event_tick_logged[0] = ran;
+    event_tick_logged[1] = skipped;
+    event_tick_logged[2] = fed;
+    event_tick_logged[3] = cut;
+}
+static void event_tick_update(CPU* c, u64 entry) {
+    const u64 object = c->x[0];
+    if (event_tick_running || !readable(object, 0x148)) { /* a job inside a run, or one we cannot key: as today */
+        const u64* outer = event_tick_running;
+        if (outer) event_tick_running = event_tick_nested; /* the pad as it is, not the outer job's edges */
+        event_tick_original(c, entry);
+        event_tick_running = outer;
+        return;
+    }
+    const u64 generation = gr64(object + 0x140), pad = event_tick_pad();
+    pm_lock(&step_lock);
+    const u64 ns = step.step ? step.step : step.initial_ns;
+    pm_unlock(&step_lock);
+    const u64 frame = __atomic_load_n(&frame_step_frames, __ATOMIC_ACQUIRE);
+    u64 seen[4] = {0};
+    pm_lock(&event_tick_lock);
+    EventTickJob* job = event_tick_job(object, generation);
+    int run = 1;
+    if (job) {
+        if (job->fresh) { /* this frame decided as a run, with nothing carried into the budget */
+            job->fresh = 0;
+            job->tick = (ScriptTick){.frame = frame, .decided = 1, .tick = 1, .frames = 1, .ticks = 1};
+        }
+        /* One decision a frame for all of this job's calls in it: a job the game calls N times a frame runs N times on a
+           tick frame and none on the others, as at 30 FPS it runs N times every 1/30 s. A second run would not be a
+           second tick. */
+        const int decided = job->tick.decided && job->tick.frame == frame;
+        u64 cut;
+        run = event_tick_decide(&job->tick, frame, ns, &cut);
+        if (!decided) {
+            __atomic_add_fetch(&event_tick_fed_ns, ns, __ATOMIC_RELAXED);
+            if (cut) __atomic_add_fetch(&event_tick_cut_ns, cut, __ATOMIC_RELAXED);
+        }
+        /* each frame's edges once into the latch; a run's own frame is read live by its natives */
+        if (!run && pad && job->sampled != frame)
+            for (unsigned k = 0; k < 4; k++) job->latch[k] |= gr64(pad + event_tick_edges[k]);
+        job->sampled = frame;
+        if (run) {
+            memcpy(seen, job->latch, sizeof seen);
+            memset(job->latch, 0, sizeof job->latch);
+        }
+    }
+    pm_unlock(&event_tick_lock);
+    if (!job) {
+        if (__atomic_add_fetch(&event_tick_full, 1, __ATOMIC_RELAXED) == 1)
+            WARN("arceus-event-tick: table of %u jobs full: job %llx runs every frame as today\n", EVENT_TICK_JOBS,
+                 (unsigned long long)object);
+    }
+    event_tick_line(frame);
+    if (!run) { /* as a run that found the script suspended: 0, nothing written */
+        __atomic_add_fetch(&event_tick_skipped, 1, __ATOMIC_RELAXED);
+        c->x[0] = 0;
+        c->pc = c->x[30];
+        return;
+    }
+    __atomic_add_fetch(&event_tick_ran, 1, __ATOMIC_RELAXED);
+    event_tick_running = seen;
+    event_tick_original(c, entry);
+    event_tick_running = NULL;
+    if (job && (c->x[0] & 0xff)) { /* finished or failed: its state goes */
+        pm_lock(&event_tick_lock);
+        if (job->object == object && job->generation == generation) job->object = 0;
+        pm_unlock(&event_tick_lock);
+    }
+}
+/* A pad edge native inside a job's run: the job's latched edges ORed into the words it reads, for its own call only.
+   A word another writer changed meanwhile is left as that writer made it. */
+static void event_tick_pad_read(CPU* c, u64 entry, unsigned kind) {
+    const u64* seen = event_tick_running;
+    const u64 pad = seen ? event_tick_pad() : 0;
+    static const unsigned words[3][2] = {{0, 0}, {1, 1}, {2, 3}};
+    u64 before[2] = {0}, shown[2] = {0};
+    unsigned written = 0;
+    for (unsigned k = 0; pad && k < 2; k++) {
+        const unsigned w = words[kind][k];
+        if (k && w == words[kind][0]) break;
+        before[k] = gr64(pad + event_tick_edges[w]);
+        shown[k] = before[k] | seen[w];
+        if (shown[k] != before[k]) {
+            gw64(pad + event_tick_edges[w], shown[k]);
+            written |= 1u << k;
+        }
+    }
+    event_tick_pad_original[kind](c, entry);
+    for (unsigned k = 0; k < 2; k++)
+        if (written >> k & 1) {
+            const u64 at = pad + event_tick_edges[words[kind][k]];
+            if (gr64(at) == shown[k]) gw64(at, before[k]);
+        }
+    if (written) __atomic_add_fetch(&event_tick_carried, 1, __ATOMIC_RELAXED);
+}
+static void event_tick_trigger(CPU* c, u64 entry) { event_tick_pad_read(c, entry, 0); }
+static void event_tick_release(CPU* c, u64 entry) { event_tick_pad_read(c, entry, 1); }
+static void event_tick_repeat(CPU* c, u64 entry) { event_tick_pad_read(c, entry, 2); }
+/* Guard, rewrite one equivalent instruction for an independent JIT body, compile: the body, or NULL. */
+static GuestFn event_tick_body(u64 offset, u32 size, u32 head, u32 patch, u32 word, u32 replacement, u32 extra,
+                               u32 extra_word) {
+    const u64 pc = main_base + offset;
+    int covered = 0;
+    for (u32 i = 0; i < g_mod->nfns; i++)
+        if (g_mod->fn_lo[i] == pc && g_mod->fn_len[i] >= size) covered = 1;
+    if (!covered || pc < g_code_lo || pc + size > g_code_hi || !readable(pc, size) || gr32(pc) != head ||
+        gr32(pc + patch) != word || gr32(pc + extra) != extra_word) {
+        WARN("arceus-event-tick: refused instruction/function guard site=main+%llx\n", (unsigned long long)offset);
+        return NULL;
+    }
+    gw32(pc + patch, replacement);
+    jit_code_changed(pc, size);
+    GuestFn body = jit_wait(pc);
+    if (!body) WARN("arceus-event-tick: compile failed site=main+%llx\n", (unsigned long long)offset);
+    return body;
+}
+static int event_tick_enabled(void) { return arceus_switch_enabled("SNX_ARCEUS_EVENT_TICK", 1); }
+static void event_tick_init(void) {
+    if (!main_base || !event_tick_enabled()) return;
+    if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
+    if (!frame_step_cell_init("arceus-event-tick")) return;
+    /* MOV X0,X8 -> ADD X0,X8,#0 in each native; the trigger's load of +118 and the others' tail calls guarded */
+    static const struct { u32 offset, extra, extra_word; } pads[3] = {
+        {0xd8edcc, 0x38, 0xf9408e68}, {0xd8ee6c, 0x4c, 0x17fc2d6d}, {0xd8ef0c, 0x4c, 0x17fc2d49}};
+    static const GuestFn pad_wrappers[3] = {event_tick_trigger, event_tick_release, event_tick_repeat};
+    GuestFn bodies[3];
+    for (unsigned k = 0; k < 3; k++) {
+        bodies[k] = event_tick_body(pads[k].offset, 0xa0, 0xf81e0ff3, 0x5c, 0xaa0803e0, 0x91000100, pads[k].extra,
+                                    pads[k].extra_word);
+        if (!bodies[k]) return; /* without the carry a press could be lost: nothing is installed */
+    }
+    /* The job: behind the event probe's wrapper when the probe is on, so that it counts the runs */
+    const u64 pc = main_base + 0x15ba460;
+    GuestFn job = event_probe_original[0] ? event_job_probe
+                                          : event_tick_body(0x15ba460, 0x138, 0xd10703ff, 0xa4, 0xaa0003f3, 0x91000013,
+                                                            0x134, 0xd65f03c0);
+    if (!job) return;
+    event_tick_original = job;
+    for (unsigned k = 0; k < 3; k++) {
+        event_tick_pad_original[k] = bodies[k];
+        __atomic_store_n(&g_disp[(main_base + pads[k].offset - g_code_lo) / 4], pad_wrappers[k], __ATOMIC_RELEASE);
+    }
+    __atomic_store_n(&g_disp[(pc - g_code_lo) / 4], event_tick_update, __ATOMIC_RELEASE);
+    LOG("arceus-event-tick: EXPERIMENT: event scripts run 30 times a second of elapsed time (the job 15BA460), the "
+        "pad's edges of skipped frames carried to the next run (IsPadTrigger, IsPadRelease, IsPadRepeat)\n");
+}
+/* SNX_ARCEUS_DEMO_TICK=1 (DEMO-TICK-DESIGN.md 7c525c55, confirmed by CUT-60f/30f: the demo ended at clock 3502 at both
+   rates): the demo clock C+7EC gained 2 a call, 1/60 s units counted at the authored 30 FPS. The step is wrapped as a
+   whole: when a call added exactly 2 in state 3 or 4, the clock is set to max(before, 0) + n instead, n the elapsed
+   time in 1/60 s units (at most 2 a call, the rest carried, the carry capped at 4 units). Any other change is left. */
+#define DEMO_TICK_UNIT (SCRIPT_TICK_NS / 2)
+#define DEMO_TICK_CONTROLLERS 8
+typedef struct { u64 object, context; int64_t budget; u64 seen_ns; } DemoTickState;
+static DemoTickState demo_tick_states[DEMO_TICK_CONTROLLERS];
+static PMutex demo_tick_lock = PMUTEX_INIT;
+static GuestFn demo_tick_original;
+static u64 demo_tick_calls, demo_tick_units, demo_tick_held, demo_tick_full, demo_tick_ns, demo_tick_logged[3];
+/* The units for a call of this step: the budget gains the step (one within 1/32 of 1/30 s as 1/30 s), gives the whole
+   units with the script tick's half rounding, at most 2, and keeps at most 4 */
+static unsigned demo_tick_units_for(int64_t* budget, u64 step_ns) {
+    int64_t step = (int64_t)step_ns;
+    if (step > SCRIPT_TICK_NS - SCRIPT_TICK_NS / 32 && step < SCRIPT_TICK_NS + SCRIPT_TICK_NS / 32)
+        step = SCRIPT_TICK_NS;
+    *budget += step;
+    int64_t n = (*budget + (step < DEMO_TICK_UNIT ? step : DEMO_TICK_UNIT) / 2) / DEMO_TICK_UNIT;
+    if (n > 2) n = 2;
+    if (n < 0) n = 0;
+    *budget -= n * DEMO_TICK_UNIT;
+    if (*budget > 4 * DEMO_TICK_UNIT) *budget = 4 * DEMO_TICK_UNIT;
+    return (unsigned)n;
+}
+/* The controller's state, fresh for a new controller, or a reused pointer with another context. A state not stepped
+   while playing for a second is free, as its controller is gone or not playing. NULL when all 8 were stepped in the
+   last second (astra's table point: that controller's clock keeps the game's +2, with a line and a count). */
+static DemoTickState* demo_tick_state(u64 object, u64 context, u64 now) {
+    DemoTickState* free = NULL;
+    for (unsigned k = 0; k < DEMO_TICK_CONTROLLERS; k++) {
+        DemoTickState* st = &demo_tick_states[k];
+        if (st->object == object) {
+            /* another context, or one not stepped for a second (expired, so its carry is gone): fresh */
+            if (st->context != context || past_second(now, st->seen_ns)) *st = (DemoTickState){object, context, 0, now};
+            st->seen_ns = now;
+            return st;
+        }
+        if (!free && (!st->object || past_second(now, st->seen_ns))) free = st;
+    }
+    if (free) *free = (DemoTickState){object, context, 0, now};
+    return free;
+}
+static void demo_tick_step(CPU* c, u64 entry) {
+    const u64 object = c->x[0];
+    const int known = readable(object + 0x3b0, 0x10);
+    const u64 context = known ? gr64(object + 0x3b0) : 0;
+    const int usable = context && readable(context + 0x7ec, 4);
+    const u32 state = known ? gr32(object + 0x3b8) : 0;
+    const int32_t before = usable ? (int32_t)gr32(context + 0x7ec) : 0;
+    demo_tick_original(c, entry);
+    if (!usable || (state != 3 && state != 4) || !readable(object + 0x3b0, 8) || gr64(object + 0x3b0) != context ||
+        !readable(context + 0x7ec, 4))
+        return;
+    const int32_t after = (int32_t)gr32(context + 0x7ec), from = before < 0 ? 0 : before;
+    pm_lock(&step_lock);
+    const u64 ns = step.step ? step.step : step.initial_ns;
+    pm_unlock(&step_lock);
+    pm_lock(&demo_tick_lock);
+    const u64 now = plat_ns(); /* under the lock, so no state holds a later time */
+    DemoTickState* st = demo_tick_state(object, context, now);
+    if (st && before < 0) st->budget = 0; /* the clock restarted: nothing carried */
+    unsigned n = 0;
+    int changed = 0;
+    if (!st) {
+        if (after == from + 2 && __atomic_add_fetch(&demo_tick_full, 1, __ATOMIC_RELAXED) == 1)
+            WARN("arceus-demo-tick: table of %u controllers full: controller %llx keeps the game's +2 a call\n",
+                 DEMO_TICK_CONTROLLERS, (unsigned long long)object);
+    } else if (after == from + 2) {
+        n = demo_tick_units_for(&st->budget, ns);
+        changed = 1;
+    } else if (after == before) { /* held: a held demo owes no time */
+        st->budget = 0;
+        __atomic_add_fetch(&demo_tick_held, 1, __ATOMIC_RELAXED);
+    }
+    pm_unlock(&demo_tick_lock);
+    if (changed) {
+        gw32(context + 0x7ec, (u32)(from + (int32_t)n));
+        __atomic_add_fetch(&demo_tick_units, n, __ATOMIC_RELAXED);
+    }
+    const u64 calls = __atomic_add_fetch(&demo_tick_calls, 1, __ATOMIC_RELAXED);
+    u64 last = __atomic_load_n(&demo_tick_ns, __ATOMIC_RELAXED);
+    if (!last) {
+        if (__atomic_compare_exchange_n(&demo_tick_ns, &last, now, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
+            demo_tick_logged[0] = calls;
+            demo_tick_logged[1] = __atomic_load_n(&demo_tick_units, __ATOMIC_RELAXED);
+            demo_tick_logged[2] = __atomic_load_n(&event_probe_frames, __ATOMIC_RELAXED);
+        }
+        return;
+    }
+    if (now - last < 5000000000ull ||
+        !__atomic_compare_exchange_n(&demo_tick_ns, &last, now, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED))
+        return;
+    const u64 units = __atomic_load_n(&demo_tick_units, __ATOMIC_RELAXED);
+    const u64 frames = __atomic_load_n(&event_probe_frames, __ATOMIC_RELAXED);
+    const double seconds = (double)(now - last) / 1e9;
+    LOG("arceus-demo-tick: seconds=%.2f calls_per_s=%.2f units_per_s=%.2f frames_per_s=%.2f held=%llu full=%llu\n",
+        seconds, (double)(calls - demo_tick_logged[0]) / seconds, (double)(units - demo_tick_logged[1]) / seconds,
+        (double)(frames - demo_tick_logged[2]) / seconds,
+        (unsigned long long)__atomic_load_n(&demo_tick_held, __ATOMIC_RELAXED),
+        (unsigned long long)__atomic_load_n(&demo_tick_full, __ATOMIC_RELAXED));
+    demo_tick_logged[0] = calls;
+    demo_tick_logged[1] = units;
+    demo_tick_logged[2] = frames;
+}
+static int demo_tick_enabled(void) { return arceus_switch_enabled("SNX_ARCEUS_DEMO_TICK", 1); }
+static void demo_tick_init(void) {
+    if (!main_base || !demo_tick_enabled()) return;
+    if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
+    const u64 pc = main_base + 0x1458300, size = 0x1154;
+    if (demo_probe_original) {
+        /* inside the probe, so that the probe reads the clock as the tick left it */
+        demo_tick_original = demo_probe_original;
+        __atomic_store_n(&demo_probe_original, demo_tick_step, __ATOMIC_RELEASE);
+    } else {
+        int covered = 0;
+        for (u32 i = 0; i < g_mod->nfns; i++)
+            if (g_mod->fn_lo[i] == pc && g_mod->fn_len[i] >= size) covered = 1;
+        if (!covered || pc < g_code_lo || pc + size > g_code_hi || !readable(pc, size) || gr32(pc) != 0xd10343ff ||
+            gr32(pc + 0x1d8) != 0x14000069) {
+            WARN("arceus-demo-tick: refused instruction/function guard\n");
+            return;
+        }
+        gw32(pc + 0x1d8, 0xb4000d3f); /* the census's own rewrite, as the demo probe */
+        jit_code_changed(pc, size);
+        demo_tick_original = jit_wait(pc);
+        if (!demo_tick_original) {
+            WARN("arceus-demo-tick: compile failed\n");
+            return;
+        }
+        __atomic_store_n(&g_disp[(pc - g_code_lo) / 4], demo_tick_step, __ATOMIC_RELEASE);
+    }
+    demo_tick = 1;
+    LOG("arceus-demo-tick: EXPERIMENT: the demo clock C+7EC gains 1/60 s units of elapsed time, at most 2 a call, "
+        "instead of 2 a call\n");
+}
+/* SNX_ARCEUS_TEXT_TICK=1 (TEXT-TICK-DESIGN.md e5b0c379 and revision 2 f1064177; CUT-60t/30t: the same calls and
+   glyph steps per text, 204.9 ms against 466.5): each text processor T is decided once a frame on its own budget, as
+   EVENT_TICK-2 decides. In a frame that is not a tick for T, its reveal loop's glyph steps (2B315E8 called from FBFC24)
+   do not run: each answers a counted step with no glyph, out-status 0, and nothing of T is written. A T's state is
+   retired when the T was not seen in the previous frame. */
+#define TEXT_TICK_TEXTS 16
+typedef struct { u64 text, generation; ScriptTick tick; u64 last; int fresh; } TextTickState;
+static TextTickState text_tick_states[TEXT_TICK_TEXTS];
+static PMutex text_tick_lock = PMUTEX_INIT;
+static GuestFn text_tick_original[2];
+static int text_tick;
+static u64 text_tick_calls, text_tick_ticks, text_tick_skipped, text_tick_full, text_tick_ns, text_tick_logged[3];
+static unsigned text_tick_seen;
+/* The text whose reveal runs on this thread in a frame that is not its tick, 0 for none */
+static _Thread_local u64 text_tick_skip;
+/* The reveals running on this thread: one inside another runs as today, and without the outer one's skip */
+static _Thread_local unsigned text_tick_depth;
+/* Retirement by staleness (research's ruling on the user's look: no text was ever seen to end, and the table
+   filled). A shown T is updated every frame, so a state whose T was not seen in the previous frame is free. */
+static int text_tick_stale(const TextTickState* st, u64 frame) { return !st->text || st->last + 1 < frame; }
+/* T's state by its address and its text [T +78]. It starts fresh (its first call a tick) for a new T, a new text there,
+   or a T seen again after a gap. A new T takes a free state only: one seen in the previous frame may be called later in
+   this one, and taking it would start a chain of fresh, unpaced states. NULL when none is free. */
+static TextTickState* text_tick_state(u64 text, u64 generation, u64 frame) {
+    TextTickState* st = NULL;
+    for (unsigned k = 0; k < TEXT_TICK_TEXTS; k++) {
+        TextTickState* t = &text_tick_states[k];
+        if (t->text == text) {
+            if (t->generation != generation || text_tick_stale(t, frame))
+                *t = (TextTickState){.text = text, .generation = generation, .fresh = 1};
+            t->last = frame;
+            return t;
+        }
+        if (!st && text_tick_stale(t, frame)) st = t;
+    }
+    if (!st) return NULL;
+    *st = (TextTickState){.text = text, .generation = generation, .last = frame, .fresh = 1};
+    text_tick_seen++;
+    return st;
+}
+static void text_tick_reveal(CPU* c, u64 entry) {
+    const u64 text = c->x[0];
+    if (text_tick_depth || !readable(text + 0x78, 8)) { /* nested, or a T we cannot key: as today */
+        const u64 outer = text_tick_skip;
+        text_tick_skip = 0; /* the outer reveal's skip is for its own glyph steps only */
+        text_tick_depth++;
+        text_tick_original[0](c, entry);
+        text_tick_depth--;
+        text_tick_skip = outer;
+        return;
+    }
+    const u64 generation = gr64(text + 0x78);
+    pm_lock(&step_lock);
+    const u64 ns = step.step ? step.step : step.initial_ns;
+    pm_unlock(&step_lock);
+    const u64 frame = __atomic_load_n(&frame_step_frames, __ATOMIC_ACQUIRE);
+    pm_lock(&text_tick_lock);
+    TextTickState* st = text_tick_state(text, generation, frame);
+    int tick = 1;
+    if (st) {
+        if (st->fresh) {
+            st->fresh = 0;
+            st->tick = (ScriptTick){.frame = frame, .decided = 1, .tick = 1, .frames = 1, .ticks = 1};
+        }
+        u64 cut;
+        tick = event_tick_decide(&st->tick, frame, ns, &cut); /* once a frame for T: cached */
+    }
+    const u64 full = st ? 0 : __atomic_add_fetch(&text_tick_full, 1, __ATOMIC_RELAXED);
+    pm_unlock(&text_tick_lock);
+    if (full == 1) /* the increment's own result (the reviewer's note on 9f2154e1) */
+        WARN("arceus-text-tick: table of %u texts full: text %llx reveals as today\n", TEXT_TICK_TEXTS,
+             (unsigned long long)text);
+    text_tick_skip = tick ? 0 : text;
+    text_tick_depth++;
+    text_tick_original[0](c, entry);
+    text_tick_depth--;
+    text_tick_skip = 0;
+    __atomic_add_fetch(&text_tick_calls, 1, __ATOMIC_RELAXED);
+    if (tick) __atomic_add_fetch(&text_tick_ticks, 1, __ATOMIC_RELAXED);
+    pm_lock(&text_tick_lock);
+    const u64 now = plat_ns();
+    if (!text_tick_ns) {
+        text_tick_ns = now;
+        text_tick_logged[0] = text_tick_calls;
+        text_tick_logged[1] = text_tick_ticks;
+        text_tick_logged[2] = text_tick_skipped;
+    } else if (now - text_tick_ns >= 5000000000ull) {
+        const double seconds = (double)(now - text_tick_ns) / 1e9;
+        LOG("arceus-text-tick: seconds=%.2f reveal_calls_per_s=%.2f ticks_per_s=%.2f skipped_steps_per_s=%.2f texts=%u "
+            "full=%llu\n", seconds, (double)(text_tick_calls - text_tick_logged[0]) / seconds,
+            (double)(text_tick_ticks - text_tick_logged[1]) / seconds,
+            (double)(text_tick_skipped - text_tick_logged[2]) / seconds, text_tick_seen,
+            (unsigned long long)text_tick_full);
+        text_tick_ns = now;
+        text_tick_logged[0] = text_tick_calls;
+        text_tick_logged[1] = text_tick_ticks;
+        text_tick_logged[2] = text_tick_skipped;
+    }
+    pm_unlock(&text_tick_lock);
+}
+/* The glyph step: skipped from the reveal loop of a T in a frame that is not its tick, unless T+A4 holds the fast
+   finish's 100 or more (also the whole page's 255); anything else runs the game's */
+static void text_tick_step(CPU* c, u64 entry) {
+    const u64 text = c->x[0], status = c->x[1];
+    if (text_tick_skip && text == text_tick_skip && c->x[30] == main_base + 0xfbfc24 && readable(text + 0xa4, 1) &&
+        *GP(text + 0xa4) < 100 && writable(status, 4)) {
+        gw32(status, 0);
+        c->x[0] = 1;
+        c->pc = c->x[30];
+        __atomic_add_fetch(&text_tick_skipped, 1, __ATOMIC_RELAXED);
+        return;
+    }
+    text_tick_original[1](c, entry);
+}
+static int text_tick_enabled(void) { return arceus_switch_enabled("SNX_ARCEUS_TEXT_TICK", 1); }
+static void text_tick_init(void) {
+    if (!main_base || !text_tick_enabled()) return;
+    if (!g_mod->nfns || !g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
+    if (!frame_step_cell_init("arceus-text-tick")) return;
+    static const u32 offsets[2] = {0xfbfbd0, 0x2b315e8};
+    if (text_probe_original[0] && text_probe_original[1]) {
+        /* The reveal inside the probe's (it sees the whole call), the step outside it (it counts only real steps) */
+        text_tick_original[0] = text_probe_original[0];
+        text_probe_original[0] = text_tick_reveal;
+        text_tick_original[1] = g_disp[(main_base + offsets[1] - g_code_lo) / 4];
+        __atomic_store_n(&g_disp[(main_base + offsets[1] - g_code_lo) / 4], text_tick_step, __ATOMIC_RELEASE);
+    } else {
+        /* the probe's sites and rewrites */
+        static const struct { u32 size, head, patch, word, replacement, extra[3], extra_word[3]; } sites[2] = {
+            {0x15c, 0xd100c3ff, 0x10, 0xaa0003f3, 0x91000013, {0x24, 0x12c, 0x158},
+             {0xb9418a68, 0x7100053f, 0x17ffffe7}},
+            {0x9c4, 0xfc1b0fe8, 0x3c, 0xaa0103f4, 0x91000034, {0x18, 0x868, 0x18},
+             {0xb900003f, 0xd65f03c0, 0xb900003f}},
+        };
+        GuestFn bodies[2];
+        for (unsigned k = 0; k < 2; k++) {
+            const u64 pc = main_base + offsets[k];
+            int covered = 0;
+            for (u32 i = 0; i < g_mod->nfns; i++)
+                if (g_mod->fn_lo[i] == pc && g_mod->fn_len[i] >= sites[k].size) covered = 1;
+            int guarded = covered && pc >= g_code_lo && pc + sites[k].size <= g_code_hi &&
+                          readable(pc, sites[k].size) && gr32(pc) == sites[k].head &&
+                          gr32(pc + sites[k].patch) == sites[k].word;
+            for (unsigned e = 0; guarded && e < 3; e++)
+                guarded = gr32(pc + sites[k].extra[e]) == sites[k].extra_word[e];
+            if (!guarded) {
+                WARN("arceus-text-tick: refused instruction/function guard site=main+%x\n", offsets[k]);
+                return;
+            }
+        }
+        for (unsigned k = 0; k < 2; k++) {
+            const u64 pc = main_base + offsets[k];
+            gw32(pc + sites[k].patch, sites[k].replacement);
+            jit_code_changed(pc, sites[k].size);
+            bodies[k] = jit_wait(pc);
+            if (!bodies[k]) {
+                WARN("arceus-text-tick: compile failed site=main+%x\n", offsets[k]);
+                return;
+            }
+        }
+        static const GuestFn wrappers[2] = {text_tick_reveal, text_tick_step};
+        for (unsigned k = 0; k < 2; k++) {
+            text_tick_original[k] = bodies[k];
+            __atomic_store_n(&g_disp[(main_base + offsets[k] - g_code_lo) / 4], wrappers[k], __ATOMIC_RELEASE);
+        }
+    }
+    text_tick = 1;
+    LOG("arceus-text-tick: EXPERIMENT: each text reveals in 30 frames a second of elapsed time (FBFBD0, its glyph "
+        "step 2B315E8 skipped on other frames; the fast finish and the whole page as today)\n");
+}
 void arceus_clock_post_jit(void) {
-    fixed_resolution_init(); /* at every rate, outside the timing layer */
+    throw_guard_init(); /* before the master's return: the guard does not depend on it */
+    fixed_resolution_init(); /* at every rate, outside the timing layer and its master switch */
+    if (!arceus_switch_enabled("SNX_ARCEUS_TIMING_FIXES", 1)) return;
+    event_probe_init(); /* read-only, before the return below so that 30 FPS has it too */
+    demo_probe_init(arceus_probe_base());
+    text_probe_init(arceus_probe_base());
     if (!timing_enabled || !clocks_installed) return;
     const char* probe = getenv("SNX_ARCEUS_CAMERA_TRACE");
     camera_trace_only = main_base && !target_fps_explicit && probe && !strcmp(probe, "1");
     timer_carry_fix = arceus_switch_enabled("SNX_ARCEUS_TIMER_CARRY_FIX", 1);
     if (timer_carry_fix) LOG("arceus-timer-carry: integer timer catch-up enabled, backlog capped at 1 second\n");
+    scene_scale_init(); /* after the governor's patch (top of this function), which it needs */
     /* Before the research probe, which compiles and keeps this wrapper's body. */
     physics_timestep_init();
     navigation_timestep_init();
@@ -4335,6 +5828,9 @@ void arceus_clock_post_jit(void) {
     field_waza_init();
     waza_object_init();
     waza_shot_init();
+    event_tick_init(); /* after the event probe, which it then calls on a run */
+    demo_tick_init();  /* after the demo probe, inside which it then runs */
+    text_tick_init();  /* after the text probe, around whose wrappers it then goes */
     cadence_census_init();
     water_fix_init();
     effects_fix_init();
@@ -4344,4 +5840,5 @@ void arceus_clock_post_jit(void) {
     camera_input_init();
     camera_rate_init();
     field_message_probe_init();
+    discord_presence_init();
 }

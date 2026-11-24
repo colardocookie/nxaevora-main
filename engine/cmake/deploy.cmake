@@ -25,11 +25,9 @@ if(NOT GAMES)
         set(data "${program_dir}/.nxaevora")
     elseif(WINDOWS AND DEFINED ENV{APPDATA} AND NOT "$ENV{APPDATA}" STREQUAL "")
         set(data "$ENV{APPDATA}/nxaevora")
-    elseif(MACOS AND DEFINED ENV{HOME} AND NOT "$ENV{HOME}" STREQUAL "")
-        set(data "$ENV{HOME}/Library/Application Support/nxaevora")
-    elseif(NOT WINDOWS AND NOT MACOS AND "$ENV{XDG_DATA_HOME}" MATCHES "^/") # the XDG spec ignores a relative one
+    elseif(NOT WINDOWS AND "$ENV{XDG_DATA_HOME}" MATCHES "^/") # the XDG spec ignores a relative one
         set(data "$ENV{XDG_DATA_HOME}/nxaevora")
-    elseif(NOT WINDOWS AND NOT MACOS AND DEFINED ENV{HOME} AND NOT "$ENV{HOME}" STREQUAL "")
+    elseif(NOT WINDOWS AND DEFINED ENV{HOME} AND NOT "$ENV{HOME}" STREQUAL "")
         set(data "$ENV{HOME}/.local/share/nxaevora")
     else()
         message(STATUS "Runtime not deployed: no home folder to find the games in (set SNX_RECOMPILED_DIR)")

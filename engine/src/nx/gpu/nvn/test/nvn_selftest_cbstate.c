@@ -14,7 +14,7 @@
 
 #define ARRAY_LEN(a) (sizeof(a) / sizeof((a)[0]))
 
-/* The NVN part of a game command buffer is at most 0xE0 (docs/graphics/nvn-design.md); 0x200 is safe. */
+/* The NVN part of a game command buffer is at most 0xE0 (docs/records/graphics/nvn-design.md); 0x200 is safe. */
 #define CB_OBJ_BYTES 0x200u
 #define CB_COMMAND_BYTES 0x1000u
 #define CB_CONTROL_BYTES 0x800u

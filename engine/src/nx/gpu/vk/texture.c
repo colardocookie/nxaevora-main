@@ -12,6 +12,8 @@
 #include "nx/gpu/renderer.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/pass_guest.h"
+#include "nx/gpu/vk/temporal_math.h"
 #include "nx/memory/own.h"
 #include "nx/runtime/platform/tracy.h"
 
@@ -529,12 +531,14 @@ static Surf* tex_create(u64 gva, u32 w, u32 h, u32 layers, u32 d3, u32 levels, V
    when the frame being recorded is done, as descriptors may still name them */
 /* the target's top-left w x h copied out, in the target's format, or in as: another color format of the same texel
    size, the target's bytes read as that format (a bit copy, which vkCmdCopyImage makes between such formats) */
-static Surf* rt_crop(Surf* rt, u32 w, u32 h, const VkFmt* as) {
+/* guest (SNX_ARCEUS_PASS_GUEST): the top-left w x h at guest size instead, a linear blit of its scaled region. A
+   guest copy and a crop of one size and format are two entries: each kind is matched and refreshed only as itself */
+static Surf* rt_crop(Surf* rt, u32 w, u32 h, const VkFmt* as, int guest) {
     Surf* c = NULL;
     VkFmt f = as ? *as : rt->f;
     for (Surf** pp = &rt->crop; *pp;) {
         Surf* x = *pp;
-        if (x->w == w && x->h == h && x->f.vk == f.vk)
+        if (x->w == w && x->h == h && x->f.vk == f.vk && x->guest_copy == guest)
             c = x;
         else if ((i32)(g_vk_present - (u32)x->last_used) > 60) {
             *pp = x->next;
@@ -552,8 +556,9 @@ static Surf* rt_crop(Surf* rt, u32 w, u32 h, const VkFmt* as) {
         c->gva = rt->gva;
         c->w = w;
         c->h = h;
-        c->sw = vk_sc(w) < rt->sw ? vk_sc(w) : rt->sw; /* the same region of the scaled target */
-        c->sh = vk_sc(h) < rt->sh ? vk_sc(h) : rt->sh;
+        c->sw = guest ? w : vk_sc(w) < rt->sw ? vk_sc(w) : rt->sw; /* the same region of the scaled target */
+        c->sh = guest ? h : vk_sc(h) < rt->sh ? vk_sc(h) : rt->sh;
+        c->guest_copy = (u8)guest;
         c->layers = rt->layers;
         c->levels = c->depth3d = 1;
         c->f = f;
@@ -580,11 +585,33 @@ static Surf* rt_crop(Surf* rt, u32 w, u32 h, const VkFmt* as) {
         c->crop_gen = ~0u;
         c->next = rt->crop;
         rt->crop = c;
-        if (w != rt->w || h != rt->h)
+        if (!guest && (w != rt->w || h != rt->h))
             LOG_LIMIT(10, "vulkan: %ux%u texture reads the %ux%u render target at %llx: only that region is used\n", w,
                       h, rt->w, rt->h, (unsigned long long)rt->gva);
     }
     c->last_used = g_vk_present;
+    if (c->crop_gen != rt->wgen && guest) {
+        VkCommandBuffer cb = vk_cmd();
+        VkImageBlit b;
+        vk_surf_use(cb, rt, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_BLIT_BIT,
+                    VK_ACCESS_2_TRANSFER_READ_BIT);
+        vk_surf_use(cb, c, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_BLIT_BIT,
+                    VK_ACCESS_2_TRANSFER_WRITE_BIT);
+        memset(&b, 0, sizeof b);
+        b.srcSubresource.aspectMask = b.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        b.srcSubresource.baseArrayLayer = rt->base_layer;
+        b.dstSubresource.baseArrayLayer = c->base_layer;
+        b.srcSubresource.layerCount = b.dstSubresource.layerCount = rt->layers;
+        b.srcOffsets[1].x = (i32)(vk_sc(w) < rt->sw ? vk_sc(w) : rt->sw);
+        b.srcOffsets[1].y = (i32)(vk_sc(h) < rt->sh ? vk_sc(h) : rt->sh);
+        b.srcOffsets[1].z = b.dstOffsets[1].z = 1;
+        b.dstOffsets[1].x = (i32)w;
+        b.dstOffsets[1].y = (i32)h;
+        rec_CmdBlitImage(cb, rt->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, c->img,
+                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &b, VK_FILTER_LINEAR);
+        c->crop_gen = rt->wgen;
+        pass_guest_blit();
+    }
     if (c->crop_gen != rt->wgen) {
         VkCommandBuffer cb = vk_cmd();
         VkImageCopy r[2];
@@ -616,7 +643,43 @@ static Surf* rt_crop(Surf* rt, u32 w, u32 h, const VkFmt* as) {
 
 Surf* vk_rt_snapshot(Surf* rt) {
     if (!rt || rt->layout == VK_IMAGE_LAYOUT_UNDEFINED) return rt;
-    return rt_crop(rt, rt->w, rt->h, NULL);
+    return rt_crop(rt, rt->w, rt->h, NULL, 0);
+}
+
+/* whether a color format can be the source and the destination of a linear blit, asked once a format */
+static int guest_blits(VkFormat f) {
+    static struct {
+        VkFormat f;
+        int ok;
+    } seen[32];
+    static u32 n;
+    for (u32 i = 0; i < n; i++)
+        if (seen[i].f == f) return seen[i].ok;
+    VkFormatProperties p;
+    memset(&p, 0, sizeof p);
+    vkGetPhysicalDeviceFormatProperties(g_vk.phys, f, &p);
+    VkFormatFeatureFlags need = VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT |
+                                VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
+    int ok = (p.optimalTilingFeatures & need) == need;
+    if (n < 32) seen[n++] = (typeof(seen[0])){f, ok};
+    return ok;
+}
+
+Surf* vk_rt_guest(Surf* rt, u32 w, u32 h, int* why) {
+    if (rt->f.is_int) {
+        *why = PASS_GUEST_INTEGER;
+        return NULL;
+    }
+    if (rt->f.depth || rt->f.stencil || !guest_blits(rt->f.vk)) {
+        *why = PASS_GUEST_FORMAT;
+        return NULL;
+    }
+    Surf* c = rt_crop(rt, w, h, NULL, 1);
+    if (c == rt) {
+        *why = PASS_GUEST_MEMORY;
+        return NULL;
+    }
+    return c;
 }
 
 /* texture header type -> what the image is created as */
@@ -826,8 +889,8 @@ static Surf* tex_from_tic(const u32* tic, int raw, int storage) {
                would convert its texels, so a copy in the texture's format holds them as they are. sRGB and linear
                twins are views of one image and need no copy */
             if (!f.depth && !rt->f.depth && vk_srgb_as(f.vk, 0) != vk_srgb_as(rt->f.vk, 0))
-                return rt_crop(rt, w, h, &f);
-            return rt->w == w && rt->h == h ? rt : rt_crop(rt, w, h, NULL);
+                return rt_crop(rt, w, h, &f, 0);
+            return rt->w == w && rt->h == h ? rt : rt_crop(rt, w, h, NULL, 0);
         }
         LOG_LIMIT(1,
                   "vulkan: a texture with %u-byte texels reads the render target at %llx, which has %u-byte pixels: it "
@@ -1030,6 +1093,23 @@ static VkSamplerAddressMode wrap(u32 m) {
 /* tsc[0] bit 9 compare, bits 10-12 the compare function; tsc[1] filters (gpu/vk/render.c forces nearest for integer
    textures and the compare mode the shader declares) */
 int g_vk_anisotropy;
+/* the shift of the samplers made with raise bit 1: one value for the run (temporal.c reads it from a switch) */
+float g_vk_sampler_shift;
+/* For a log line alone: what each sampler was made with, its chain left out, beside the table below. As many
+   as that table makes at most. vk_sampler_made: 0 when the sampler is not one of them. */
+static struct {
+    VkSampler s;
+    VkSamplerCreateInfo made;
+} g_sampler_made[3072];
+static u32 g_sampler_made_n;
+int vk_sampler_made(VkSampler s, VkSamplerCreateInfo* out) {
+    for (u32 j = 0; s && j < g_sampler_made_n; j++)
+        if (g_sampler_made[j].s == s) {
+            *out = g_sampler_made[j].made;
+            return 1;
+        }
+    return 0;
+}
 VkSampler vk_sampler(const u32* tsc, int raise, int integer) {
     /* samplers are kept for good, and a device allows at least 4000 (maxSamplerAllocationCount): past 3072, a quarter
        of the table left free for probing, new sampler states get the first sampler made */
@@ -1037,16 +1117,23 @@ VkSampler vk_sampler(const u32* tsc, int raise, int integer) {
     static struct {
         u32 tsc[8];
         int raise, integer;
+        int shift; /* the temporal passes' level shift in 1/16 levels, for raise bit 1 */
         VkSampler s;
     } tab[TAB];
     static u32 n, ncustom;
     static VkSampler first;
     u32 hk = 2166136261u;
     for (int i = 0; i < 8; i++) hk = (hk ^ tsc[i]) * 16777619u;
+    /* the shift follows the scene's size each frame: part of the key, rounded to 1/16 level so that a sampler made for
+       one size is not kept for another, while the samplers made stay few */
+    const int shift = (raise & 2) ? (int)floorf(g_vk_sampler_shift * 16.0f + 0.5f) : 0;
     hk = (hk ^ (u32)(raise << 1 | integer)) * 16777619u;
+    hk = (hk ^ (u32)shift) * 16777619u;
     u32 j = hk & (TAB - 1);
     for (u32 probe = 0; probe < TAB && tab[j].s; probe++, j = (j + 1) & (TAB - 1))
-        if (!memcmp(tab[j].tsc, tsc, 32) && tab[j].raise == raise && tab[j].integer == integer) return tab[j].s;
+        if (!memcmp(tab[j].tsc, tsc, 32) && tab[j].raise == raise && tab[j].integer == integer &&
+            tab[j].shift == shift)
+            return tab[j].s;
     if (n >= MAX || tab[j].s) {
         LOG_LIMIT(1, "vulkan: more than %d sampler states: the others use the first one\n", MAX);
         return first;
@@ -1058,12 +1145,24 @@ VkSampler vk_sampler(const u32* tsc, int raise, int integer) {
     float lb = (float)bias / 256.f, lbmax = g_vk.props.limits.maxSamplerLodBias;
     if (lb > lbmax) lb = lbmax;
     if (lb < -lbmax) lb = -lbmax;
+    /* a mipmapped, linearly filtered sampler of a scene draw takes the temporal passes' shift on top of its own */
+    if ((raise & 2) && ((tsc[1] >> 4) & 3) == 2 && (tsc[1] & 3) == 2 && ((tsc[1] >> 6) & 3) >= 2 &&
+        !((tsc[0] >> 9) & 1)) {
+        if (lb != 0.0f)
+            LOG_LIMIT(1, "arceus-temporal: the game sets a level bias of its own (%.3f on this sampler), ours is "
+                         "added\n",
+                      (double)lb);
+        else
+            LOG_LIMIT(1, "arceus-temporal: a sampler without a level bias of its own takes ours (%.2f)\n",
+                      (double)g_vk_sampler_shift);
+        lb = temporal_mip_bias(lb, (float)shift / 16.0f, lbmax);
+    }
     static const float aniso_lut[8] = {1, 2, 4, 6, 8, 10, 12, 16}; /* Ryujinx's SamplerDescriptor */
     u32 aniso = (tsc[0] >> 20) & 7;
     float af = aniso_lut[aniso];
     /* anisotropy=N raises a mipmapped 2D texture's linear filtering (raise), a 3D scene's surfaces, to N. Nearest
        filtering (2D art, the HUD), samplers without a mip filter and depth compares (shadow maps) keep the game's */
-    if (raise && (float)g_vk_anisotropy > af && min == 2 && mag == 2 && mip >= 2 && !((tsc[0] >> 9) & 1))
+    if ((raise & 1) && (float)g_vk_anisotropy > af && min == 2 && mag == 2 && mip >= 2 && !((tsc[0] >> 9) & 1))
         af = (float)g_vk_anisotropy;
     /* tsc[1] bits 10-11: the least (1) or the greatest (2) of the texels the filter reads, not their weighted average
        (0), which vk_tex_bind_sampler leaves only where the view's format and the device take it */
@@ -1140,7 +1239,13 @@ VkSampler vk_sampler(const u32* tsc, int raise, int integer) {
     memcpy(tab[j].tsc, tsc, 32);
     tab[j].raise = raise;
     tab[j].integer = integer;
+    tab[j].shift = shift;
     tab[j].s = s;
+    if (g_sampler_made_n < sizeof g_sampler_made / sizeof g_sampler_made[0]) {
+        g_sampler_made[g_sampler_made_n].s = s;
+        g_sampler_made[g_sampler_made_n].made = si;
+        g_sampler_made[g_sampler_made_n++].made.pNext = NULL;
+    }
     ncustom += custom;
     if (!n++) first = s;
     return s;

@@ -1,10 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The LLVM backend's linker: relocatable objects (as LLVM and Clang write them: x86-64, AArch64 or PowerPC64 ELF on
-   Unix and Android, x86-64 COFF on Windows, arm64 Mach-O on macOS and iOS) into the game module the runtime loads, an
-   ELF shared object, a PE DLL or a Mach-O dylib. The module defines everything it uses (rtlib.c), so the linker
-   resolves every symbol itself and writes no imports: only the relocations position-independent code needs (ELF
-   R_*_RELATIVE, PE base relocations, Mach-O rebases) and an export table */
+   Unix, x86-64 COFF on Windows) into the game module the runtime loads, an ELF shared object or a PE DLL. The module
+   defines everything it uses (rtlib.c), so the linker resolves every symbol itself and writes no imports: only the
+   relocations position-independent code needs (ELF R_*_RELATIVE, PE base relocations) and an export table */
 #ifndef SNX_RECOMPILER_LLVM_LINK_H
 #define SNX_RECOMPILER_LLVM_LINK_H
 #include <stddef.h>
@@ -22,16 +21,14 @@ typedef struct {
 } SnxLinkOutput;
 
 /* Links by the format of the first input. exports name defined functions the shared library exports (by their C
-   names: Mach-O's carry an underscore). soname is the library's own file name (the PE export directory records it,
-   a dylib's install name and code signature are it). 0, or -1 with the reason in error */
+   names). soname is the library's own file name (the PE export directory records it). 0, or -1 with the reason in
+   error */
 int snx_link(const SnxLinkInput* inputs, size_t count, const char* const* exports, size_t export_count,
              const char* soname, SnxLinkOutput* output, char* error, size_t error_size);
 int snx_link_elf(const SnxLinkInput* inputs, size_t count, const char* const* exports, size_t export_count,
                  const char* soname, SnxLinkOutput* output, char* error, size_t error_size);
 int snx_link_coff(const SnxLinkInput* inputs, size_t count, const char* const* exports, size_t export_count,
                   const char* soname, SnxLinkOutput* output, char* error, size_t error_size);
-int snx_link_macho(const SnxLinkInput* inputs, size_t count, const char* const* exports, size_t export_count,
-                   const char* soname, SnxLinkOutput* output, char* error, size_t error_size);
 
 /* shared by the linkers: a growable byte buffer and a name -> value map */
 typedef struct {

@@ -54,7 +54,7 @@ int snx_ini_record(const char* path, const char* key, const char* value) {
         goto done;
     }
     text = (char*)snx_read_file(path, &size);
-    if (!text && snx_path_exists(path)) {
+    if (!text && !snx_path_missing(path)) {
         rc = snx_error("cannot read %s to record %s= in it", path, key);
         goto done;
     }

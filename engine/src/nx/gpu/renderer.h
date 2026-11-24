@@ -158,4 +158,7 @@ extern _Atomic int g_cs_any;      /* compute results are pending somewhere */
 extern _Atomic int g_gfx_any;     /* graphics storage-buffer results are pending somewhere */
 extern _Atomic int g_gfx_img_any; /* graphics storage-image results are pending somewhere */
 
+/* gpu/vk/upscaler_selftest.c: SNX_ARCEUS_UPSCALER_SELFTEST=<adapter> runs an upscaler adapter's self-test on a
+   device of its own in place of the game. The process's result, 0 for a pass. */
+int vk_upscaler_selftest(const char* adapter);
 #endif

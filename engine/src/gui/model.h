@@ -7,12 +7,11 @@
 #include <stdint.h>
 #include "common/utilities/font.h" /* gui_glyph */
 
-/* the menu's items, in order: the loads, Settings and Share Log, on Android the data folder, Exit. The games
-   are the Games tab's */
+/* the menu's items, in order: the loads, Settings and Share Log, Exit. The games are the Games tab's */
 enum {
     GUI_SWITCH,
     GUI_SETTINGS, /* the game's .ini settings, the launcher's own for the runs and its App: settings.h */
-    GUI_LOG,      /* the logs in one file, for a bug report: a phone has no terminal to copy them from */
+    GUI_LOG,      /* the logs in one file, for a bug report */
     GUI_FOLDERS,  /* Settings > App > Folders, where each folder opens */
     GUI_EXIT,
     GUI_ITEM_COUNT
@@ -40,7 +39,6 @@ typedef enum {
     GUI_ASK_ABORT,   /* a running run's, when ask_abort says to ask */
     GUI_ASK_EXIT,    /* leaving the menu on a computer */
     GUI_ASK_DEEP,    /* a folder picked with folders in it: are their games listed too */
-    GUI_ASK_OUTSIDE, /* a folder picked in Folders outside the app's own storage, which Android slows */
     GUI_ASK_ROOM,    /* a run whose extraction may not fit (gui_room) */
     /* a change to the player's settings or folders, what it changes in the question (main.c's ask_line) */
     GUI_ASK_CLEAN,  /* App's Clean Old Settings: the [Deprecated] sections and old keys taken out */

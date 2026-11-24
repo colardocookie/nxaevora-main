@@ -134,6 +134,10 @@ add_executable(snx-test-patches patches.c)
 snx_test_target(snx-test-patches 99)
 target_link_libraries(snx-test-patches PRIVATE scarletnx-common)
 add_test(NAME patches COMMAND snx-test-patches)
+# the exit codes of docs/records/ui/engine-ui-plan.md, unit 3: the numbers of its table
+add_executable(snx-test-exit-codes exit_codes.c)
+snx_test_target(snx-test-exit-codes 99)
+add_test(NAME exit_codes COMMAND snx-test-exit-codes)
 # a recompiled game's stamp: what it is compared by, the made line after it, and the save states' copy of it
 add_executable(snx-test-game-stamp game_stamp.c)
 snx_test_target(snx-test-game-stamp 99)
@@ -210,9 +214,10 @@ add_test(NAME dump_input COMMAND snx-test-dump-input)
 add_executable(snx-test-host-shared-lock host_shared_lock.c "${PROJECT_SOURCE_DIR}/src/common/filesystem/host.c")
 snx_test_target(snx-test-host-shared-lock 11)
 add_test(NAME host_shared_lock COMMAND snx-test-host-shared-lock)
-# snx_os_error: the system's reason a message names, Windows' GetLastError where its calls leave errno
+# snx_os_error: the system's reason a message names, Windows' GetLastError where its calls leave errno; and
+# snx_remove_tree keeps the first failure's code. C11: the test uses CreateFileW and chmod
 add_executable(snx-test-os-error os_error.c)
-snx_test_target(snx-test-os-error 99)
+snx_test_target(snx-test-os-error 11)
 target_link_libraries(snx-test-os-error PRIVATE scarletnx-common)
 add_test(NAME os_error COMMAND snx-test-os-error)
 # RtAPI.cas128: the host's 16-byte compare-and-swap and the locked one, a pair stored whole or not at all
@@ -592,6 +597,110 @@ snx_test_target(snx-test-arceus-clock 11)
 target_link_libraries(snx-test-arceus-clock PRIVATE m)
 add_test(NAME arceus_clock COMMAND snx-test-arceus-clock)
 
+add_executable(snx-test-discord-presence discord_presence.c)
+snx_test_target(snx-test-discord-presence 11)
+add_test(NAME discord_presence COMMAND snx-test-discord-presence)
+add_executable(snx-test-temporal-math temporal_math.c)
+snx_test_target(snx-test-temporal-math 11)
+target_link_libraries(snx-test-temporal-math PRIVATE m)
+add_test(NAME temporal_math COMMAND snx-test-temporal-math)
+
+# The boundary to an upscaler's module (src/nx/gpu/vk/upscaler.h), no SDK, no GPU: five stand-ins, loaded through the
+# runtime's own loader by a host that sends sentinels through every call. The stand-ins use nothing of the C++
+# library, so they depend on system files only. The host is named in the temporal family, which the PC's tests run.
+set(snx_upscaler_standins "")
+foreach(snx_kind 0 1 2 3 4)
+    add_library(snx-test-upscaler-standin-${snx_kind} MODULE upscaler_boundary/standin.cpp)
+    set_target_properties(snx-test-upscaler-standin-${snx_kind} PROPERTIES PREFIX "" CXX_STANDARD 17
+                                                                           CXX_STANDARD_REQUIRED ON
+                                                                           CXX_VISIBILITY_PRESET hidden)
+    target_compile_definitions(snx-test-upscaler-standin-${snx_kind} PRIVATE SNX_STANDIN=${snx_kind})
+    target_compile_options(snx-test-upscaler-standin-${snx_kind} PRIVATE -Wall -Wextra -Werror)
+    target_include_directories(snx-test-upscaler-standin-${snx_kind} PRIVATE "${PROJECT_SOURCE_DIR}/src")
+    target_link_libraries(snx-test-upscaler-standin-${snx_kind} PRIVATE Vulkan::Headers)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        target_link_options(snx-test-upscaler-standin-${snx_kind} PRIVATE -nostdlib++)
+    endif()
+    list(APPEND snx_upscaler_standins "$<TARGET_FILE:snx-test-upscaler-standin-${snx_kind}>")
+endforeach()
+add_executable(snx-test-temporal-upscaler-boundary upscaler_boundary/host.c
+                                                   "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/upscaler_module.c")
+snx_test_target(snx-test-temporal-upscaler-boundary 11)
+target_include_directories(snx-test-temporal-upscaler-boundary PRIVATE "${PROJECT_SOURCE_DIR}/src"
+                                                                       "${CMAKE_CURRENT_SOURCE_DIR}/upscaler_boundary")
+target_link_libraries(snx-test-temporal-upscaler-boundary PRIVATE Vulkan::Headers ${CMAKE_DL_LIBS} m)
+add_dependencies(snx-test-temporal-upscaler-boundary snx-test-upscaler-standin-0 snx-test-upscaler-standin-1
+                 snx-test-upscaler-standin-2 snx-test-upscaler-standin-3 snx-test-upscaler-standin-4)
+add_test(NAME upscaler_boundary COMMAND snx-test-temporal-upscaler-boundary ${snx_upscaler_standins})
+# NGX's lifetimes in DLSS's module (msvc/upscaler_dlss/dlss_core.h) against a stand-in NGX, with no SDK
+add_executable(snx-test-temporal-dlss-core upscaler_boundary/dlss_core.cpp)
+target_sources(snx-test-temporal-dlss-core PRIVATE upscaler_boundary/dlss_eval.cpp upscaler_boundary/dlss_record.cpp)
+target_link_libraries(snx-test-temporal-dlss-core PRIVATE Vulkan::Headers)
+set_target_properties(snx-test-temporal-dlss-core PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+target_compile_options(snx-test-temporal-dlss-core PRIVATE -Wall -Wextra -Werror)
+target_include_directories(snx-test-temporal-dlss-core PRIVATE "${PROJECT_SOURCE_DIR}/msvc/upscaler_dlss")
+set(snx_dlss_core_msvc "") # the copy by Microsoft's compiler, which the test runs too where it is built (below)
+# The same five modules built by Microsoft's compiler, which a module such as DLSS's needs, against the same host
+# built by this build's compiler. Only on Windows, and only where a Visual Studio with the C++ tools for x64 is
+# found (SNX_UPSCALER_STANDIN_MSVC: AUTO, ON to insist, OFF to leave it out). Elsewhere the test does not exist.
+set(SNX_UPSCALER_STANDIN_MSVC "AUTO" CACHE STRING "Build the upscaler's stand-in modules with Microsoft's compiler")
+if(WIN32 AND NOT SNX_UPSCALER_STANDIN_MSVC STREQUAL "OFF")
+    set(snx_vs_major "")
+    find_program(SNX_VSWHERE vswhere PATHS "$ENV{ProgramFiles\(x86\)}/Microsoft Visual Studio/Installer"
+                                           "C:/Program Files (x86)/Microsoft Visual Studio/Installer")
+    if(SNX_VSWHERE)
+        execute_process(COMMAND "${SNX_VSWHERE}" -latest -products * -requires
+                                Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationVersion
+                        OUTPUT_VARIABLE snx_vs_version OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+        string(REGEX MATCH "^[0-9]+" snx_vs_major "${snx_vs_version}")
+    endif()
+    set(snx_vs_generator "")
+    if(snx_vs_major STREQUAL "16")
+        set(snx_vs_generator "Visual Studio 16 2019")
+    elseif(snx_vs_major STREQUAL "17")
+        set(snx_vs_generator "Visual Studio 17 2022")
+    elseif(snx_vs_major STREQUAL "18")
+        set(snx_vs_generator "Visual Studio 18 2026")
+    endif()
+    if(snx_vs_generator)
+        message(STATUS "upscaler stand-in: Microsoft's compiler found (Visual Studio ${snx_vs_version}): the modules "
+                       "are also built with it, test upscaler_boundary_msvc")
+        include(ExternalProject)
+        set(snx_standin_msvc_dir "${CMAKE_CURRENT_BINARY_DIR}/upscaler_standin_msvc")
+        set(snx_upscaler_standins_msvc "")
+        foreach(snx_kind 0 1 2 3 4)
+            list(APPEND snx_upscaler_standins_msvc
+                 "${snx_standin_msvc_dir}/out/snx-upscaler-standin-msvc-${snx_kind}.dll")
+        endforeach()
+        ExternalProject_Add(snx-test-upscaler-standin-msvc
+                            SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/upscaler_boundary/msvc"
+                            BINARY_DIR "${snx_standin_msvc_dir}"
+                            CMAKE_GENERATOR "${snx_vs_generator}"
+                            CMAKE_GENERATOR_PLATFORM x64
+                            CMAKE_ARGS "-DSNX_SOURCE=${PROJECT_SOURCE_DIR}/src"
+                                       "-DSNX_VULKAN_INCLUDE=${Vulkan-Headers_SOURCE_DIR}/include"
+                            BUILD_COMMAND "${CMAKE_COMMAND}" --build . --config Release
+                            BUILD_ALWAYS ON
+                            INSTALL_COMMAND ""
+                            BUILD_BYPRODUCTS ${snx_upscaler_standins_msvc}
+                                             "${snx_standin_msvc_dir}/out/snx-dlss-core-msvc.exe"
+                            EXCLUDE_FROM_ALL ON)
+        # building the host builds these modules too: the test needs them, and nothing else asks for them
+        add_dependencies(snx-test-temporal-upscaler-boundary snx-test-upscaler-standin-msvc)
+        add_test(NAME upscaler_boundary_msvc COMMAND snx-test-temporal-upscaler-boundary ${snx_upscaler_standins_msvc})
+        # the same lifetimes by Microsoft's compiler: dlss_core runs that copy too
+        add_dependencies(snx-test-temporal-dlss-core snx-test-upscaler-standin-msvc)
+        set(snx_dlss_core_msvc "${snx_standin_msvc_dir}/out/snx-dlss-core-msvc.exe")
+    elseif(SNX_UPSCALER_STANDIN_MSVC STREQUAL "ON")
+        message(FATAL_ERROR "SNX_UPSCALER_STANDIN_MSVC=ON, and no Visual Studio with the C++ tools for x64 was found")
+    else()
+        message(STATUS "upscaler stand-in: Microsoft's compiler not found: the modules are built with this build's "
+                       "compiler only, and the test upscaler_boundary_msvc does not exist")
+    endif()
+endif()
+
+add_test(NAME dlss_core COMMAND snx-test-temporal-dlss-core ${snx_dlss_core_msvc})
+
 add_executable(snx-test-nvn-cmdlist nvn/nvn_cmdlist.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_cmdlist.c")
 snx_test_target(snx-test-nvn-cmdlist 11)
 add_test(NAME nvn_cmdlist COMMAND snx-test-nvn-cmdlist)
@@ -615,9 +724,24 @@ add_executable(snx-test-draw-record nvn/draw_record.c "${PROJECT_SOURCE_DIR}/src
 snx_test_target(snx-test-draw-record 11)
 add_test(NAME draw_record COMMAND snx-test-draw-record)
 
+add_executable(snx-test-nvn-blend-slots nvn/nvn_blend_slots.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_params.c")
+snx_test_target(snx-test-nvn-blend-slots 11)
+if(NOT WIN32)
+    target_link_libraries(snx-test-nvn-blend-slots PRIVATE m)
+endif()
+add_test(NAME nvn_blend_slots COMMAND snx-test-nvn-blend-slots)
+
 add_executable(snx-test-nvn-measure nvn/nvn_measure.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/diag/nvn_measure_calc.c")
 snx_test_target(snx-test-nvn-measure 11)
 add_test(NAME nvn_measure COMMAND snx-test-nvn-measure)
+
+# SNX_ARCEUS_PASS_GUEST's switch, draw rule and line (gpu/vk/pass_guest.c), with a stand-in for the log
+add_executable(snx-test-pass-guest pass_guest.c)
+snx_test_target(snx-test-pass-guest 11)
+target_include_directories(snx-test-pass-guest BEFORE PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/pass_guest_stub")
+foreach(case unset unsetscale zero zeroscale empty on scale scale3 bad rule window programs full)
+    add_test(NAME pass_guest_${case} COMMAND snx-test-pass-guest ${case})
+endforeach()
 
 add_executable(snx-test-nvn-params nvn/nvn_params.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_params.c")
 snx_test_target(snx-test-nvn-params 11)
@@ -817,7 +941,8 @@ endif()
 add_test(NAME startup_options COMMAND snx-test-startup)
 
 add_library(snx_test_common STATIC "${PROJECT_SOURCE_DIR}/src/common/utilities/common.c"
-    "${PROJECT_SOURCE_DIR}/src/common/utilities/ini_lines.c" "${PROJECT_SOURCE_DIR}/src/common/utilities/game_ini.c")
+    "${PROJECT_SOURCE_DIR}/src/common/utilities/ini_lines.c" "${PROJECT_SOURCE_DIR}/src/common/utilities/game_ini.c"
+    "${PROJECT_SOURCE_DIR}/src/common/utilities/progress.c")
 snx_test_target(snx_test_common 99)
 if(WIN32)
     target_link_libraries(snx_test_common PUBLIC advapi32)
@@ -836,22 +961,12 @@ add_executable(snx-test-driver driver_workflow.c
 snx_test_target(snx-test-driver 99)
 target_link_libraries(snx-test-driver PRIVATE snx_test_common snx_setup snx_lz4 OpenSSL::Crypto snx_demangle)
 set_target_properties(snx-test-driver PROPERTIES LINKER_LANGUAGE CXX)
-if(APPLE) # driver/setup.c's weak snx_menu_language, as snx_driver has it: ld64 wants it named
-    target_link_options(snx-test-driver PRIVATE "LINKER:-U,_snx_menu_language")
-endif()
 add_test(NAME driver_workflow COMMAND snx-test-driver)
 set_tests_properties(driver_workflow PROPERTIES TIMEOUT 60)
 add_executable(snx-test-link-file link_file.c)
 snx_test_target(snx-test-link-file 99)
 target_link_libraries(snx-test-link-file PRIVATE snx_test_common)
 add_test(NAME link_file COMMAND snx-test-link-file)
-if(APPLE)
-    # MoltenVK, which the app carries and a game's runtime copy (outside the bundle) gets beside it (docs/APPLE.md)
-    add_executable(snx-test-vulkan-driver vulkan_driver.c)
-    snx_test_target(snx-test-vulkan-driver 99)
-    target_link_libraries(snx-test-vulkan-driver PRIVATE snx_test_common)
-    add_test(NAME vulkan_driver COMMAND snx-test-vulkan-driver)
-endif()
 add_executable(snx-test-launcher-name launcher_name.c)
 snx_test_target(snx-test-launcher-name 99)
 target_link_libraries(snx-test-launcher-name PRIVATE scarletnx-common)
@@ -860,6 +975,12 @@ add_executable(snx-test-game-title game_title.c)
 snx_test_target(snx-test-game-title 99)
 target_link_libraries(snx-test-game-title PRIVATE scarletnx-common)
 add_test(NAME game_title COMMAND snx-test-game-title)
+# the JSON Lines progress stream (common/utilities/progress.c): every event's bytes, the escapes, the cut of a long
+# message, the exit line's modes and the game_code field
+add_executable(snx-test-progress-stream progress_stream.c)
+snx_test_target(snx-test-progress-stream 99)
+target_link_libraries(snx-test-progress-stream PRIVATE scarletnx-common)
+add_test(NAME progress_stream COMMAND snx-test-progress-stream)
 if(UNIX)
     foreach(name user_dirs left_behind)
         string(REPLACE "_" "-" target "snx-test-${name}")
@@ -1055,6 +1176,12 @@ if(NOT SNX_TOOLS_ONLY)
     target_compile_definitions(snx-test-tex-upload-rows PRIVATE SNX_TEST_VMA_STUBS=1)
     target_link_libraries(snx-test-tex-upload-rows PRIVATE snx_nx_flags)
     add_test(NAME tex_upload_rows COMMAND snx-test-tex-upload-rows)
+    # SNX_ARCEUS_PASS_GUEST's guest copies in a target's copy list (gpu/vk/texture.c rt_crop and vk_rt_guest)
+    add_executable(snx-test-rt-guest-copy rt_guest_copy.c tracy_stubs.c)
+    snx_test_target(snx-test-rt-guest-copy 23)
+    target_compile_definitions(snx-test-rt-guest-copy PRIVATE SNX_TEST_VMA_STUBS=1)
+    target_link_libraries(snx-test-rt-guest-copy PRIVATE snx_nx_flags)
+    add_test(NAME rt_guest_copy COMMAND snx-test-rt-guest-copy)
     # the rules of a group of scaled render targets that one 2D array texture samples (gpu/vk/rt_group.c)
     add_executable(snx-test-rt-group rt_group.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/rt_group.c")
     snx_test_target(snx-test-rt-group 23)
@@ -1156,6 +1283,18 @@ snx_test_target(snx-test-runtime-module-abi 99)
 target_link_libraries(snx-test-runtime-module-abi PRIVATE snx_test_common)
 add_test(NAME runtime_module_abi COMMAND snx-test-runtime-module-abi $<TARGET_FILE:scarletnx>
     $<TARGET_FILE:snx-test-module-abi> $<TARGET_FILE:snx-test-module-abi-arm>)
+# a settings file with a key the store cannot keep is not written back; one the store keeps is (runtime/options.c)
+add_test(NAME runtime_settings_partial COMMAND "${CMAKE_COMMAND}" "-DRUNTIME=$<TARGET_FILE:scarletnx>"
+         "-DMODULE=$<TARGET_FILE:snx-test-module-abi>"
+         "-DABI_HEADER=${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu.h"
+         -P "${CMAKE_CURRENT_SOURCE_DIR}/settings_partial.cmake")
+# the store's dirty flag (runtime/options.c): an in-game change written to the file, a full store, a blocked write and
+# a reload that keeps the game's value
+add_executable(snx-test-runtime-settings-dirty runtime_settings_dirty.c runtime_settings_dirty_stub.c
+    "${PROJECT_SOURCE_DIR}/src/nx/runtime/options.c" "${PROJECT_SOURCE_DIR}/src/common/utilities/ini_lines.c")
+snx_test_target(snx-test-runtime-settings-dirty 11)
+target_link_libraries(snx-test-runtime-settings-dirty PRIVATE scarletnx-common)
+add_test(NAME runtime_settings_dirty COMMAND snx-test-runtime-settings-dirty)
 # the module contract's layout as recorded when SNX_ABI last rose (docs/ARCHITECTURE.md, Module ABI)
 add_executable(snx-test-module-contract module_contract.c)
 snx_test_target(snx-test-module-contract 99)
@@ -1193,8 +1332,7 @@ target_link_libraries(snx-test-gdb-jit PRIVATE snx_llvm)
 add_test(NAME gdb_jit COMMAND snx-test-gdb-jit)
 set_tests_properties(gdb_jit PROPERTIES SKIP_RETURN_CODE 77)
 if(NOT WIN32)
-    # the relocations both ELF paths share (elf_object.c), AArch64's included, checked on any ELF host and on macOS,
-    # whose JIT loads ELF objects
+    # the relocations both ELF paths share (elf_object.c), AArch64's included, checked on any ELF host
     add_executable(snx-test-elf-relocate elf_relocate.c)
     snx_test_target(snx-test-elf-relocate 11)
     target_link_libraries(snx-test-elf-relocate PRIVATE snx_llvm)
@@ -1285,46 +1423,6 @@ add_executable(snx-test-recompiler-library recompiler_library.c)
 snx_test_target(snx-test-recompiler-library 11)
 target_link_libraries(snx-test-recompiler-library PRIVATE scarletnx-recompiler)
 add_test(NAME recompiler_library COMMAND snx-test-recompiler-library)
-# The Mach-O linker on objects Clang compiles for arm64 macOS, which any host's Clang with AArch64 can: what macOS
-# would check of the dylib (link_macho.c), on hosts that can't load one
-if(TARGET OpenSSL::Crypto)
-    set(snx_macho_probe "${CMAKE_CURRENT_BINARY_DIR}/link_macho_probe.o")
-    execute_process(COMMAND "${CMAKE_C_COMPILER}" --target=arm64-apple-macos13 -ffreestanding -c
-        "${CMAKE_CURRENT_SOURCE_DIR}/link_macho_fixture.c" -DPART=2 -o "${snx_macho_probe}"
-        RESULT_VARIABLE snx_macho_result OUTPUT_QUIET ERROR_QUIET)
-    if(snx_macho_result EQUAL 0)
-        foreach(part 1 2 3 4)
-            # LLVM's modules have no common symbols, which the linker refuses: a tentative definition is not one
-            # whatever the compiler's default
-            add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/link_macho_${part}.o"
-                COMMAND "${CMAKE_C_COMPILER}" --target=arm64-apple-macos13 -ffreestanding -O2 -fPIC -fno-common
-                    -DPART=${part} -c "${CMAKE_CURRENT_SOURCE_DIR}/link_macho_fixture.c"
-                    -o "${CMAKE_CURRENT_BINARY_DIR}/link_macho_${part}.o"
-                DEPENDS link_macho_fixture.c VERBATIM)
-        endforeach()
-        set(snx_link_sources "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/llvm")
-        add_executable(snx-test-link-macho link_macho.c "${snx_link_sources}/link.c" "${snx_link_sources}/link_elf.c"
-            "${snx_link_sources}/elf_object.c" "${snx_link_sources}/link_coff.c" "${snx_link_sources}/link_macho.c"
-            "${CMAKE_CURRENT_BINARY_DIR}/link_macho_1.o" "${CMAKE_CURRENT_BINARY_DIR}/link_macho_2.o"
-            "${CMAKE_CURRENT_BINARY_DIR}/link_macho_3.o" "${CMAKE_CURRENT_BINARY_DIR}/link_macho_4.o")
-        # the objects are the test's data, not part of its own link
-        set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/link_macho_1.o"
-            "${CMAKE_CURRENT_BINARY_DIR}/link_macho_2.o" "${CMAKE_CURRENT_BINARY_DIR}/link_macho_3.o"
-            "${CMAKE_CURRENT_BINARY_DIR}/link_macho_4.o" PROPERTIES EXTERNAL_OBJECT FALSE HEADER_FILE_ONLY TRUE)
-        snx_test_target(snx-test-link-macho 11)
-        target_include_directories(snx-test-link-macho PRIVATE "${PROJECT_SOURCE_DIR}/src")
-        target_link_libraries(snx-test-link-macho PRIVATE OpenSSL::Crypto)
-        add_test(NAME link_macho COMMAND snx-test-link-macho "${CMAKE_CURRENT_BINARY_DIR}/link_macho_1.o"
-            "${CMAKE_CURRENT_BINARY_DIR}/link_macho_2.o" "${CMAKE_CURRENT_BINARY_DIR}/link_macho.dylib"
-            "${CMAKE_CURRENT_BINARY_DIR}/link_macho_3.o" "a call to the undefined weak symbol _missing"
-            "${CMAKE_CURRENT_BINARY_DIR}/link_macho_4.o" "aligned beyond a page")
-    endif()
-endif()
-if(APPLE)
-    # aot_variants links a JIT cache unit as ELF into an AOT module that is Mach-O on this host: it needs its own fix
-    # before it can run here
-    set_tests_properties(aot_variants PROPERTIES DISABLED TRUE)
-endif()
 
 # the generated decoder, function discovery, and LLVM steps against expected values (llvm_steps.c)
 add_executable(snx_codegen_test codegen_test.c llvm_steps.c)
@@ -1598,7 +1696,8 @@ snx_test_target(snx-test-pending-pages 23)
 add_test(NAME pending_pages COMMAND snx-test-pending-pages)
 add_executable(snx-test-unattended-script unattended_script.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
 snx_test_target(snx-test-unattended-script 11)
-target_link_libraries(snx-test-unattended-script PRIVATE m)
+# unattended.c now writes the run stage's done line: progress.c and its snx_error/snx_os_error, not a stub
+target_link_libraries(snx-test-unattended-script PRIVATE m scarletnx-common)
 add_test(NAME unattended_script COMMAND snx-test-unattended-script)
 # the log's file, early lines, stamps, redirect, limits, fatal and crash mode (platform/plat.c)
 add_executable(snx-test-platform-log platform_log.c "${PROJECT_SOURCE_DIR}/src/common/filesystem/host.c")
@@ -1646,6 +1745,51 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
         target_link_libraries(snx-test-shader-structure PRIVATE m)
     endif()
     add_test(NAME shader_structure COMMAND snx-test-shader-structure)
+    # D3's fixed size answer (ShaderInfo.txq_fixed): an older corpus record, and two programs of the corpus that
+    # SNX_SHADER_CORPUS names, skipped (77) without one. In the temporal family, which the PC's test builds run.
+    add_executable(snx-test-temporal-txq-variant txq_variant.c)
+    snx_test_target(snx-test-temporal-txq-variant 23)
+    target_link_libraries(snx-test-temporal-txq-variant PRIVATE snx_shader)
+    if(NOT WIN32)
+        target_link_libraries(snx-test-temporal-txq-variant PRIVATE m)
+    endif()
+    # each txq test in a folder of its own: they write and remove a file of the same name there
+    foreach(snx_txq_dir txq_variant txq_mutant_1 txq_mutant_2)
+        file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/${snx_txq_dir}")
+    endforeach()
+    set(snx_txq_work "${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME txq_variant COMMAND snx-test-temporal-txq-variant WORKING_DIRECTORY "${snx_txq_work}/txq_variant")
+    set_tests_properties(txq_variant PROPERTIES SKIP_RETURN_CODE 77)
+    # The same test against the translator built with a mutant (SNX_TEST_TXQ_MUTANT in spirv_translate.c), which must
+    # fail the corpus check it names (--must-fail): 1 width and height swapped, 2 every other slot keyed. The targets
+    # are named in full for the PC's test builds, which find them by name.
+    include("${PROJECT_SOURCE_DIR}/cmake/shaderdec.cmake") # tests/ is configured before src/nx, which includes it too
+    function(snx_txq_mutant target test number)
+        add_library(${target}-shader OBJECT "${PROJECT_SOURCE_DIR}/src/nx/gpu/shader/shader.c"
+                    "${PROJECT_SOURCE_DIR}/src/nx/gpu/shader/decode.c"
+                    "${PROJECT_SOURCE_DIR}/src/nx/gpu/shader/corpus.c"
+                    "${PROJECT_SOURCE_DIR}/src/nx/gpu/shader/shipped.c"
+                    "${PROJECT_SOURCE_DIR}/src/nx/gpu/shader/spirv_translate.c"
+                    "${PROJECT_SOURCE_DIR}/src/nx/gpu/shader/spirv_compute.c"
+                    "${PROJECT_SOURCE_DIR}/src/nx/gpu/shader/structure.c")
+        target_link_libraries(${target}-shader PUBLIC snx_nx_flags)
+        target_compile_definitions(${target}-shader PRIVATE SNX_TEST_TXQ_MUTANT=${number})
+        snx_shaderdec(${target}-shader)
+        snx_test_target(${target} 23)
+        target_link_libraries(${target} PRIVATE ${target}-shader)
+        if(NOT WIN32)
+            target_link_libraries(${target} PRIVATE m)
+        endif()
+        set_tests_properties(${test} PROPERTIES SKIP_RETURN_CODE 77)
+    endfunction()
+    add_executable(snx-test-temporal-txq-mutant-1 txq_variant.c)
+    add_test(NAME txq_mutant_1 COMMAND snx-test-temporal-txq-mutant-1 --must-fail compare
+             WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/txq_mutant_1")
+    snx_txq_mutant(snx-test-temporal-txq-mutant-1 txq_mutant_1 1)
+    add_executable(snx-test-temporal-txq-mutant-2 txq_variant.c)
+    add_test(NAME txq_mutant_2 COMMAND snx-test-temporal-txq-mutant-2 --must-fail other-slot
+             WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/txq_mutant_2")
+    snx_txq_mutant(snx-test-temporal-txq-mutant-2 txq_mutant_2 2)
     if(NOT CMAKE_CROSSCOMPILING)
         # the SVC registers tools/svcgen lays out from src/nx/hle/svc/hos.svc, in both ABIs
         include("${PROJECT_SOURCE_DIR}/cmake/svcgen.cmake")

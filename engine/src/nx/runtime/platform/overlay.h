@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The game's menu: Android's back button, a gamepad's Home, the on-screen Home or F2 opens it over the game, in the
+/* The game's menu: a gamepad's Home, the on-screen Home or F2 opens it over the game, in the
    menu's look (src/gui, the YoRHa theme), drawn by the renderer as quads (ui.h). The same on every platform: the
    on-screen controls' options (vpad.h), the touch screen's, and Exit */
 #ifndef SNX_OVERLAY_H

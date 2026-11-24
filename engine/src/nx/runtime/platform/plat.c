@@ -3,6 +3,8 @@
 /* The log (<game>.log in the state folder, the runs before in logs/ beside it, and stderr) and fatal errors */
 #include "nx/runtime/platform/log.h"
 #include "common/utilities/common.h"
+#include "common/utilities/exit_codes.h"
+#include "common/utilities/progress.h"
 #include "nx/runtime/loader.h"
 #include "nx/runtime/main.h"
 #include "nx/runtime/platform/backend.h"
@@ -113,10 +115,12 @@ static void log_keep_run(const char* path, char* why, size_t size) {
 
 /* The log is made once the game's code module is loaded (g_mod), so a run that never gets that far (a mistyped
    --game, a dump given instead of a game) leaves no log behind */
+static int g_log_no_game; /* log_without_game: this run loads no game and has a log all the same */
+void log_without_game(void) { g_log_no_game = 1; }
 static void log_create_nl(void) {
     char path[1400], why[1700], out[LINE_MAX_ + 32];
     FILE* file;
-    if (g_log || g_log_gave_up || !g_mod) return;
+    if (g_log || g_log_gave_up || (!g_mod && !g_log_no_game)) return;
     snprintf(path, sizeof path, "%s%s.log", g_statedir, g_exename);
     log_keep_run(path, why, sizeof why);
     file = fopen(path, "w");
@@ -318,19 +322,60 @@ void log_error_line(const char* line) {
     WARN("%s\n", line);
 }
 
+/* Set once the renderer runs, in a window or headless, by the backend's video_init: fatal shows its box only after
+   this */
+static int g_window_ready; /* atomic */
+void plat_window_ready(void) { __atomic_store_n(&g_window_ready, 1, __ATOMIC_RELEASE); }
+int plat_window_is_ready(void) { return __atomic_load_n(&g_window_ready, __ATOMIC_ACQUIRE); }
+
+/* fatal's common end. code is the exit code before the renderer runs; a crash always ends with SNX_EXIT_CRASH */
+static void fatal_code(int code, const char* msg) __attribute__((noreturn));
+static void fatal_code(int code, const char* msg) {
+    int crashing, ready, final_code;
+    tls_log_redirect = NULL; /* a failure while writing threads.txt belongs in the log */
+    logf_(0, "FATAL: %s\n", msg);
+    crashing = __atomic_load_n(&g_crashing, __ATOMIC_SEQ_CST);
+    ready = plat_window_is_ready();
+    final_code = (crashing || ready) ? SNX_EXIT_CRASH : code; /* the code the process ends with */
+    /* a crash handler must not wait on the progress lock, which the crashed thread may hold */
+    if (!crashing) snx_progress_error(msg, final_code);
+#if !defined(_WIN32)
+    /* from the crash handler: a box or a flush could wait on a lock the crashed code holds */
+    if (crashing) _exit(final_code);
+#endif
+    win_fatal_log(msg); /* once, before and after the renderer, crashing or not */
+    if (crashing || ready) {
+        /* everywhere, since a player started from a desktop entry sees no console and no log; never before the renderer */
+        if (ready) win_fatal_box(msg);
+        plat_exit_now(final_code);
+    }
+    /* before the renderer runs: no dialog, and the code the failure belongs to */
+    plat_exit_now(final_code);
+}
+
 void fatal(const char* fmt, ...) {
     char msg[LINE_MAX_];
     va_list ap;
     va_start(ap, fmt);
     vsnprintf(msg, sizeof msg, fmt, ap);
     va_end(ap);
-    tls_log_redirect = NULL; /* a failure while writing threads.txt belongs in the log */
-    logf_(0, "FATAL: %s\n", msg);
-#if !defined(_WIN32)
-    /* from the crash handler: a box or a flush could wait on a lock the crashed code holds */
-    if (__atomic_load_n(&g_crashing, __ATOMIC_SEQ_CST)) _exit(1);
-#endif
-    /* everywhere, since a player started from a desktop entry sees no console and no log */
-    win_fatal_box(msg);
-    plat_exit_now(1);
+    fatal_code(SNX_EXIT_START, msg);
+}
+
+void fatal_game_files(const char* fmt, ...) {
+    char msg[LINE_MAX_];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(msg, sizeof msg, fmt, ap);
+    va_end(ap);
+    fatal_code(SNX_EXIT_GAME_FILES, msg);
+}
+
+void fatal_internal(const char* fmt, ...) {
+    char msg[LINE_MAX_];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(msg, sizeof msg, fmt, ap);
+    va_end(ap);
+    fatal_code(SNX_EXIT_INTERNAL, msg);
 }

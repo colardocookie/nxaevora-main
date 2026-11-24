@@ -17,7 +17,10 @@
 #include "nx/hle/services/nvdrv.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/temporal_math.h"
+#include "nx/gpu/vk/temporal_spatial.h"
 #include "nx/gpu/vk/scale.h"
+#include "nx/gpu/vk/pass_guest.h"
 #include "nx/gpu/vk/pending_pages.h"
 #include "nx/gpu/vk/internal_spv.h"
 #include "nx/runtime/platform/tracy.h"
@@ -730,6 +733,265 @@ typedef struct {
     u32 tic[8], tsc[8];
     Surf* t;
 } TexRes;
+
+/* The frame pass census (SNX_PASS_CENSUS=1), read-only: every 1200 presents from the 900th, up to 10 times, the
+   passes of two frames in a row are logged in order (a pass is a run of draws on one set of targets). Marks: PRESENT
+   the first write to the surface shown last frame, HISTORY a sample that was a target last frame only, VELOCITY? a
+   two-channel target with depth bound, DEPTHREAD a sampled depth target of this frame (docs/arceus-pass-census.md). */
+#define CENSUS_PASSES 384
+#define CENSUS_SAMPLED 12
+#define CENSUS_SEEN 96
+typedef struct {
+    u64 gva;
+    u32 w, h, sw, sh, format;
+} CensusTarget;
+typedef struct {
+    CensusTarget color[8], depth;
+    u32 n, writes, draws, fs_others, kind; /* kind: 0 draws, 1 a draw texture */
+    u32 blocks;                            /* draws whose vertex constant blocks were logged */
+    u32 vs_banks, fs_banks;                /* the constant banks its vertex and fragment programs read, all draws */
+    u64 camera[2];                         /* bank 4 of the first draw, vertex and fragment stage: the camera block */
+    int has_depth, depth_written, depth_ro;
+    u64 vs, fs;
+    float vw, vh;
+    struct {
+        CensusTarget t;
+        u8 depth, history, target, rt;
+    } sampled[CENSUS_SAMPLED];
+    u32 nsampled;
+} CensusPass;
+static struct {
+    int on, capturing; /* capturing: 2 in the first of two frames in a row, 1 in the second */
+    u32 next, captures, count, dropped, feedbacks, dispatches; /* the last two: lines logged this frame */
+    u64 shown[2]; /* the addresses of the surfaces shown in the last two frames: the game shows two in turn */
+    u64 written[CENSUS_SEEN], before[CENSUS_SEEN];
+    u32 nwritten, nbefore;
+    CensusPass pass[CENSUS_PASSES];
+} g_census = {.on = -1};
+static int census_on(void) {
+    if (g_census.on < 0) {
+        const char* e = getenv("SNX_PASS_CENSUS");
+        const char* a = getenv("SNX_ARCEUS_PASS_CENSUS"); /* the name the test launcher accepts */
+        g_census.on = (e && !strcmp(e, "1")) || (a && !strcmp(a, "1"));
+        g_census.next = 900;
+        if (g_census.on)
+            LOG("arceus-pass: read-only frame pass census on, two frames in a row every 1200 presents from the 900th\n");
+    }
+    return g_census.on;
+}
+static CensusTarget census_target(const Surf* s) {
+    return (CensusTarget){s->gva, s->w, s->h, s->sw, s->sh, (u32)s->f.vk};
+}
+static int census_has(const u64* list, u32 n, u64 gva) {
+    for (u32 i = 0; i < n; i++)
+        if (list[i] == gva) return 1;
+    return 0;
+}
+static void census_wrote(u64 gva) {
+    if (g_census.nwritten < CENSUS_SEEN && !census_has(g_census.written, g_census.nwritten, gva))
+        g_census.written[g_census.nwritten++] = gva;
+}
+/* The vertex stage's constant blocks of a draw into a geometry pass (two or more colour targets with depth): every
+   bound block's address and size, and the first 0x140 bytes of up to twelve of them. Two frames in a row are taken, so
+   a block that holds last frame's matrix beside this frame's shows. Draws 0, 1, 2 and every 16th, eight a pass. */
+static void census_blocks(const GpuChannel* ch, const CensusPass* p, u32 pass, const VkSh* vs) {
+    char line[3200];
+    int at = 0, dumped = 0;
+    for (u32 b = 0; b < 18 && at < (int)sizeof line - 80; b++)
+        if (ch->cbind[ST_VS][b])
+            at += snprintf(line + at, sizeof line - (size_t)at, " b%u=%llx:%x", b, (unsigned long long)ch->cbind[ST_VS][b],
+                           ch->cbind_size[ST_VS][b]);
+    LOG("arceus-pass-blocks: present=%u pass=%u draw=%u vs=%llx%s\n", g_vk_present, pass, p->draws - 1,
+        (unsigned long long)(vs ? vs->hash : 0), line);
+    /* the vertex streams: a skinned mesh reads positions another pass wrote into a buffer that stays */
+    at = 0;
+    line[0] = 0;
+    for (u32 v = 0; v < 32 && at < (int)sizeof line - 80; v++) {
+        const u32* va = &ch->r3d[0x700 + v * 4];
+        if (va[0] & 0x1000)
+            at += snprintf(line + at, sizeof line - (size_t)at, " v%u=%llx:%u", v,
+                           (unsigned long long)(((u64)(va[1] & 0xFF) << 32) | va[2]), va[0] & 0xFFF);
+    }
+    LOG("arceus-pass-streams: present=%u pass=%u draw=%u%s\n", g_vk_present, pass, p->draws - 1, line);
+    for (u32 b = 0; b < 18 && dumped < 12; b++) {
+        const u64 a = ch->cbind[ST_VS][b];
+        u32 size = ch->cbind_size[ST_VS][b];
+        if (!a || size < 0x40) continue;
+        if (size > 0x140) size = 0x140;
+        at = 0;
+        for (u32 w = 0; w < size / 4; w++) at += snprintf(line + at, sizeof line - (size_t)at, "%08x", gmem_r32(a + 4 * w));
+        LOG("arceus-pass-block: present=%u pass=%u draw=%u b%u words=%s\n", g_vk_present, pass, p->draws - 1, b, line);
+        dumped++;
+        /* The camera, object and per-draw blocks take two addresses in turn, one bound size apart. The other slot
+           then still holds last frame's block: both neighbours are logged, read without touching the trackers. */
+        for (int side = 0; side < 2 && (b == 4 || b == 6 || b == 9); side++) {
+            const u64 other = side ? a + ch->cbind_size[ST_VS][b] : a - ch->cbind_size[ST_VS][b];
+            const u8* bytes = gmem_host(other, size);
+            at = 0;
+            line[0] = 0;
+            for (u32 w = 0; bytes && w < size / 4; w++)
+                at += snprintf(line + at, sizeof line - (size_t)at, "%08x", snx_ld_le32(bytes + 4 * w));
+            LOG("arceus-pass-pair: present=%u pass=%u draw=%u b%u side=%s at=%llx words=%s\n", g_vk_present, pass,
+                p->draws - 1, b, side ? "plus" : "minus", (unsigned long long)other, bytes ? line : "unmapped");
+        }
+    }
+}
+/* one draw: its targets as the pass has them, what it writes, its programs and the fragment program's textures */
+static void census_draw(const GpuChannel* ch, Surf* const* rt, u32 n, u32 writes, const Surf* zt, int zt_ro,
+                        int zt_wrote, const VkSh* vs, const VkSh* fs, const TexRes* fres, const VkViewport* vp,
+                        u32 kind) {
+    if (!census_on()) return;
+    if (g_census.capturing) {
+        CensusPass* p = g_census.count ? &g_census.pass[g_census.count - 1] : NULL;
+        int same = p && p->kind == kind && p->n == n && p->has_depth == (zt != NULL) &&
+                   (!zt || p->depth.gva == zt->gva);
+        for (u32 i = 0; same && i < n; i++) same = p->color[i].gva == (rt[i] ? rt[i]->gva : 0);
+        if (!same) {
+            if (g_census.count == CENSUS_PASSES) {
+                g_census.dropped++;
+                p = NULL;
+            } else {
+                p = &g_census.pass[g_census.count++];
+                memset(p, 0, sizeof *p);
+                p->kind = kind;
+                p->n = n;
+                for (u32 i = 0; i < n; i++)
+                    if (rt[i]) p->color[i] = census_target(rt[i]);
+                p->has_depth = zt != NULL;
+                if (zt) p->depth = census_target(zt);
+                p->vs = vs ? vs->hash : 0;
+                p->fs = fs ? fs->hash : 0;
+                if (vp) p->vw = vp->width, p->vh = vp->height < 0 ? -vp->height : vp->height;
+                if (ch) p->camera[0] = ch->cbind[ST_VS][4], p->camera[1] = ch->cbind[ST_FS][4];
+            }
+        }
+        if (p) {
+            p->draws++;
+            p->writes |= writes;
+            p->depth_ro |= zt_ro;
+            p->depth_written |= zt_wrote;
+            if (fs && fs->hash != p->fs) p->fs_others++;
+            if (vs) p->vs_banks |= vs->si.cbuf_mask;
+            if (fs) p->fs_banks |= fs->si.cbuf_mask;
+            u32 colours = 0;
+            for (u32 i = 0; i < n; i++) colours += rt[i] && (writes >> i & 1);
+            if (ch && colours >= 2 && zt && p->blocks < 8 && (p->draws <= 3 || p->draws % 16 == 0)) {
+                p->blocks++;
+                census_blocks(ch, p, g_census.count - 1, vs);
+            }
+            int nt = fs && fres ? (fs->si.ntex > SH_MAXTEX ? SH_MAXTEX : fs->si.ntex) : kind == 1 && fres ? 1 : 0;
+            for (int i = 0; i < nt; i++) {
+                const Surf* t = fres[i].t;
+                if (!t) continue;
+                u32 k = 0;
+                while (k < p->nsampled && p->sampled[k].t.gva != t->gva) k++;
+                if (k < p->nsampled || p->nsampled == CENSUS_SAMPLED) continue;
+                int target = census_has(g_census.written, g_census.nwritten, t->gva);
+                /* textures that never were a target (the game's own art) are left out */
+                if (!t->is_rt && !target && !census_has(g_census.before, g_census.nbefore, t->gva)) continue;
+                p->sampled[k].t = census_target(t);
+                p->sampled[k].depth = t->f.depth;
+                p->sampled[k].rt = (u8)t->is_rt;
+                p->sampled[k].target = (u8)target;
+                p->sampled[k].history = (u8)(!target && census_has(g_census.before, g_census.nbefore, t->gva));
+                p->nsampled++;
+            }
+        }
+    }
+    for (u32 i = 0; i < n; i++)
+        if (rt[i] && (writes >> i & 1)) census_wrote(rt[i]->gva);
+    if (zt && zt_wrote) census_wrote(zt->gva);
+}
+/* a draw that captures transform feedback while a frame is taken: its buffers (address, size, stride) */
+static void census_feedback(const GpuChannel* ch, u32 bound, const VkSh* vs) {
+    if (!g_census.capturing || !bound || g_census.feedbacks++ >= 48) return;
+    char line[400];
+    int at = 0;
+    for (int i = 0; i < 4; i++) {
+        const u32* t = &ch->r3d[0xE0 + 8 * i];
+        if (bound >> i & 1)
+            at += snprintf(line + at, sizeof line - (size_t)at, " x%d=%llx:%x:%u", i,
+                           (unsigned long long)((((u64)(t[1] & 0xFF) << 32) | t[2]) + t[4]), t[3],
+                           ch->r3d[0x1C2 + 4 * i]);
+    }
+    LOG("arceus-pass-feedback: present=%u after_pass=%u vs=%llx%s\n", g_vk_present, g_census.count,
+        (unsigned long long)(vs ? vs->hash : 0), line);
+}
+/* a compute dispatch while a frame is taken: its program and storage buffers (address and size) */
+void vk_pass_census_dispatch(u64 code, const u64* address, const u32* size, int n) {
+    if (g_census.on <= 0 || !g_census.capturing || g_census.dispatches++ >= 48) return;
+    char line[900];
+    int at = 0;
+    line[0] = 0;
+    for (int i = 0; i < n && at < (int)sizeof line - 40; i++)
+        at += snprintf(line + at, sizeof line - (size_t)at, " s%d=%llx:%x", i, (unsigned long long)address[i], size[i]);
+    LOG("arceus-pass-compute: present=%u after_pass=%u code=%llx%s\n", g_vk_present, g_census.count,
+        (unsigned long long)code, line);
+}
+static int census_two_channel(u32 format) {
+    return format == VK_FORMAT_R16G16_SFLOAT || format == VK_FORMAT_R32G32_SFLOAT || format == VK_FORMAT_R16G16_UNORM ||
+           format == VK_FORMAT_R16G16_SNORM || format == VK_FORMAT_R8G8_UNORM || format == VK_FORMAT_R8G8_SNORM;
+}
+/* a frame was shown: a captured one is logged, the addresses written become last frame's, and the next capture is
+   armed when its present comes */
+void vk_pass_census_present(const Surf* shown) {
+    if (!census_on()) return;
+    if (g_census.capturing) {
+        int first = 1;
+        LOG("arceus-pass: frame present=%u passes=%u dropped=%u shown_last=%llx shown_before=%llx scale=%.3f\n",
+            g_vk_present, g_census.count, g_census.dropped, (unsigned long long)g_census.shown[0],
+            (unsigned long long)g_census.shown[1], (double)g_vk_scale);
+        for (u32 k = 0; k < g_census.count; k++) {
+            const CensusPass* p = &g_census.pass[k];
+            char line[1400];
+            int at = 0, present = 0, velocity = 0, history = 0, depthread = 0;
+            #define CENSUS_ADD(...) (at += at < (int)sizeof line ? snprintf(line + at, sizeof line - (size_t)at, __VA_ARGS__) : 0)
+            for (u32 i = 0; i < p->n; i++) {
+                const CensusTarget* t = &p->color[i];
+                if (!t->gva) continue;
+                CENSUS_ADD(" c%u=%llx:%ux%u(%ux%u)f%u%s", i, (unsigned long long)t->gva, t->w, t->h, t->sw, t->sh,
+                           t->format, p->writes >> i & 1 ? "" : "-");
+                if ((t->gva == g_census.shown[0] || t->gva == g_census.shown[1]) && (p->writes >> i & 1)) present = 1;
+                if (census_two_channel(t->format) && p->has_depth && (p->writes >> i & 1)) velocity = 1;
+            }
+            if (p->has_depth)
+                CENSUS_ADD(" z=%llx:%ux%u(%ux%u)f%u%s", (unsigned long long)p->depth.gva, p->depth.w, p->depth.h,
+                           p->depth.sw, p->depth.sh, p->depth.format, p->depth_written ? "" : p->depth_ro ? "ro" : "-");
+            CENSUS_ADD(" vp=%.0fx%.0f vs=%llx fs=%llx+%u vcb=%x fcb=%x cb4=%llx/%llx samples=", (double)p->vw,
+                       (double)p->vh, (unsigned long long)p->vs, (unsigned long long)p->fs, p->fs_others, p->vs_banks,
+                       p->fs_banks, (unsigned long long)p->camera[0], (unsigned long long)p->camera[1]);
+            for (u32 i = 0; i < p->nsampled; i++) {
+                const CensusTarget* t = &p->sampled[i].t;
+                CENSUS_ADD("%s%llx:%ux%uf%u%s%s%s", i ? "," : "", (unsigned long long)t->gva, t->w, t->h, t->format,
+                           p->sampled[i].depth ? "D" : "", p->sampled[i].history ? "H" : "",
+                           p->sampled[i].target ? "T" : "");
+                history |= p->sampled[i].history;
+                depthread |= p->sampled[i].depth && p->sampled[i].target;
+            }
+            #undef CENSUS_ADD
+            LOG("arceus-pass: present=%u pass=%u kind=%s draws=%u%s marks=%s%s%s%s\n", g_vk_present, k,
+                p->kind ? "drawtexture" : "draw", p->draws, line, present && first ? "PRESENT " : present ? "present " : "",
+                history ? "HISTORY " : "", velocity ? "VELOCITY? " : "", depthread ? "DEPTHREAD" : "");
+            if (present) first = 0;
+        }
+        /* the frame after a captured one is captured too, then the next comes 1200 presents on */
+        g_census.capturing--;
+        g_census.count = g_census.dropped = g_census.feedbacks = g_census.dispatches = 0;
+        if (!g_census.capturing) {
+            g_census.captures++;
+            g_census.next = g_vk_present + 1200;
+        }
+    }
+    memcpy(g_census.before, g_census.written, sizeof g_census.before);
+    g_census.nbefore = g_census.nwritten;
+    g_census.nwritten = 0;
+    g_census.shown[1] = g_census.shown[0];
+    g_census.shown[0] = shown ? shown->gva : 0;
+    if (!g_census.capturing && g_census.captures < 10 && g_vk_present >= g_census.next) {
+        g_census.capturing = 2;
+        g_census.count = g_census.dropped = g_census.feedbacks = g_census.dispatches = 0;
+    }
+}
 /* What a texture handle resolved to, kept while nothing it came from can have changed: the pools' addresses, the
    surface table (g_vk_surf_epoch), the CPU's writes the stream can see (vk_ww_epoch), the results pending over guest
    memory (none was added: g_pend_any.adds) and the GPU's writes to the two headers. A draw resolved each of its
@@ -895,6 +1157,7 @@ static u32 image_variant(const GpuChannel* ch, int stage, const VkSh* s, u32* si
 typedef struct {
     u64 tm, ts, dm;
     u32 rm, rs, df, unfed;
+    u32 txq[3]; /* ShaderInfo.txq_fixed: nothing sets it yet */
 } FsKey;
 /* the integer color targets (rm, signed rs) the registers name, which key the fragment shader's outputs */
 static void rt_int_targets(const u32* r, u32* rm, u32* rs) {
@@ -946,10 +1209,18 @@ static void fs_key(GpuChannel* ch, const VkSh* s0, TexRes* res, u32 last_out, u3
     fk->rm |= image_variant(ch, 4, s0, &signed_images) << 8;
     fk->rs |= signed_images << 8;
 }
+/* SNX_ARCEUS_UPSCALER=spatial: what the fragment program's bindings of the scene colour are given at this draw,
+   decided once (spatial_draw) for both the texture (stage_set_) and the variant (FsKey.txq). Slot masks. */
+static struct {
+    u64 larger, scene, listed;
+    VkImageView view; /* the larger texture's view with the game view's mapping, for the slot given it */
+    int keyed; /* the larger texture's slot is one the program's size queries read: drawn with the keyed variant */
+} g_spatial;
 /* the fragment shader at addr in the variant fk names, s0 when it names none */
 static VkSh* fs_variant(GpuChannel* ch, u64 addr, VkSh* s0, const FsKey* fk) {
-    if (!fk->tm && !fk->rm && !fk->rs && !fk->dm && !fk->unfed) return s0;
-    return vk_shader_get(ch, addr, 0, ST_FS, fk->tm, fk->ts, fk->rm, fk->rs, 0, fk->dm, fk->df, fk->unfed, NULL);
+    if (!fk->tm && !fk->rm && !fk->rs && !fk->dm && !fk->unfed && !fk->txq[0]) return s0;
+    return vk_shader_get(ch, addr, 0, ST_FS, fk->tm, fk->ts, fk->rm, fk->rs, 0, fk->dm, fk->df, fk->unfed, NULL,
+                         fk->txq);
 }
 
 VkImageViewType vk_tex_view_type(const ShTex* st) {
@@ -1001,6 +1272,8 @@ static int tex_map_identity(VkComponentMapping map) {
 
 /* the texture (NULL for none) and the view type say whether anisotropy= may raise its filtering: 2D textures with
    mipmaps only, as the yuzu family and Ryujinx do (a cube, a 3D LUT or a copied target keeps the game's) */
+/* the level shift of the draw whose textures are being bound: vk_temporal_mip_bias for a scene draw, else 0 */
+static float g_scene_shift;
 VkSampler vk_tex_bind_sampler(const u32* tsc, const u32* tic, const ShTex* st, int num, const Surf* tex,
                               VkImageViewType want) {
     u32 tc[8];
@@ -1059,6 +1332,12 @@ VkSampler vk_tex_bind_sampler(const u32* tsc, const u32* tic, const ShTex* st, i
     /* raised only with anisotropy= set: without it the cache keeps one sampler per TSC */
     int raise = g_vk_anisotropy > 1 && tex && tex->levels > 1 &&
                 (want == VK_IMAGE_VIEW_TYPE_2D || want == VK_IMAGE_VIEW_TYPE_2D_ARRAY);
+    /* a scene draw's material textures (mipmapped, not a render target) with the temporal passes' level shift */
+    if (g_scene_shift < 0.0f && tex && tex->levels > 1 && !tex->is_rt &&
+        (want == VK_IMAGE_VIEW_TYPE_2D || want == VK_IMAGE_VIEW_TYPE_2D_ARRAY)) {
+        g_vk_sampler_shift = g_scene_shift;
+        raise |= 2;
+    }
     return vk_sampler(tc, raise, num != 0);
 }
 
@@ -1457,6 +1736,7 @@ static int tex_tables_set(GpuChannel* ch, int stage, const VkSh* s, const int* f
                 VkImageView view = VK_NULL_HANDLE;
                 if ((handle & 0xFFFFF) <= ch->r3d[0x55F] && ((handle >> 20) & 0xFFF) <= ch->r3d[0x559]) {
                     tex_resolve(ch, handle, &x);
+                    vk_temporal_watch_bound(x.t); /* an element over the scene's memory (spatial) */
                     if (x.t && (!kind->shadow || !x.t->f.is_int) && !is_target(x.t, rt, zt, n))
                         view = vk_tex_bind_view(x.t, want, x.tic, x.tsc, num);
                 }
@@ -1636,6 +1916,26 @@ static VkDescriptorSet stage_set(GpuChannel* ch, int stage, VkSh* s, Surf** rt, 
     SNX_ZONE_END(z);
     return set;
 }
+/* SNX_ARCEUS_PASS_GUEST: the fragment set being written is a reduced pass's, and the textures it read as copies */
+static int g_pg_draw;
+static u32 g_pg_textures;
+/* what a reduced pass samples in place of t, a scaled color target or a crop of one in its format: that region of the
+   target at guest size (vk_rt_guest). Anything else, or a copy that can't be made (counted), stays t */
+static Surf* pass_guest_source(Surf* t) {
+    if (!t || !t->is_rt || t->guest_copy || t->f.depth || t->f.stencil || (t->sw == t->w && t->sh == t->h)) return t;
+    Surf* rt = vk_rt_find(t->gva);
+    if (!rt || rt->member || rt->group || rt->depth3d > 1 || rt->layout == VK_IMAGE_LAYOUT_UNDEFINED ||
+        rt->f.vk != t->f.vk || t->w > rt->w || t->h > rt->h)
+        return t;
+    int why = 0;
+    Surf* g = vk_rt_guest(rt, t->w, t->h, &why);
+    if (!g) {
+        pass_guest_fallback(why);
+        return t;
+    }
+    g_pg_textures++;
+    return g;
+}
 static VkDescriptorSet stage_set_(GpuChannel* ch, int stage, VkSh* s, Surf** rt, Surf* zt, u32 n, int* zt_ro,
                                   u32* fb, u64* scaled, u64* aspect, TexRes* res, const VkDrawStorage* draw,
                                   DrawImages* images) {
@@ -1650,6 +1950,9 @@ static VkDescriptorSet stage_set_(GpuChannel* ch, int stage, VkSh* s, Surf** rt,
         VkBuffer b;
         u64 o;
         if (!cb_get(ch, stage, i, sz, &b, &o)) return VK_NULL_HANDLE;
+        /* the scene camera's block with this frame's jitter, when temporal anti-aliasing is on */
+        if (i == 4 && vk_temporal_enabled())
+            vk_temporal_camera_block(ch->cbind[stage][i], ch->cbind_size[stage][i], sz, &b, &o);
         dw_buffer(&d, set, SNX_VKB_CB + i, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, b, o, sz);
     }
     for (int i = 0; i < s->si.ngbuf && i < 16; i++) {
@@ -1705,8 +2008,11 @@ static VkDescriptorSet stage_set_(GpuChannel* ch, int stage, VkSh* s, Surf** rt,
         u32 handle = tex_handle(ch, stage, tcb, st);
         /* what fs_key resolved, unless it is a render target or a copy of one: a crop of the same target at
            another size, for another stage, replaces it. Other textures stay until the next present */
+        /* SNX_ARCEUS_UPSCALER=spatial: a binding given the larger texture (spatial_draw) is bound from the resolution
+           that decision was made on, never resolved again, so it is that binding and no other (astra's O2) */
+        const int larger = stage == 4 && res && (g_spatial.larger >> i & 1);
         TexRes own, *x = res ? &res[i] : NULL;
-        if (!x || !x->have || x->handle != handle || (x->t && x->t->is_rt)) {
+        if (!larger && (!x || !x->have || x->handle != handle || (x->t && x->t->is_rt))) {
             x = &own;
             tex_resolve(ch, handle, x);
         }
@@ -1728,11 +2034,17 @@ static VkDescriptorSet stage_set_(GpuChannel* ch, int stage, VkSh* s, Surf** rt,
         /* sampling the depth target needs it read-only: no depth writes, and no stencil writes on either face */
         int sten_w = zt && zt->f.stencil && r[0x4E0] && ((r[0x4E7] & 0xFF) || (r[0x565] && (r[0x3D6] & 0xFF)));
         int depth_ro = t && t == zt && !r[0x4BA] && !sten_w;
+        /* given the larger texture: its view in place of the scene's, before anything of the scene's Surf is used
+           (research 11:25). Any other texture over the scene's memory while the watch is armed goes to the watch. */
+        if (!larger) vk_temporal_watch_bound(t);
         u32 slots = 0; /* the color slots t is bound to, when the fragment shader may sample it in place */
-        if (t && fb && g_vk.has_feedback && t->layout != VK_IMAGE_LAYOUT_UNDEFINED)
+        if (!larger && t && fb && g_vk.has_feedback && t->layout != VK_IMAGE_LAYOUT_UNDEFINED)
             for (u32 j = 0; j < n; j++)
                 if (rt[j] == t) slots |= 1u << j;
-        if (slots) {
+        if (larger) {
+            view = g_spatial.view;
+            depth_ro = 0;
+        } else if (slots) {
             /* the guest reads the target's previous contents during a draw that writes it: in place, in a feedback
                loop */
             view = vk_tex_bind_view(t, want, x->tic, x->tsc, num);
@@ -1754,8 +2066,10 @@ static VkDescriptorSet stage_set_(GpuChannel* ch, int stage, VkSh* s, Surf** rt,
                 } else
                     LOG_LIMIT(1, "vulkan: a draw samples a target it renders to (read as empty)\n");
             }
-        } else
+        } else {
+            if (g_pg_draw && stage == 4) t = pass_guest_source(t);
             view = vk_tex_bind_view(t, want, x->tic, x->tsc, num);
+        }
         const Surf* sampled = view ? t : NULL; /* the texture whose own view is bound, for the sampler */
         if (scaled && sampled && (sampled->sw != sampled->w || sampled->sh != sampled->h))
             *scaled |= 1ull << i;
@@ -1767,15 +2081,22 @@ static VkDescriptorSet stage_set_(GpuChannel* ch, int stage, VkSh* s, Surf** rt,
             layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
         } else if (view && slots)
             layout = VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT; /* render_begin moves it there */
-        else if (view)
+        else if (view && larger)
+            layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; /* where the hook left it */
+        else if (view) {
+            /* the scene's own binding by the fragment program: the watch judges it with what it was given */
+            const int scene = stage == 4 && (g_spatial.scene >> i & 1);
+            if (scene) vk_temporal_spatial_binding(1, (int)(g_spatial.listed >> i & 1), TEMPORAL_SPATIAL_AS_DRAWN);
             vk_surf_use(vk_cmd(), t, layout, VK_SAMPLED_STAGES, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
-        else {
+            if (scene) vk_temporal_spatial_binding(0, 0, 0);
+        } else {
             view = vk_null_view(want, st->shadow ? 3 : num);
             layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         }
         if (!view) return VK_NULL_HANDLE;
         VkSampler smp = vk_tex_bind_sampler(x->tsc, x->tic, st, num, sampled, want);
         if (!smp) return VK_NULL_HANDLE;
+        if (stage == ST_FS && vk_temporal_enabled()) vk_temporal_sampler(i, smp); /* read only, for the log */
         u32 b = SNX_VKB_TEX + i;
         d.ii[b] = (VkDescriptorImageInfo){smp, view, layout};
         d.w[d.n++] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
@@ -1794,6 +2115,7 @@ static VkDescriptorSet stage_set_(GpuChannel* ch, int stage, VkSh* s, Surf** rt,
         u32 tic[8];
         vk_gmem_words(tic_base + (handle & 0xFFFFF) * 32ull, tic, 8);
         Surf* surf = vk_tex_from_tic_storage(tic);
+        vk_temporal_watch_bound(surf);
         u64 size = vk_surf_guest_size(surf);
         int kind = s->si.img[i].kind;
         /* a draw can't also write one of its own attachments through a storage image */
@@ -1947,6 +2269,28 @@ int vk_render_depth_clamp(const u32* r) {
 
 VkFrontFace vk_render_front_face(const u32* r) { return front_face_at_viewport(r, vk_render_viewport(r).height); }
 
+/* viewport i's scissor as it is recorded: the whole extent of the pass, or with the test on the guest's rectangle
+   after the render scale and the turn of the window's origin, held to the extent. None without area. */
+static VkRect2D draw_scissor(const u32* r, u32 i, int area, VkExtent2D ext) {
+    VkRect2D sc = {{0, 0}, area ? ext : (VkExtent2D){0, 0}};
+    if (area && (r[0x380 + i * 4] & 1)) {
+        u32 xs = r[0x381 + i * 4], ys = r[0x382 + i * 4];
+        i32 x0 = (i32)vk_scf(xs & 0xFFFF), x1 = (i32)vk_scf(xs >> 16);
+        i32 y0 = (i32)vk_scf(ys & 0xFFFF), y1 = (i32)vk_scf(ys >> 16);
+        if (r[0x4EB] & 1) {
+            i32 clip_height = (i32)vk_scf((float)(r[0x3FE] >> 16));
+            i32 old_y0 = y0;
+            y0 = clip_height - y1;
+            y1 = clip_height - old_y0;
+        }
+        if (x0 < 0) x0 = 0;
+        if (y0 < 0) y0 = 0;
+        if (x1 > (i32)ext.width) x1 = (i32)ext.width;
+        if (y1 > (i32)ext.height) y1 = (i32)ext.height;
+        sc = x1 > x0 && y1 > y0 ? (VkRect2D){{x0, y0}, {(u32)(x1 - x0), (u32)(y1 - y0)}} : (VkRect2D){{0, 0}, {0, 0}};
+    }
+    return sc;
+}
 /* the Vulkan topology of a draw's (the 3D engine's numbers, 14 a patch list) */
 static VkPrimitiveTopology topology_vk(u32 topology) {
     static const VkPrimitiveTopology adjacent[5] = {
@@ -2139,26 +2483,27 @@ static int draw_shaders(GpuChannel* ch, u32 topology, DrawShaders* o) {
     o->attr_sint = attr_sint;
     o->vs = vk_shader_get(ch, code + r[0x811], (r[0x800] & 1) ? code + r[0x801] : 0, ST_VS, attr_int, attr_sint, 0, 0,
                           tes_on || gs_on ? SNX_SH_NOT_LAST : clip, 0, 0, 0,
-                          xfb_on && !tes_on && !gs_on ? &xfb : NULL);
+                          xfb_on && !tes_on && !gs_on ? &xfb : NULL, NULL);
     /* a vertex program's images pick its variant as a fragment program's do (fs_key) */
     u32 vs_signed_images = 0;
     u32 vs_images = o->vs && !o->vs->failed && o->vs->si.nimg ? image_variant(ch, 0, o->vs, &vs_signed_images) : 0;
     if (vs_images || vs_signed_images)
         o->vs = vk_shader_get(ch, code + r[0x811], (r[0x800] & 1) ? code + r[0x801] : 0, ST_VS, attr_int, attr_sint,
                               vs_images << 8, vs_signed_images << 8, tes_on || gs_on ? SNX_SH_NOT_LAST : clip, 0, 0, 0,
-                              xfb_on && !tes_on && !gs_on ? &xfb : NULL);
+                              xfb_on && !tes_on && !gs_on ? &xfb : NULL, NULL);
     o->tcs =
-        tcs_on ? vk_shader_get(ch, code + r[0x821], 0, ST_TCS, 0, 0, 0, 0, SNX_SH_NOT_LAST, 0, 0, 0, NULL) : NULL;
+        tcs_on ? vk_shader_get(ch, code + r[0x821], 0, ST_TCS, 0, 0, 0, 0, SNX_SH_NOT_LAST, 0, 0, 0, NULL, NULL)
+               : NULL;
     o->tes = tes_on ? vk_shader_get(ch, code + r[0x831], 0, ST_TES, 0, 0, r[0xC8] & 0x333, 0,
-                                    gs_on ? SNX_SH_NOT_LAST : clip, 0, 0, 0, xfb_on && !gs_on ? &xfb : NULL)
+                                    gs_on ? SNX_SH_NOT_LAST : clip, 0, 0, 0, xfb_on && !gs_on ? &xfb : NULL, NULL)
                     : NULL;
     o->gs = gs_on ? vk_shader_get(ch, code + r[0x841], 0, ST_GS, 0, 0, gs_input_vertices(topology, tes_on, r[0xC8]),
-                                  0, clip, 0, 0, 0, xfb_on ? &xfb : NULL)
+                                  0, clip, 0, 0, 0, xfb_on ? &xfb : NULL, NULL)
                   : NULL;
     if ((tcs_on && (!o->tcs || o->tcs->failed)) || (tes_on && (!o->tes || o->tes->failed)) ||
         (gs_on && (!o->gs || o->gs->failed)) || !o->vs || o->vs->failed)
         return 0;
-    o->fs0 = (r[0x850] & 1) ? vk_shader_get(ch, code + r[0x851], 0, ST_FS, 0, 0, 0, 0, 0, 0, 0, 0, NULL) : NULL;
+    o->fs0 = (r[0x850] & 1) ? vk_shader_get(ch, code + r[0x851], 0, ST_FS, 0, 0, 0, 0, 0, 0, 0, 0, NULL, NULL) : NULL;
     rt_int_targets(r, &o->rt_int, &o->rt_sint);
     return 1;
 }
@@ -2503,6 +2848,134 @@ static u64 draw_last_vertex(GpuChannel* ch, int indexed, u32 first, u32 count, u
     return last < 0 ? 0 : (u64)last;
 }
 
+/* SNX_ARCEUS_UPSCALER=spatial, while the hand-over's watch is armed (vk.h g_vk_watch): each binding of the scene
+   colour by the fragment program is described as this draw has it and decided by vk_temporal_spatial_decide. A
+   binding given the larger texture keys the size query's variant for its slot. */
+static void spatial_draw(GpuChannel* ch, const VkSh* vs, const VkSh* fs0, int other_stages, const TexRes* res,
+                         int indexed, u32 topology, u32 first, u32 count, u32 base_instance, u32 instances,
+                         Surf* const* rt, u32 n, const Surf* zt, FsKey* fk) {
+    g_spatial.larger = g_spatial.scene = g_spatial.listed = 0;
+    g_spatial.keyed = 0;
+    if (!g_vk_watch || !fs0) return;
+    const u32* r = ch->r3d;
+    const Surf* target = zt;
+    for (u32 j = 0; j < n; j++)
+        if (rt[j]) {
+            target = rt[j];
+            break;
+        }
+    const int nt = fs0->si.ntex > SH_MAXTEX ? SH_MAXTEX : fs0->si.ntex;
+    /* for the log (research 15:40): every texture slot of a listed program's draw, which binding holds what */
+    int listed_program = 0;
+    for (int e = 0; e < TEMPORAL_SPATIAL_ENTRIES; e++) listed_program |= temporal_spatial_entries[e].fs == fs0->hash;
+    static u64 listed_draws;
+    if (listed_program && (listed_draws++ < 4 || listed_draws % 600 == 0))
+        for (int i = 0; i < nt; i++) {
+            const TexRes* x = &res[i];
+            const ShTex* st = &fs0->si.tex[i];
+            if (!x->have || !x->t)
+                LOG("arceus-upscaler: spatial: listed draw %llu of program %llx, texture slot %d, handle offset %x: "
+                    "no surface%s\n", (unsigned long long)listed_draws, (unsigned long long)fs0->hash, i,
+                    st->cbuf_off, st->flags & SNX_TEX_INDEXED ? " (indexed)" : "");
+            else
+                LOG("arceus-upscaler: spatial: listed draw %llu of program %llx, texture slot %d, handle offset %x: "
+                    "surface at %llx of %ux%u (image %ux%u)%s%s\n", (unsigned long long)listed_draws,
+                    (unsigned long long)fs0->hash, i, st->cbuf_off, (unsigned long long)x->t->gva, x->t->w, x->t->h,
+                    x->t->sw, x->t->sh, x->t == g_vk_watch ? ", the scene colour" : "",
+                    st->flags & SNX_TEX_INDEXED ? " (indexed)" : "");
+        }
+    for (int i = 0; i < nt; i++) {
+        const TexRes* x = &res[i];
+        const ShTex* st = &fs0->si.tex[i];
+        if (!x->have || x->t != g_vk_watch || (st->flags & SNX_TEX_INDEXED)) continue;
+        Surf* t = x->t;
+        g_spatial.scene |= 1ull << i;
+        TemporalSpatialDraw d;
+        memset(&d, 0, sizeof d);
+        d.direct = indexed == 0;
+        d.triangle_list = topology_vk(topology) == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        d.first_vertex = first;
+        d.vertex_count = count;
+        d.instance_count = instances;
+        d.first_instance = base_instance;
+        d.other_stages = other_stages;
+        d.offset_size = (int)(fs0->si.tex_offset_size_mask >> i & 1);
+        const VkViewport v = vk_render_viewport_at(r, 0);
+        d.viewport[0] = v.x;
+        d.viewport[1] = v.y;
+        d.viewport[2] = v.width;
+        d.viewport[3] = v.height;
+        if (target) {
+            d.target[0] = (int)target->sw;
+            d.target[1] = (int)target->sh;
+            const VkRect2D sc = draw_scissor(r, 0, v.width > 0 && v.height != 0, (VkExtent2D){target->sw, target->sh});
+            d.scissor_on = 1;
+            d.scissor[0] = sc.offset.x;
+            d.scissor[1] = sc.offset.y;
+            d.scissor[2] = sc.offset.x + (int)sc.extent.width;
+            d.scissor[3] = sc.offset.y + (int)sc.extent.height;
+        }
+        unsigned q[2];
+        temporal_txq_today(t->sw, t->sh, g_vk_scale, t->sw != t->w || t->sh != t->h, q);
+        d.query[0] = q[0];
+        d.query[1] = q[1];
+        /* the sampler Vulkan is given for the slot, made as stage_set_ makes it */
+        const VkImageViewType want = vk_tex_view_type(st);
+        const int num = st->flags & 1                                      ? 1
+                        : st->shadow || !((fs0->si.tex_int_mask >> i) & 1) ? 0
+                        : ((fs0->si.tex_sint_mask >> i) & 1)               ? 2
+                                                                           : 1;
+        const VkSampler smp = vk_tex_bind_sampler(x->tsc, x->tic, st, num, t, want);
+        VkSamplerCreateInfo made;
+        if (smp && vk_sampler_made(smp, &made)) {
+            static const int address[5] = {TEMPORAL_SPATIAL_OTHER_ADDRESS, TEMPORAL_SPATIAL_OTHER_ADDRESS,
+                                           TEMPORAL_SPATIAL_EDGE, TEMPORAL_SPATIAL_BORDER,
+                                           TEMPORAL_SPATIAL_OTHER_ADDRESS};
+            d.normalised = !made.unnormalizedCoordinates;
+            d.mag_nearest = made.magFilter == VK_FILTER_NEAREST;
+            d.min_nearest = made.minFilter == VK_FILTER_NEAREST;
+            d.filters_same = made.magFilter == made.minFilter;
+            d.anisotropy = made.anisotropyEnable != 0;
+            d.compare = made.compareEnable != 0 || st->shadow;
+            d.address[0] = (u32)made.addressModeU < 5 ? address[made.addressModeU] : TEMPORAL_SPATIAL_OTHER_ADDRESS;
+            d.address[1] = (u32)made.addressModeV < 5 ? address[made.addressModeV] : TEMPORAL_SPATIAL_OTHER_ADDRESS;
+        }
+        d.one_level = t->levels == 1;
+        /* the view as vk_tex_bind_view makes it: the image's own format and two dimensions. Its mapping may be any:
+           the replacement's view takes the game view's own (below) */
+        d.view_format_same = num == 0 && !(st->flags & 1) && !tex_srgb(x->tic, x->tsc) && !t->f.depth &&
+                             !t->f.is_int && !(t->fkey & (1u << 30));
+        d.view_2d = want == VK_IMAGE_VIEW_TYPE_2D;
+        d.view_one_level = t->levels == 1;
+        d.view_one_layer = t->layers == 1 && !t->member && !t->group;
+        /* the replacement's view with exactly the game view's mapping (research 19:40) */
+        const VkComponentMapping map = tex_map(t, x->tic);
+        const VkImageView view = vk_temporal_spatial_view_for(&map);
+        d.view_mapping_same = view != VK_NULL_HANDLE;
+        int listed = 0;
+        const int given = vk_temporal_spatial_decide(ch, vs, fs0, st->cbuf_off, t, &d, &listed);
+        if (listed) g_spatial.listed |= 1ull << i;
+        if (given != TEMPORAL_SPATIAL_LARGER) continue;
+        if (g_spatial.larger) { /* one binding a draw: no entry binds the scene twice, so this is ours (astra 04:40) */
+            vk_temporal_spatial_fault("two bindings of one draw were given the larger texture");
+            g_spatial.larger = 0;
+            g_spatial.keyed = 0;
+            memset(fk->txq, 0, sizeof fk->txq);
+            return;
+        }
+        g_spatial.larger |= 1ull << i;
+        g_spatial.view = view;
+        /* the size query's variant only where the translated program queries this slot: else its ordinary program,
+           which computes nothing from the size (D3-2 revision 4) */
+        if (fs0->si.tex_txq_mask >> i & 1) {
+            g_spatial.keyed = 1;
+            fk->txq[0] = st->cbuf_off + 1;
+            fk->txq[1] = q[0];
+            fk->txq[2] = q[1];
+        }
+    }
+}
+
 static void render_draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 count, u32 base_vertex,
                         u32 base_instance, u32 instances);
 /* a draw as a profiler zone (SNX_TRACY builds), around its many ways out */
@@ -2573,6 +3046,8 @@ retry:
     tes = sh.tes;
     gs = sh.gs;
     int xfb_on = sh.xfb_on;
+    /* the temporal probe runs before the draw that first reads the scene colour, while its textures are unresolved */
+    if (sh.fs0 && vk_temporal_enabled()) vk_temporal_before(sh.fs0->hash);
     /* the fragment shader's variant, keyed on its textures each draw: they are resolved for stage_set anyway. fres is
        filled for the fragment program's textures (each resolved, have set), and read only for them: a clear of all
        SH_MAXTEX (10 KiB) and a check of all of them against each target were per draw */
@@ -2580,8 +3055,20 @@ retry:
     VkSh* last = gs ? gs : tes ? tes : vs;
     VkSh* fs = NULL;
     FsKey fk = {0};
+    /* the targets: read before the fragment program's variant only while the hand-over watches, as its decision needs
+       their size; otherwise after the prefetches, where the draw has always read them (reading them may make target
+       surfaces and record uploads, which the textures' resolve must not see changed) */
+    Surf* rt[8] = {0};
+    Surf* zt = NULL;
+    u32 n = 0;
+    const int targets_early = g_vk_watch != NULL;
+    if (targets_early) read_targets(ch, rt, &zt, &n);
+    g_spatial.larger = g_spatial.scene = g_spatial.listed = 0;
+    g_spatial.keyed = 0;
     if (sh.fs0) {
         fs_key(ch, sh.fs0, fres, last->si.out_mask, sh.rt_int, sh.rt_sint, &fk);
+        spatial_draw(ch, vs, sh.fs0, tcs || tes || gs, fres, indexed, draw_topo, first, count, base_instance,
+                     instances, rt, n, zt, &fk);
         if (kept && memcmp(&fk, &g_draw.fkey, sizeof fk)) kept = 0;
         if (kept) fs = g_draw.fs;
         if (!kept || g_draw.check) {
@@ -2592,6 +3079,24 @@ retry:
             }
             fs = made;
         }
+        /* the larger texture with its pair, or neither: the keyed variant where the slot is queried, the ordinary
+           program where not. A keyed variant not made, or the mode gone off since the decision, is a make failure:
+           the scene with the ordinary program, and the mode off at once. The draw is drawn (astra's O2, 04:40) */
+        if (g_spatial.larger) {
+            int fault;
+            /* made: a program that exists and did not fail; a failed ordinary program withdraws the decision too
+               (research 17:35) */
+            const int made = g_spatial.keyed ? fs && !fs->failed && fs != sh.fs0 : fs && !fs->failed;
+            g_spatial.larger = temporal_spatial_final(g_spatial.larger, made, g_vk_watch != NULL, &fault);
+            if (fault) {
+                vk_temporal_spatial_fault(made ? "the mode went off before the draw's textures were bound"
+                                               : "the size query's variant could not be made");
+                memset(fk.txq, 0, sizeof fk.txq);
+                g_spatial.keyed = 0;
+                fs = fs_variant(ch, code + r[0x851], sh.fs0, &fk);
+                kept = 0;
+            }
+        }
         if (fs && fs->failed) {
             g_vk_skipped++;
             return;
@@ -2600,10 +3105,18 @@ retry:
     cb_prefetch(ch, 0, vs, 0);
     if (fs) cb_prefetch(ch, 4, fs, 0);
     draw_indices_prefetch(ch, indexed, first, count, 0);
-    Surf* rt[8];
-    Surf* zt;
-    u32 n;
-    read_targets(ch, rt, &zt, &n);
+    if (!targets_early) read_targets(ch, rt, &zt, &n);
+    if (vk_temporal_enabled()) { /* what the temporal probe learns from a draw: its targets and sampled surfaces */
+        Surf* sampled[SH_MAXTEX];
+        const u32 *tic[SH_MAXTEX], *tsc[SH_MAXTEX]; /* the headers of each, for the probe's lines */
+        int nt = sh.fs0 ? (sh.fs0->si.ntex > SH_MAXTEX ? SH_MAXTEX : sh.fs0->si.ntex) : 0;
+        for (int i = 0; i < nt; i++) {
+            sampled[i] = fres[i].t;
+            tic[i] = fres[i].have ? fres[i].tic : NULL;
+            tsc[i] = fres[i].have ? fres[i].tsc : NULL;
+        }
+        vk_temporal_draw(ch, vs, sh.fs0, sampled, tic, tsc, nt, rt, n, zt);
+    }
     for (u32 i = 0; i < n; i++)
         if (trace_target(rt[i]))
             LOG_LIMIT(64,
@@ -2781,10 +3294,30 @@ retry:
     u32 fb = 0;
     u64 scaled = 0, aspect = 0;
     DrawImages images = {0};
+    if (vk_temporal_enabled()) {
+        /* a frame that the scene camera's block decides is decided before this draw's level bias is asked for */
+        VkSh* const stages[5] = {vs, tcs, tes, gs, fs};
+        for (int st = 0; st < 5; st++)
+            if (stages[st] && (stages[st]->si.cbuf_mask & (1u << 4)))
+                vk_temporal_camera_seen(ch->cbind[st][4], ch->cbind_size[st][4], cb_range(ch, st, stages[st], 4),
+                                        stages[st]->hash);
+    }
+    g_scene_shift = vk_temporal_enabled() ? vk_temporal_mip_bias(zt) : 0.0f;
     VkDescriptorSet vset = stage_set(ch, 0, vs, rt, zt, n, &zt_ro, NULL, NULL, NULL, NULL, &storage, &images);
+    /* SNX_ARCEUS_PASS_GUEST: a reduced pass reads the scaled color targets it samples through guest-size copies */
+    if (fs && g_pass_guest && pass_guest_on(g_vk_scale) > 0) {
+        u32 tw[8] = {0}, th[8] = {0};
+        for (u32 i = 0; i < n && i < 8; i++)
+            if (rt[i]) tw[i] = rt[i]->w, th[i] = rt[i]->h;
+        pass_guest_window(g_vk_present);
+        g_pg_draw = pass_guest_reduced(initial_count, instances, tw, th, n < 8 ? n : 8, g_pass_shown_w, g_pass_shown_h);
+        g_pg_textures = 0;
+    }
     VkDescriptorSet fset =
         fs ? stage_set(ch, 4, fs, rt, zt, n, &zt_ro, &fb, &scaled, &aspect, fres, &storage, &images)
            : VK_NULL_HANDLE;
+    if (g_pg_draw && g_pg_textures) pass_guest_served(fs->hash, g_pg_textures);
+    g_pg_draw = 0;
     /* the sets of the stages between, at their stage's index (shader_vk_set) */
     between[0] = tcs;
     between[1] = tes;
@@ -2801,6 +3334,7 @@ retry:
         bset[b] = stage_set(ch, b + 1, between[b], rt, zt, n, &zt_ro, NULL, NULL, NULL, NULL, &storage, NULL);
         if (!bset[b]) bset_ok = 0;
     }
+    g_scene_shift = 0.0f; /* the draw's textures are bound */
     if (!vset || (fs && !fset) || !bset_ok) {
         draw_images_discard(&images);
         g_vk_skipped++;
@@ -2929,6 +3463,7 @@ retry:
        which later draws read on the GPU until then (vk_buf_copy_writable) */
     VkBuffer xbuf[4];
     VkDeviceSize xoff[4], xsize[4];
+    u64 xaddress0 = 0; /* output 0's guest address, for the temporal passes' copy of a skinned character */
     u32 xbound = 0;
     for (int i = 0; i < 4 && xfb_on; i++) {
         const u32* t = &r[0xE0 + 8 * i];
@@ -2942,6 +3477,8 @@ retry:
         }
         xsize[i] = (u32)size;
         xbound |= 1u << i;
+        if (vk_temporal_objects()) vk_temporal_feedback(a, (u32)size, (u32)i);
+        if (!i) xaddress0 = a;
     }
     /* the feedback loop goes into the key last: stage_set found it */
     u32 feedback = fb && !g_vk.has_feedback_dynamic;
@@ -3094,26 +3631,9 @@ retry:
         int area = viewport[i].width > 0 && viewport[i].height != 0;
         if (!area) /* An empty guest viewport clips everything. Vulkan still needs a valid transform. */
             viewport[i] = (VkViewport){0, 0, 1, 1, 0, 1};
-        VkRect2D sc = {{0, 0}, area ? g_rp.ext : (VkExtent2D){0, 0}};
-        if (area && (r[0x380 + i * 4] & 1)) {
-            u32 xs = r[0x381 + i * 4], ys = r[0x382 + i * 4];
-            i32 x0 = (i32)vk_scf(xs & 0xFFFF), x1 = (i32)vk_scf(xs >> 16);
-            i32 y0 = (i32)vk_scf(ys & 0xFFFF), y1 = (i32)vk_scf(ys >> 16);
-            if (r[0x4EB] & 1) {
-                i32 clip_height = (i32)vk_scf((float)(r[0x3FE] >> 16));
-                i32 old_y0 = y0;
-                y0 = clip_height - y1;
-                y1 = clip_height - old_y0;
-            }
-            if (x0 < 0) x0 = 0;
-            if (y0 < 0) y0 = 0;
-            if (x1 > (i32)g_rp.ext.width) x1 = (i32)g_rp.ext.width;
-            if (y1 > (i32)g_rp.ext.height) y1 = (i32)g_rp.ext.height;
-            sc = x1 > x0 && y1 > y0 ? (VkRect2D){{x0, y0}, {(u32)(x1 - x0), (u32)(y1 - y0)}}
-                                   : (VkRect2D){{0, 0}, {0, 0}};
-        }
-        scissor[i] = sc;
+        scissor[i] = draw_scissor(r, i, area, g_rp.ext);
     }
+    if (vk_temporal_enabled()) vk_temporal_recorded(&viewport[0], &scissor[0]); /* read only, for the log */
     if (fresh || g_dyn.viewports != viewports || memcmp(g_dyn.vp, viewport, viewports * sizeof *viewport)) {
         memcpy(g_dyn.vp, viewport, viewports * sizeof *viewport);
         rec_CmdSetViewportWithCount(cb, viewports, viewport);
@@ -3265,6 +3785,216 @@ retry:
         ch->xfb_started = (u8)((ch->xfb_started | xbound) & 15);
         ch->xfb_reload = (u8)(ch->xfb_reload & ~xbound);
         vk_render_end(); /* the next capture's begin waits for this end outside a pass, and readers for its writes */
+        /* output 0 of a capture is kept for a frame: a skinned character's positions (vk_temporal_skin) */
+        if ((xbound & 1) && vk_temporal_objects())
+            vk_temporal_skin_keep(cb, xaddress0, (u32)xsize[0], xbuf[0], xoff[0]);
+    }
+    /* Read-only, with SNX_ARCEUS_SCENE_SCALE in use: the used fraction and the viewport of a G-buffer draw */
+    if (n >= 3 && zt) vk_scene_scale_note(ch, zt, n);
+    /* Read-only: a G-buffer draw whose vertex stream is a transform feedback output of this frame is a skinned
+       character. Its stream, binding and attributes are logged for the first ones. */
+    if (vk_temporal_objects() && n >= 3 && zt && !xcount)
+        for (u32 q = 0; q < nvq; q++) {
+            u32 xindex, xlen, vb = vq[q].b;
+            u64 xat;
+            if (!vk_temporal_feedback_find(vq[q].gva + vq[q].base, &xindex, &xat, &xlen)) continue;
+            if (xindex != 0 || !vk_temporal_skinned_line()) continue;
+            char attrs[200];
+            int at = 0;
+            attrs[0] = 0;
+            for (u32 i = 0; i < k->nattr && at < (int)sizeof attrs - 24; i++)
+                if (k->attr[i].binding == vb)
+                    at += snprintf(attrs + at, sizeof attrs - (size_t)at, " loc%u:format%u:+%u", k->attr[i].loc,
+                                   k->attr[i].format, k->attr[i].offset);
+            LOG("arceus-temporal-skinned: vs=%llx binding %u reads feedback output 0 at +%llx of %x bytes (stream "
+                "base %u, len %llx, stride %llu, guest stride %u, %u bindings, %u attributes), its attributes:%s, "
+                "object block %llx, instances %u, depth write %u compare %x\n",
+                (unsigned long long)vs->hash, vb, (unsigned long long)xat, xlen, vq[q].base,
+                (unsigned long long)vq[q].len, (unsigned long long)pl->stride[vb], pl->guest_stride[vb], k->nbind,
+                k->nattr, attrs, (unsigned long long)ch->cbind[0][6], instances, r[0x4BA], r[0x4C3]);
+        }
+    /* An object that moved since the last frame is drawn once more for its motion vector (vk_temporal_object):
+       the same vertex stage and state, another fragment program, onto the pixels whose depth it wrote. Only plain
+       G-buffer draws: three colour targets or more, one instance, depth tested and written (or tested for equal,
+       after a depth pass), no stages between, no capture, no predicate. */
+    if (vk_temporal_objects() && n >= 3 && zt && !zt_ro && !xcount && instances == 1 && !tcs && !tes && !gs &&
+        !ch->render_pred && r[0x4B3] && (r[0x4BA] || cmp_op(r[0x4C3]) == VK_COMPARE_OP_EQUAL)) {
+        VkTemporalObject object;
+        /* the table learns of the draw, and says whether its block has a matrix of a frame ago */
+        const int known = vk_temporal_object_note(ch, zt, nvq ? vq[0].gva + vq[0].base : 0,
+                                                  indexed && indexed != 3 ? ia : 0, initial_count, initial_first,
+                                                  vs->hash);
+        /* A skinned character first: a draw whose position stream is a transform feedback output of this frame,
+           three floats 12 bytes apart at the start of a binding. It is drawn with a vertex program of ours that
+           takes last frame's positions from a second binding, and the scene depth sampled, not attached. */
+        int skinned = 0, reads = 0;
+        for (u32 q = 0; q < nvq && !reads; q++) {
+            u32 xindex, xlen;
+            u64 xat;
+            reads = vk_temporal_feedback_find(vq[q].gva + vq[q].base, &xindex, &xat, &xlen) && xindex == 0;
+        }
+        /* one more vertex binding must fit the key and the device */
+        const int room = k->nbind < 32 && k->nbind < g_vk.props.limits.maxVertexInputBindings;
+        for (u32 q = 0; q < nvq && !skinned && room && known; q++) {
+            const u32 vb = vq[q].b;
+            u32 xindex, xlen, position = ~0u;
+            u64 xat;
+            VkTemporalSkin skin;
+            if (!vk_temporal_feedback_find(vq[q].gva + vq[q].base, &xindex, &xat, &xlen) || xindex != 0) continue;
+            if (pl->guest_stride[vb] || pl->stride[vb] != 12) continue;
+            for (u32 i = 0; i < k->nattr; i++)
+                if (k->attr[i].binding == vb && !k->attr[i].offset && k->attr[i].format == VK_FORMAT_R32G32B32_SFLOAT)
+                    position = i;
+            if (position == ~0u || !vk_temporal_skin(ch, zt, vq[q].gva + vq[q].base - xat, xat, last_vertex, &skin))
+                continue;
+            static struct {
+                PipeKey k;
+                VkPipeline pipe;
+            } skin_made[32];
+            static u32 skin_made_n;
+            PipeKey sk = *k;
+            VkPipeline spipe = VK_NULL_HANDLE;
+            sk.vs = skin.vs;
+            sk.fs = skin.fs;
+            memset(sk.attr, 0, sizeof sk.attr);
+            sk.nattr = 2;
+            sk.attr[0].loc = 0;
+            sk.attr[0].binding = vb;
+            sk.attr[0].format = VK_FORMAT_R32G32B32_SFLOAT;
+            sk.attr[1].loc = 1;
+            sk.attr[1].binding = k->nbind;
+            sk.attr[1].format = VK_FORMAT_R32G32B32_SFLOAT;
+            sk.bind[k->nbind].divisor = 0;
+            sk.bind[k->nbind].stride = g_vk.has_dynamic_stride ? 0 : 12;
+            sk.nbind = k->nbind + 1;
+            sk.ncolor = 1;
+            memset(sk.color, 0, sizeof sk.color);
+            sk.color[0] = skin.format;
+            sk.depth = sk.stencil = 0;
+            memset(sk.blend, 0, sizeof sk.blend);
+            sk.blend[0].mask = 0xF;
+            sk.feedback = sk.logic_op = sk.alpha_to_coverage = 0;
+            for (u32 i = 0; i < skin_made_n && !spipe; i++)
+                if (!memcmp(&skin_made[i].k, &sk, sizeof sk)) spipe = skin_made[i].pipe;
+            if (!spipe && (spipe = vk_pipeline_get(&sk)) && skin_made_n < 32) {
+                skin_made[skin_made_n].k = sk;
+                skin_made[skin_made_n++].pipe = spipe;
+                vk_temporal_object_pipeline();
+            }
+            /* its constant block in both stages' sets, the scene depth in the fragment set's first texture */
+            const int fset_index = shader_vk_set(ST_FS), vset_index = shader_vk_set(ST_VS);
+            DescWrites sv, sf;
+            sv.n = sf.n = 0;
+            dw_buffer(&sv, VK_NULL_HANDLE, SNX_VKB_CB, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, skin.block, skin.offset,
+                      skin.size);
+            dw_buffer(&sf, VK_NULL_HANDLE, SNX_VKB_CB, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, skin.block, skin.offset,
+                      skin.size);
+            sf.ii[0] = (VkDescriptorImageInfo){skin.sampler, skin.depth, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+            sf.w[sf.n++] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                                  .dstBinding = SNX_VKB_TEX,
+                                                  .descriptorCount = 1,
+                                                  .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                                  .pImageInfo = &sf.ii[0]};
+            VkDescriptorSet sets2[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+            if (spipe) {
+                sets2[0] = desc_set_cached(g_vk_dslayout[(k->arrays >> vset_index) & 1][vset_index], &sv);
+                sets2[1] = desc_set_cached(g_vk_dslayout[(k->arrays >> fset_index) & 1][fset_index], &sf);
+            }
+            if (!spipe || !sets2[0] || !sets2[1]) {
+                vk_temporal_object_failed("a skinned draw's pipeline or sets");
+                continue;
+            }
+            vk_render_end();
+            vk_surf_use(cb, zt, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                        VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+            if (vk_temporal_object_begin(cb, NULL, 0)) {
+                const VkDeviceSize before_offset = skin.before_offset, before_size = skin.before_size, stride = 12;
+                rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, spipe);
+                rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, (u32)vset_index, 1, &sets2[0],
+                                          0, NULL);
+                rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, (u32)fset_index, 1, &sets2[1],
+                                          0, NULL);
+                rec_CmdBindVertexBuffers2(cb, k->nbind, 1, &skin.before, &before_offset, &before_size,
+                                          g_vk.has_dynamic_stride ? &stride : NULL);
+                if (g_vk.has_feedback_dynamic) rec_CmdSetAttachmentFeedbackLoopEnableEXT(cb, VK_IMAGE_ASPECT_NONE);
+                rec_CmdSetDepthTestEnable(cb, 0);
+                rec_CmdSetDepthWriteEnable(cb, 0);
+                rec_CmdSetStencilTestEnable(cb, 0);
+                if (indexed)
+                    rec_CmdDrawIndexed(cb, icount, 1, 0, indexed == 2 && !quads_indexed ? 0 : (i32)base_vertex,
+                                       base_instance);
+                else
+                    rec_CmdDraw(cb, count, 1, first, base_instance);
+                rec_CmdEndRendering(cb);
+                skinned = 1;
+            }
+            memset(&g_dyn, 0, sizeof g_dyn);
+        }
+        vk_temporal_object_fate(known, reads, skinned);
+        if (!skinned && known && vk_temporal_object(ch, zt, &object)) {
+            static struct {
+                PipeKey k;
+                VkPipeline pipe;
+            } made[64];
+            static u32 made_n;
+            PipeKey ok = *k;
+            VkPipeline opipe = VK_NULL_HANDLE;
+            ok.fs = object.fs;
+            ok.ncolor = 1;
+            memset(ok.color, 0, sizeof ok.color);
+            ok.color[0] = object.format;
+            memset(ok.blend, 0, sizeof ok.blend);
+            ok.blend[0].mask = 0xF;
+            ok.feedback = ok.logic_op = ok.alpha_to_coverage = 0;
+            for (u32 i = 0; i < made_n && !opipe; i++)
+                if (!memcmp(&made[i].k, &ok, sizeof ok)) opipe = made[i].pipe;
+            /* past the 64 kept here the pipeline table is asked each time: it keeps every one it made */
+            if (!opipe && (opipe = vk_pipeline_get(&ok)) && made_n < 64) {
+                made[made_n].k = ok;
+                made[made_n++].pipe = opipe;
+                vk_temporal_object_pipeline();
+            }
+            /* its constant block is the fragment set's first constant buffer */
+            const int fset_index = shader_vk_set(ST_FS);
+            DescWrites od;
+            od.n = 0;
+            dw_buffer(&od, VK_NULL_HANDLE, SNX_VKB_CB, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, object.block, object.offset,
+                      object.size);
+            VkDescriptorSet oset =
+                opipe ? desc_set_cached(g_vk_dslayout[(k->arrays >> fset_index) & 1][fset_index], &od)
+                      : VK_NULL_HANDLE;
+            if (!opipe || !oset) vk_temporal_object_failed("an object draw's pipeline or set");
+            if (opipe && oset) {
+                VkRenderingAttachmentInfo oz = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                                                .imageView = zt->att,
+                                                .imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                                                .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
+                                                .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
+                vk_render_end();
+                vk_surf_use(cb, zt, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                            VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+                            VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                                VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
+                if (vk_temporal_object_begin(cb, &oz, zt->f.stencil)) {
+                    rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, opipe);
+                    rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, (u32)fset_index, 1, &oset, 0,
+                                              NULL);
+                    if (g_vk.has_feedback_dynamic) rec_CmdSetAttachmentFeedbackLoopEnableEXT(cb, VK_IMAGE_ASPECT_NONE);
+                    rec_CmdSetDepthTestEnable(cb, 1);
+                    rec_CmdSetDepthWriteEnable(cb, 0);
+                    rec_CmdSetDepthCompareOp(cb, VK_COMPARE_OP_EQUAL);
+                    rec_CmdSetStencilTestEnable(cb, 0);
+                    if (indexed)
+                        rec_CmdDrawIndexed(cb, icount, 1, 0, indexed == 2 && !quads_indexed ? 0 : (i32)base_vertex,
+                                           base_instance);
+                    else
+                        rec_CmdDraw(cb, count, 1, first, base_instance);
+                    rec_CmdEndRendering(cb);
+                }
+                /* the next draw sets its pipeline, sets and state again */
+                memset(&g_dyn, 0, sizeof g_dyn);
+            }
+        }
     }
     vk_buf_writable_commit();
     draw_images_commit(&images);
@@ -3272,9 +4002,17 @@ retry:
     if (fb) g_vk_fb_draws++;
     for (u32 i = 0; i < n; i++)
         if (writes >> i & 1) target_written(g_rp.rt[i]);
+    int census_z = 0;
     if (zt && !zt_ro && (r[0x4BA] || (r[0x4E0] && ((r[0x4E7] & 0xFF) || (r[0x565] && (r[0x3D6] & 0xFF))))) &&
-        zt_written(zt, ch->render_pred, zt_undefined))
+        zt_written(zt, ch->render_pred, zt_undefined)) {
         target_written(zt);
+        census_z = 1;
+    }
+    if (g_census.on) {
+        VkViewport census_vp = vk_render_viewport(r);
+        census_draw(ch, g_rp.rt, n, writes, zt, zt_ro, census_z, vs, fs, fres, &census_vp, 0);
+        census_feedback(ch, xbound, vs);
+    }
     g_vk_drawn++;
 }
 
@@ -3299,6 +4037,7 @@ void vk_render_draw_texture(GpuChannel* ch) {
     TexRes x;
     tex_resolve(ch, (r[0x428] & 0xFFF) << 20 | (r[0x429] & 0xFFFFF), &x);
     Surf *rt[8], *zt, *t = x.t;
+    vk_temporal_watch_bound(t);
     u32 n;
     read_targets(ch, rt, &zt, &n);
     if (!t || !n || !rt[0]) {
@@ -3348,4 +4087,9 @@ void vk_render_draw_texture(GpuChannel* ch) {
     vk_surf_wrote(d);
     vk_rt_drawn(d);
     vk_surf_touch(d);
+    if (g_census.on) {
+        TexRes census_from = {.t = t};
+        Surf* const census_to[1] = {d};
+        census_draw(NULL, census_to, 1, 1, NULL, 0, 0, NULL, NULL, &census_from, NULL, 1);
+    }
 }
