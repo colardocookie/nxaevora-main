@@ -22,7 +22,7 @@ def fixture():
     main = (SRC / "runtime/main.c").read_text()
     return "\n".join([
         HEAD,
-        section(record, "int g_vk_wsi_lock;", "/* A present,"),
+        section(record, "int g_vk_wsi_lock;", "/* ----"),
         section(record, "typedef struct {\n    VkSwapchainKHR sc;", "/* ----"),
         "static void acquire(int game, VkSemaphore acq, u32* out, VkResult* result) { u32 idx = 77;",
         section(renderer, "VkResult r;\n        if (g_vk_wsi_lock)", "if (r == VK_NOT_READY"),
