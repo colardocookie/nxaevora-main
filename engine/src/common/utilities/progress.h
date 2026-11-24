@@ -34,6 +34,9 @@ int snx_progress_mode(void);
 void snx_progress_stage(const char* stage);
 /* writes "done" when stage is the open stage of this process, and clears it; otherwise writes nothing */
 void snx_progress_done(const char* stage);
+/* Names the stage of the parent's next work without a start line: a child process writes that stage's start and done
+   lines, and snx_progress_finish writes the parent's noted error under it */
+void snx_progress_stage_name(const char* stage);
 /* writes "progress" with value and total for stage */
 void snx_progress_value(const char* stage, unsigned long long value, unsigned long long total);
 /* writes "error" for the open stage with message and code, and clears it; nothing without an open stage */
@@ -44,13 +47,23 @@ void snx_progress_game_error(const char* message, int code, int game_code);
 void snx_progress_exit(int code);
 /* keeps text as the last error, a bounded copy, for snx_progress_finish */
 void snx_progress_note_error(const char* text);
+/* The error line of a crash: no lock and no allocation, one raw write to the stream, for the thread that crashed. It
+   reads the stream without the lock (the crashed thread may hold it): an accepted race for a process that ends */
+void snx_progress_crash_error(const char* message, int code);
 /* The end of a command process: the open stage's error line, or the last closed stage's when this process noted an
    error after it closed, when code is nonzero; then the exit line. A child stage writes no exit line */
 void snx_progress_finish(int code);
-/* Puts the private stream on fd 1 for the spawn of a child, and stderr back after it returns (driver.c). When the
-   child did not start, the restore keeps the noted error: no child wrote an error line */
+/* the result of snx_run_stage's child (common.h): the restore's rule of the parent's noted error */
+#define SNX_CHILD_NOT_STARTED 0  /* no child wrote an error line: a start or wait failure */
+#define SNX_CHILD_EXITED_OK 1    /* the child ended by itself with code 0 */
+#define SNX_CHILD_EXITED_ERROR 2 /* the child ended by itself with a nonzero code and wrote the error line */
+#define SNX_CHILD_SIGNALED 3     /* a signal ended the child */
+#define SNX_CHILD_INTERRUPTED 4  /* the parent was interrupted (Ctrl+C) */
+/* Puts the private stream on fd 1 for the spawn of a child, and stderr back after it returns (driver.c). Only a child
+   that ended by itself with a nonzero code wrote its own error line, so only then does the restore clear the noted
+   error; after an interrupt, a signal or a failed start the parent keeps it for snx_progress_finish */
 void snx_progress_child_redirect(void);
-void snx_progress_child_restore(int child_started);
+void snx_progress_child_restore(int child_result);
 /* tests: sends the stream to out instead of a duplicated stdout; NULL detaches */
 void snx_progress_test_attach(FILE* out, int mode);
 

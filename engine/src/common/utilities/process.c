@@ -3,6 +3,7 @@
 #define _POSIX_C_SOURCE 200809L
 #include "common/utilities/common.h"
 #include "common/utilities/exit_codes.h"
+#include "common/utilities/progress.h"
 #include <errno.h>
 #include <signal.h>
 #include <stdlib.h>
@@ -18,6 +19,8 @@
 #endif
 
 #ifdef _WIN32
+/* an exit code above this is an NTSTATUS exception code, not the child's own exit code */
+#define SNX_STAGE_EXIT_MAX 255
 static volatile LONG interrupted;
 static BOOL WINAPI stage_interrupt(DWORD event) {
     if (event != CTRL_C_EVENT && event != CTRL_BREAK_EVENT) return FALSE;
@@ -65,14 +68,14 @@ static wchar_t* stage_command(const char* const* argv) {
     free(text);
     return out;
 }
-static int run_stage(const char* const* argv, const char* cwd, const char* stage, int debugger, int* child_started) {
+static int run_stage(const char* const* argv, const char* cwd, const char* stage, int debugger, int* child_result) {
     STARTUPINFOW startup = {0};
     PROCESS_INFORMATION process = {0};
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits = {0};
     HANDLE job;
     wchar_t *command = stage_command(argv), *directory = cwd ? stage_wide(cwd) : NULL;
     DWORD code = 1, error = 0, waited;
-    int rc = SNX_EXIT_INTERNAL, handler = 0, started = 0;
+    int rc = SNX_EXIT_INTERNAL, handler = 0, result = SNX_CHILD_NOT_STARTED;
     (void)debugger;
     startup.cb = sizeof(startup);
     limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
@@ -92,13 +95,13 @@ static int run_stage(const char* const* argv, const char* cwd, const char* stage
         TerminateProcess(process.hProcess, 1);
         goto failed;
     }
-    started = 1;
     for (;;) {
         if (InterlockedCompareExchange(&interrupted, 0, 0)) {
             TerminateJobObject(job, 130);
             WaitForSingleObject(process.hProcess, INFINITE);
             snx_error("%s interrupted. You can run the same command again.", stage);
             rc = SNX_EXIT_INTERRUPT;
+            result = SNX_CHILD_INTERRUPTED;
             goto done;
         }
         waited = WaitForSingleObject(process.hProcess, 50);
@@ -107,7 +110,13 @@ static int run_stage(const char* const* argv, const char* cwd, const char* stage
     }
     if (!GetExitCodeProcess(process.hProcess, &code)) goto failed;
     /* Negative driver results mean "not a tool command" to the runtime entry point. */
-    rc = code <= 255 ? (int)code : SNX_EXIT_INTERNAL;
+    if (code > SNX_STAGE_EXIT_MAX) {
+        /* an NTSTATUS exception code: the child did not end by itself and wrote no error line */
+        result = SNX_CHILD_SIGNALED;
+    } else {
+        rc = (int)code;
+        result = rc ? SNX_CHILD_EXITED_ERROR : SNX_CHILD_EXITED_OK;
+    }
     if (rc) snx_error("%s failed (exit status %lu). You can run the same command again.", stage, (unsigned long)code);
     goto done;
 failed:
@@ -115,7 +124,7 @@ failed:
     snx_error("%s: cannot start or wait for %s%s%s (Windows error %lu)", stage, argv[0], cwd ? " in " : "",
               cwd ? cwd : "", (unsigned long)error);
 done:
-    if (child_started) *child_started = started;
+    if (child_result) *child_result = result;
     if (job) CloseHandle(job);
     if (process.hThread) CloseHandle(process.hThread);
     if (process.hProcess) CloseHandle(process.hProcess);
@@ -135,17 +144,17 @@ static void stage_interrupt(int sig) {
     }
     errno = saved;
 }
-static int run_stage(const char* const* argv, const char* cwd, const char* stage, int debugger, int* child_started) {
+static int run_stage(const char* const* argv, const char* cwd, const char* stage, int debugger, int* child_result) {
     static const int signals[] = {SIGINT, SIGTERM, SIGHUP, SIGTSTP};
     struct sigaction action, old[4], ignore, old_ttou;
     sigset_t blocked, previous;
     pid_t pid, waited, foreground = -1;
     int status = 0, rc = SNX_EXIT_INTERNAL, sig = 0, installed = 0, tty = 0, group[2] = {-1, -1}, made;
-    int started = 0;
+    int result = SNX_CHILD_NOT_STARTED;
     size_t i;
+    if (child_result) *child_result = SNX_CHILD_NOT_STARTED;
     sigemptyset(&blocked);
     for (i = 0; i < 4; ++i) sigaddset(&blocked, signals[i]);
-    if (child_started) *child_started = 0;
     if (sigprocmask(SIG_BLOCK, &blocked, &previous)) {
         snx_error("%s: cannot block the stage signals: %s", stage, strerror(errno));
         return SNX_EXIT_INTERNAL;
@@ -215,14 +224,15 @@ static int run_stage(const char* const* argv, const char* cwd, const char* stage
         perror("scarletnx: waiting for child process");
     else if (WIFSTOPPED(status)) {
         sig = WSTOPSIG(status);
-        started = 1;
     } else if (WIFSIGNALED(status)) {
         sig = WTERMSIG(status);
-        started = 1;
     } else if (WIFEXITED(status)) {
         rc = WEXITSTATUS(status);
         /* 126 and 127 are the child's own exits before its program ran: group, terminal, cwd or exec failed */
-        started = rc != 126 && rc != 127;
+        if (rc == 126 || rc == 127)
+            result = SNX_CHILD_NOT_STARTED;
+        else
+            result = rc ? SNX_CHILD_EXITED_ERROR : SNX_CHILD_EXITED_OK;
     }
     /* Stop/abort is a failed stage, not a checkpoint. Also stop any outstanding workers. */
     sigprocmask(SIG_BLOCK, &blocked, NULL);
@@ -234,6 +244,7 @@ static int run_stage(const char* const* argv, const char* cwd, const char* stage
     }
     if (sig) {
         rc = 128 + sig;
+        result = interrupted ? SNX_CHILD_INTERRUPTED : SNX_CHILD_SIGNALED;
         snx_error("%s interrupted by signal %d (%s). You can run the same command again.", stage, sig, strsignal(sig));
     } else if (rc)
         snx_error("%s failed (exit status %d). You can run the same command again.", stage, rc);
@@ -243,7 +254,7 @@ setup_failed:
     if (group[0] >= 0) close(group[0]);
     if (group[1] >= 0) close(group[1]);
 done:
-    if (child_started) *child_started = started;
+    if (child_result) *child_result = result;
     if (tty) {
         if (tcsetpgrp(STDIN_FILENO, foreground)) perror("scarletnx: restoring terminal");
         sigaction(SIGTTOU, &old_ttou, NULL);
@@ -253,9 +264,9 @@ done:
     return rc;
 }
 #endif
-int snx_run_stage(const char* const* argv, const char* cwd, const char* stage, int* child_started) {
-    return run_stage(argv, cwd, stage, 0, child_started);
+int snx_run_stage(const char* const* argv, const char* cwd, const char* stage, int* child_result) {
+    return run_stage(argv, cwd, stage, 0, child_result);
 }
-int snx_run_debug_stage(const char* const* argv, const char* cwd, const char* stage, int* child_started) {
-    return run_stage(argv, cwd, stage, 1, child_started);
+int snx_run_debug_stage(const char* const* argv, const char* cwd, const char* stage, int* child_result) {
+    return run_stage(argv, cwd, stage, 1, child_result);
 }

@@ -361,6 +361,13 @@ void snx_progress_done(const char* stage) {
     progress_unlock();
 }
 
+void snx_progress_stage_name(const char* stage) {
+    if (!stage) return;
+    progress_lock();
+    if (progress_on()) g_progress.last_stage = stage;
+    progress_unlock();
+}
+
 void snx_progress_value(const char* stage, unsigned long long value, unsigned long long total) {
     ProgressLine line;
     char buf[SNX_PROGRESS_LINE_SIZE];
@@ -410,6 +417,30 @@ void snx_progress_note_error(const char* text) {
     progress_unlock();
 }
 
+/* Crash mode: the crashed thread may hold g_progress_lock and the stdio locks, so this path reads without the lock
+   and writes one prepared line with a raw write; the race with a normal writer is accepted for a process that ends */
+void snx_progress_crash_error(const char* message, int code) {
+    ProgressLine line;
+    char buf[SNX_PROGRESS_LINE_SIZE];
+    FILE* stream = g_progress.stream;
+    const char* stage = g_progress.open_stage;
+    int fd;
+    if (!stream || !stage) return;
+    fd = progress_fileno(stream);
+    if (fd < 0) return;
+    line_init(&line, buf, sizeof buf);
+    line_prefix(&line, stage, "error");
+    line_puts(&line, ",\"message\":\"");
+    line_message(&line, message ? message : "");
+    line_addf(&line, "\",\"code\":%d}", code);
+    buf[line.len++] = '\n';
+#ifdef _WIN32
+    _write(fd, buf, (unsigned)line.len);
+#else
+    write(fd, buf, line.len);
+#endif
+}
+
 void snx_progress_finish(int code) {
     progress_lock();
     if (progress_on()) {
@@ -439,10 +470,10 @@ void snx_progress_child_redirect(void) {
     progress_unlock();
 }
 
-void snx_progress_child_restore(int child_started) {
+void snx_progress_child_restore(int child_result) {
     progress_lock();
-    /* a child that started wrote its own error line: a second one would be wrong */
-    if (child_started) g_progress.last_error[0] = 0;
+    /* a child that ended by itself with a nonzero code wrote its own error line: a second one would be wrong */
+    if (child_result == SNX_CHILD_EXITED_ERROR) g_progress.last_error[0] = 0;
     if (progress_on() && g_progress.private_fd >= 0) {
         fflush(stdout);
         progress_dup2(progress_fileno(stderr), progress_fileno(stdout));

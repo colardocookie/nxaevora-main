@@ -773,6 +773,7 @@ void ini_list(const IniSection* sections, int count) {
     char* text = malloc(n + 1);
     if (!text) return;
     ini_list_text(sections, count, text, n + 1);
+    snx_tool_console(); /* a Windows GUI program's stdout is valid only after the console is attached */
     fputs(text, stdout);
     free(text);
 }
