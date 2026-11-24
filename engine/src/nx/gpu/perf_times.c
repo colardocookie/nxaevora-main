@@ -11,7 +11,6 @@ int g_perf_probes;
 PerfTimes g_perf;
 int g_perf_pass_why;
 int g_perf_submit_why;
-int g_perf_compute_submit = 1;
 int g_perf_inplace;
 int g_perf_query;
 int g_perf_sample;

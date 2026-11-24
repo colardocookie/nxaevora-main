@@ -890,12 +890,6 @@ int snx_main(int argc, char** argv) {
             LOG("perf-probes: on, a perf-p29 line with the hash callers, the replay's draws, the releases by kind and "
                 "the page index's lookups, a perf-mem line, a perf-waits line and a perf-vklock line\n");
         }
-        const char* compute_submit = getenv("SNX_ARCEUS_PERF_COMPUTE_SUBMIT"); /* an experiment (gpu/perf_times.h) */
-        if (compute_submit && !strcmp(compute_submit, "0")) {
-            g_perf_compute_submit = 0;
-            LOG("perf-compute-submit: EXPERIMENT on, a deferred dispatch is not submitted at once, its results go "
-                "with the next submission\n");
-        }
         const char* inplace = getenv("SNX_ARCEUS_PERF_INPLACE"); /* 4 by default (gpu/perf_times.h, PERF-17) */
         g_perf_inplace = perf_level(inplace, 1, 4);
         if (g_perf_inplace) {

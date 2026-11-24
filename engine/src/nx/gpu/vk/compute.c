@@ -1488,12 +1488,8 @@ rebind:
             if (!vk_surf_publish(images[i])) vk_surf_flush(images[i], NULL);
         }
         g_vk_dispatches++;
-        /* SNX_ARCEUS_PERF_COMPUTE_SUBMIT=0: not at once. Every reader of these results submits before it waits
-           (buffer.c's landing finishes, submit_through, image_flush_at, vk_finish), so only when they run changes */
-        if (g_perf_compute_submit) {
-            perf_submit_why(SW_COMPUTE);
-            vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
-        }
+        perf_submit_why(SW_COMPUTE);
+        vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
         return;
     }
     /* results visible to the host */
