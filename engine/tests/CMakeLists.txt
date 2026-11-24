@@ -1188,6 +1188,13 @@ add_test(NAME runtime_settings_partial COMMAND "${CMAKE_COMMAND}" "-DRUNTIME=$<T
          "-DMODULE=$<TARGET_FILE:snx-test-module-abi>"
          "-DABI_HEADER=${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu.h"
          -P "${CMAKE_CURRENT_SOURCE_DIR}/settings_partial.cmake")
+# the store's dirty flag (runtime/options.c): an in-game change written to the file, a full store, a blocked write and
+# a reload that keeps the game's value
+add_executable(snx-test-runtime-settings-dirty runtime_settings_dirty.c runtime_settings_dirty_stub.c
+    "${PROJECT_SOURCE_DIR}/src/nx/runtime/options.c" "${PROJECT_SOURCE_DIR}/src/common/utilities/ini_lines.c")
+snx_test_target(snx-test-runtime-settings-dirty 11)
+target_link_libraries(snx-test-runtime-settings-dirty PRIVATE scarletnx-common)
+add_test(NAME runtime_settings_dirty COMMAND snx-test-runtime-settings-dirty)
 # the module contract's layout as recorded when SNX_ABI last rose (docs/ARCHITECTURE.md, Module ABI)
 add_executable(snx-test-module-contract module_contract.c)
 snx_test_target(snx-test-module-contract 99)
