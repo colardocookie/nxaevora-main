@@ -27,8 +27,8 @@ typedef struct {
 
 /* the key and its modifiers a control presses (pad_map.h's SNX_PAD_), its face's labels (snx_pad_labels', of south,
    east, west and north) saying which button selects: the one labelled A or Cross, B or Circle going back, X or Square
-   Del and Y or Triangle R, L3 M and R3 B, Back F2 (ESC on Android, as its back). Whether it presses one; *repeats,
-   whether it is pressed again while held */
+   Del and Y or Triangle R, L3 M and R3 B, Back F1. Whether it presses one; *repeats, whether it is pressed again while
+   held */
 bool gui_pad_key(int control, const int labels[4], SDL_Keycode* key, SDL_Keymod* mod, bool* repeats);
 /* a foot's sentences (main.c's "Keys: what. Keys: what.") in out, their keys A, B, X and Y named as labels (the pad
    pressed last's) name them: Cross, Circle, Square and Triangle on a PlayStation pad */

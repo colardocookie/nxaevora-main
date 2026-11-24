@@ -8,8 +8,7 @@
 #if defined(__linux__) && !defined(_GNU_SOURCE)
 #define _GNU_SOURCE /* memfd_create */
 #endif
-/* Android's C library has memfd_create from Android 11 (API 30): before it, the temporary file */
-#if defined(__linux__) && (!defined(__ANDROID__) || __ANDROID_API__ >= 30)
+#if defined(__linux__)
 #define SNX_MEMFD 1
 #endif
 #include "common/cpu/recompiler/snx_recompiler.h"
@@ -49,11 +48,7 @@ extern const unsigned long snx_rtlib_bitcode_size;
 
 /* instructions per code unit (an LLVM module): whole functions until a unit reaches it, as the
    game workflow's default splits them (the setting unit_instructions) */
-#ifdef __ANDROID__
-#define CHUNK_INSTRUCTIONS 20000
-#else
 #define CHUNK_INSTRUCTIONS 90000
-#endif
 /* the dispatch table holds a pointer per instruction slot of the code range: a range this wide is not a program */
 #define MAX_CODE_SPAN ((uint64_t)1 << 30)
 

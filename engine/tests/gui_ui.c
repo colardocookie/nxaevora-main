@@ -104,9 +104,6 @@ unsigned ui_main_load_list_load_switch_attr_cb(App* app) {
     return app->keys_missing ? UI_ATTR_FAILURE | UI_ATTR_BLINK : 0;
 }
 void ui_main_load_list_load_game_action_cb(App* app, uint32_t hit) { called(app, LOAD_GAME, hit, 0); }
-#ifdef SDL_PLATFORM_ANDROID
-void ui_main_load_list_open_data_folder_action_cb(App* app, uint32_t hit) { called(app, DATA, hit, 0); }
-#endif
 void ui_main_load_list_settings_action_cb(App* app, uint32_t hit) { called(app, SETTINGS, hit, 0); }
 /* four games: a title, the second in the failure colour with an icon, the third with no label and open (the focus's
    look, no cursor), the last with an image */
@@ -197,17 +194,12 @@ static void test_layout(void) {
     ui_row_layout(gui_rect(0, 0, 400, 100), 1, o);
     is(o[UI_ROW_OK], 120, 40, 60, 20);
     is(o[UI_ROW_BACK], 180, 0, 100, 100);
-    /* a platform's own row metrics: a phone's rows 30px high (Android's and iOS's), the desktop's at most 2 */
+    /* a platform's own row metrics: the desktop's rows at most 2 */
     {
         GuiRect t[UI_TOUCH_ITEMS];
         ui_touch_layout(gui_rect(0, 0, 100, 100), 1, t);
-#if defined(SDL_PLATFORM_ANDROID) || defined(SDL_PLATFORM_IOS) /* a phone's: Android's own metrics on iOS too */
-        is(ui_touch_row(t, 1, UI_TOUCH_BIG, 1), 0, 32, 100, 30);
-        assert(ui_touch_shown(t, 1, UI_TOUCH_BIG) == 3); /* 100 / 32: 3 */
-#else
         is(ui_touch_row(t, 1, UI_TOUCH_BIG, 1), 0, 19, 100, 17);
         assert(ui_touch_shown(t, 1, UI_TOUCH_BIG) == 2); /* 5 fit, max_rows 2 */
-#endif
     }
     puts("PASS the layouts at 1x and 2x, the rows that fit, a platform's own metrics");
 }
@@ -238,11 +230,7 @@ static void test_draw(void) {
     is(ui_main_row(r, 1, UI_MAIN_LOAD_LIST, 1), 14, 70, 200, 17);       /* its place, the bar's room in it */
     is(ui_main_row(r, 1, UI_MAIN_GAMES, 3), 14, 154 + 3 * 19, 300, 17); /* max_row_width */
     is(ui_main_row(r, 1, UI_MAIN_STATUS, 0), 0, 0, 0, 0);               /* not a list */
-#ifdef SDL_PLATFORM_ANDROID
-    assert(!strcmp(d[3].text, "Open Data Folder"));
-#else
     assert(!strcmp(d[3].text, "Settings") && d[3].color == UI_COLOR_FOCUS);
-#endif
     assert(d[2].attr == 0 && d[3].attr == 0); /* the last row shown, rows below it: the bar says it, no arrow */
     assert(!strcmp(d[4].text, "Game 0") && d[4].attr == UI_ATTR_TITLE);
     assert(!strcmp(d[5].text, "Game 1") && d[5].attr == UI_ATTR_FAILURE);
@@ -264,11 +252,7 @@ static void test_draw(void) {
     g_gui_ui.ndrawn = 0;
     ui_main_draw(&app, r, 1, lists);
     assert(!strcmp(d[1].text, "Load Game") && d[1].focused && d[1].attr == 0);
-#ifdef SDL_PLATFORM_ANDROID
-    assert(!strcmp(d[3].text, "Settings") && d[3].attr == 0);
-#else
     assert(!strcmp(d[3].text, "Decor") && d[3].attr == 0);
-#endif
     assert(!strcmp(d[4].text, "Game 1") && d[4].attr == (UI_ATTR_FAILURE | UI_ATTR_MORE_UP));
     assert(!strcmp(d[6].text, "Game 3") && d[6].attr == 0);
     /* scrolled between two rows: each drawn up by shift, kept inside the list's area while they are, as before after */
@@ -544,10 +528,6 @@ static void test_tiles(void) {
     size_t row;
     ui_grid_layout(gui_rect(0, 0, 150, 200), 1, r);
     is(r[UI_GRID_TILES], 4, 4, 142, 192);
-#if defined(SDL_PLATFORM_ANDROID) || defined(SDL_PLATFORM_IOS) /* a phone's 60px tiles: two a line */
-    ui_grid_flow(r, 1, UI_GRID_TILES, &f);
-    assert(f.cols == 2 && f.tile_w == 60);
-#else
     /* the flow: a label's line, tiles, a new line when one is full and before a label */
     ui_grid_flow(r, 1, UI_GRID_TILES, &f);
     assert(f.cols == 3 && f.tile_w == 40 && f.tile_h == 30 && f.row_h == 10 && f.gap == 4 && f.max == 9);
@@ -654,7 +634,6 @@ static void test_tiles(void) {
     ui_grid_follow(r, 1, UI_GRID_TILES, 13, &lists[UI_GRID_TILES]);
     assert(lists[UI_GRID_TILES].first % (size_t)f.cols == 0 && lists[UI_GRID_TILES].first + (size_t)f.cols > 12);
     lists[UI_GRID_TILES].tile_w = lists[UI_GRID_TILES].tile_h = 0;
-#endif
     puts("PASS a tile list: its flow, tiles and labels drawn and hit where placed, shown, row and follow");
 }
 

@@ -51,8 +51,7 @@ int main(void) {
     char *portable, *beside, *said, *line, *cache, *old, *now;
     int i;
     assert(root);
-    /* the folder as the functions name it, links resolved: macOS's temporary folder is under /var, a link to
-       /private/var */
+    /* the folder as the functions name it, links resolved */
     {
         char* real = realpath(root, NULL);
         assert(real);
@@ -79,7 +78,7 @@ int main(void) {
 #ifdef SNX_XDG
     expected = join(xdg, "nxaevora");
 #else
-    /* no XDG spec (macOS): the user's data folder of its own, under a HOME of the test's (tests/user_dirs.c has it) */
+    /* no XDG spec: the user's data folder of its own, under a HOME of the test's (tests/user_dirs.c has it) */
     file = join(root, "home");
     setenv("HOME", file, 1);
     free(file);

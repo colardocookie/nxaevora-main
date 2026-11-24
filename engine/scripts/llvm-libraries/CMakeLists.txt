@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
 # The LLVM libraries the recompiler links (cmake/llvm_components.cmake) and every one they link, from a configured LLVM
-# build tree, written to OUTPUT as a CMake list: scripts/android-llvm.sh and scripts/apple-llvm.sh build only those,
+# build tree, written to OUTPUT as a CMake list: scripts/linux-llvm.sh builds only those,
 # as LLVM_DISTRIBUTION_COMPONENTS, which also leaves the others out of the package they install. Reading LLVM's own
 # package keeps it right for each LLVM version, where a list written here would go stale
 #

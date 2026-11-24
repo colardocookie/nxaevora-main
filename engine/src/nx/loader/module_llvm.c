@@ -6,7 +6,6 @@
 #include "nx/loader/codegen_view.h"
 #include "common/cpu/recompiler/llvm/ir.h"
 #include "common/cpu/recompiler/llvm/link.h"
-#include "common/cpu/recompiler/llvm/objects_pack.h"
 #include "nx/loader/module_abi.h"
 #include "nx/loader/unit_cache.h"
 #include "common/cpu/recompiler/llvm/rtlib_object.h"
@@ -26,9 +25,6 @@ typedef struct {
     unsigned char* object;
     size_t size;
     int reused; /* the object came from the unit cache */
-    /* a pack's unit the unit cache holds whole: its key, which the pack's write reads the object back by (object NULL
-       until then). Empty for one in memory */
-    char key[65];
 } Unit;
 
 typedef struct {
@@ -70,35 +66,8 @@ static int save_ir(SnxIr* ir, const char* dir, const char* name) {
     return rc;
 }
 
-/* The pack's write (snx_objects_pack_write) of inputs, units[0] the first-th of them: each unit's object read back
-   from the unit cache when it is there, freed once written */
-typedef struct {
-    Unit* units;
-    size_t first, count;
-    const SnxUnitCache* cache;
-} PackUnits;
-static unsigned char* read_unit(void* arg, size_t index, size_t* size, char* why, size_t why_size) {
-    const PackUnits* p = (const PackUnits*)arg;
-    unsigned char* object;
-    char reason[640];
-    if (index < p->first || index - p->first >= p->count || !p->units[index - p->first].key[0]) {
-        snprintf(why, why_size, "input %zu is no unit the unit cache holds", index);
-        return NULL;
-    }
-    object = snx_unit_cache_read(p->cache, p->units[index - p->first].key, size, reason, sizeof reason);
-    if (!object) snprintf(why, why_size, "code_%03zu: %s", index - p->first, reason);
-    return object;
-}
-static void written_unit(void* arg, size_t index) {
-    PackUnits* p = (PackUnits*)arg;
-    if (index < p->first || index - p->first >= p->count) return;
-    free(p->units[index - p->first].object);
-    p->units[index - p->first].object = NULL;
-}
-
 static SnxIr* new_ir(const SnxLlvmBuild* build, const char* name, char* error, size_t error_size) {
-    return build->triple ? snx_ir_new_target(name, build->opt, build->triple, error, error_size)
-                         : snx_ir_new(name, build->opt, error, error_size);
+    return snx_ir_new(name, build->opt, error, error_size);
 }
 
 /* one chunk of functions, as module.c's code_NNN.c */
@@ -117,17 +86,10 @@ static int compile_unit(Queue* q, size_t index, char* error, size_t error_size) 
     rc = q->build->keep_ir && save_ir(ir, q->build->keep_ir, name);
     if (rc) snprintf(error, error_size, "cannot save the IR of %s", name);
     if (!rc && q->cache)
-        rc = snx_unit_cache_object(q->cache, ir, &u->object, &u->size, &u->reused, q->build->triple ? u->key : NULL,
-                                   error, error_size);
+        rc = snx_unit_cache_object(q->cache, ir, &u->object, &u->size, &u->reused, NULL, error, error_size);
     else if (!rc)
         rc = snx_ir_object(ir, q->build->opt, &u->object, &u->size, error, error_size);
     snx_ir_free(ir);
-    /* a pack is written a record at a time: an object the cache holds is read back then, not kept in memory with every
-       other unit's until the last is compiled */
-    if (!rc && u->key[0]) {
-        free(u->object);
-        u->object = NULL;
-    }
     return rc;
 }
 
@@ -503,10 +465,6 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
     memset(&linked, 0, sizeof(linked));
     if (!loaded->module_count) return snx_error("no modules to generate");
     if (snx_ir_init(error, sizeof(error))) return snx_error("%s", error);
-    if (options->jit_cache && build->triple) {
-        snx_error("--jit-cache cannot go with --target %s: a JIT cache is this host's", build->triple);
-        goto done;
-    }
     if (options->jit_cache) {
         char* key = snx_jit_cache_key(build->opt, options->hook_direct_calls, 1, 0); /* the Switch */
         if (!key) {
@@ -593,14 +551,12 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
         snx_report_unit(q.count + 1, q.count + 1, "module", label, 0, snx_seconds() - start);
         free(label);
     }
-    /* link: runtime library, descriptor, chunks. A module for another machine has no runtime library of its own
-       (this host has none for that machine): the app that loads it brings its own */
-    if (!build->triple && snx_ir_rtlib_object(build->opt, &rtlib_object, &rtlib_size, error, sizeof(error))) {
+    /* link: runtime library, descriptor, chunks */
+    if (snx_ir_rtlib_object(build->opt, &rtlib_object, &rtlib_size, error, sizeof(error))) {
         snx_error("LLVM backend: %s", error);
         goto done;
     }
-    /* link: runtime library, descriptor, chunks, the profile cache's units. A module for another machine has no
-       runtime library of its own (this host has none for that machine): the app that loads it brings its own */
+    /* link: runtime library, descriptor, chunks, the profile cache's units */
     inputs = (SnxLinkInput*)snx_alloc((q.count + 2 + cache_count) * sizeof(*inputs));
     if (rtlib_object) {
         inputs[n].data = rtlib_object;
@@ -624,38 +580,14 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
     exports[0] = "snx_module";
     if (variant_count) exports[export_count++] = "snx_variants";
     tmp = snx_format("%s.tmp", build->output);
-    if (build->triple) {
-        /* the pack to its file a record at a time, the code generator's tables gone first: a game of hundreds of
-           thousands of functions has them, its objects and a copy of them as one pack in memory otherwise */
-        PackUnits pack;
-        char reason[256];
-        pack.units = q.units;
-        pack.first = n - q.count - cache_count;
-        pack.count = q.count;
-        pack.cache = unit_cache;
-        snx_codegen_free(&codegen);
-        if (snx_objects_pack_write(inputs, n, tmp, &linked.size, read_unit, written_unit, &pack, error,
-                                   sizeof(error))) {
-            snx_error("packing failed: %s", error);
-            if (snx_is_file(tmp)) snx_remove_tree(tmp);
-            goto done;
-        }
-        if (snx_replace(tmp, build->output)) {
-            snx_error("packing failed: cannot rename %s to %s: %s", tmp, build->output,
-                      snx_os_error(reason, sizeof reason));
-            snx_remove_tree(tmp);
-            goto done;
-        }
-    } else {
-        if (snx_link(inputs, n, exports, export_count, base_name(build->output), &linked, error, sizeof(error))) {
-            snx_error("linking failed: %s", error);
-            goto done;
-        }
-        if (snx_write_file(tmp, linked.data, linked.size) || snx_replace(tmp, build->output)) {
-            snx_error("linking failed: cannot write %s", build->output);
-            if (snx_is_file(tmp)) snx_remove_tree(tmp);
-            goto done;
-        }
+    if (snx_link(inputs, n, exports, export_count, base_name(build->output), &linked, error, sizeof(error))) {
+        snx_error("linking failed: %s", error);
+        goto done;
+    }
+    if (snx_write_file(tmp, linked.data, linked.size) || snx_replace(tmp, build->output)) {
+        snx_error("linking failed: cannot write %s", build->output);
+        if (snx_is_file(tmp)) snx_remove_tree(tmp);
+        goto done;
     }
     if (!options->quiet) {
         printf("LLVM module: %.1f MB, %lu entries\n", (double)linked.size / 1000000.0, (unsigned long)entry_count);

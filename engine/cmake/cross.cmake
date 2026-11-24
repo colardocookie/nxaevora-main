@@ -2,7 +2,7 @@
 # Copyright 2026 the ScarletNX contributors
 #
 # The target's flags for what is compiled outside CMake's own compiles (FFmpeg's and OpenSSL's builds and the
-# recompiler's runtime library), as cmake/apple.cmake gives them for Apple's: SNX_TARGET_FLAGS. It holds:
+# recompiler's runtime library): SNX_TARGET_FLAGS. It holds:
 #   - SNX_ARCH_FLAGS, the CPU baseline the whole build compiles for, which CMake's compiles get too (added here).
 #     PowerPC64 builds for SNX_PPC64_CPU, POWER8 unless the build names an older big-endian machine (970 for the
 #     PowerPC G5, power4 to power7). ppc64le starts at POWER8. Before it there is no lqarx/stqcx., and Clang would call
@@ -45,7 +45,7 @@ endif()
 
 set(SNX_TARGET_FLAGS "")
 set(SNX_TARGET_LDFLAGS "")
-if(CMAKE_CROSSCOMPILING AND CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT ANDROID)
+if(CMAKE_CROSSCOMPILING AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
     if(NOT CMAKE_C_COMPILER_TARGET)
         message(FATAL_ERROR "A Linux cross build names its target in CMAKE_C_COMPILER_TARGET (e.g. "
                             "powerpc64le-linux-gnu), which FFmpeg, OpenSSL and the runtime library are built for.")

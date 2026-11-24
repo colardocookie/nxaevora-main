@@ -58,8 +58,7 @@ void backend_padmap_request(int control, int bit);
 void backend_window_size(int* w, int* h);
 /* The part of the window not under system bars or a camera cutout, in pixels (the whole window when fullscreen) */
 void backend_window_safe(int* x, int* y, int* w, int* h);
-/* 0 while nothing presented can be seen: the window minimized or covered, or its surface taken away (Android in the
-   background) */
+/* 0 while nothing presented can be seen: the window minimized or covered, or its surface taken away */
 int backend_window_shown(void);
 /* For a screen before the game starts that a press skips: what was pressed since the last call ("the key Return"),
    NULL for nothing. The presses that count are a key that types, an arrow or the keypad (not Esc, the function keys,
@@ -70,8 +69,7 @@ int backend_window_shown(void);
    main thread */
 const char* backend_pressed(void);
 /* the folder to find the launcher's files from, as snx_menu_dir takes it (malloc'd, NULL out of memory): the game's
-   own folder (g_exedir), which snx_menu_dir walks up from to the data folder; on Android the data folder in the
-   app's files (src/gui/android.c), wherever the game is */
+   own folder (g_exedir), which snx_menu_dir walks up from to the data folder */
 char* backend_launcher_folder(void);
 /* changes whenever the surface comes back, so the renderer knows to make a new Vulkan surface */
 u32 backend_window_generation(void);
@@ -81,6 +79,8 @@ u32 backend_window_generation(void);
 int backend_keyboard_show(const OverlayKeyboard* k);
 void backend_keyboard_hide(u32 ticket);
 
+/* fatal's line in the early error file (SNX_ERROR_LOG, common.h). Called on every platform and from any thread */
+void win_fatal_log(const char* msg);
 /* fatal's message box. Called on every platform and from any thread; does nothing where there is no box */
 void win_fatal_box(const char* msg);
 
@@ -89,9 +89,8 @@ void win_fatal_box(const char* msg);
 typedef struct VkInstance_T* VkInstance;
 typedef struct VkSurfaceKHR_T* VkSurfaceKHR;
 void* backend_vk_loader(void); /* the address of vkGetInstanceProcAddr */
-/* the Vulkan driver the program's own folders carry, where there is one (an Apple app's MoltenVK, or the copy beside a
-   game's runtime): the address of vkGetInstanceProcAddr, NULL where the system's loader serves. A headless run loads
-   it here, as a window's run has SDL load it */
+/* the Vulkan driver the program's own folders carry, where there is one: the address of vkGetInstanceProcAddr, NULL
+   where the system's loader serves. A headless run loads it here, as a window's run has SDL load it */
 void* backend_vk_driver(void);
 const char* const* backend_vk_extensions(u32* n); /* the instance extensions the window needs */
 int backend_vk_surface(VkInstance instance, VkSurfaceKHR* surface);

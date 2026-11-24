@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* SDL3 backend, the window backend on Linux, Windows and Android: the window and its Vulkan surface, keyboard, gamepads
+/* SDL3 backend, the window backend on Linux and Windows: the window and its Vulkan surface, keyboard, gamepads
    and touch. Runs natively on Wayland and on X11 (SDL_VIDEO_DRIVER=x11 picks X11), and takes the unattended-run
    options (seconds, frames, shot, shot_every, press_len, script: platform/unattended.c). */
 #include "nx/runtime/main.h"
@@ -29,6 +29,7 @@
 #include "nx/runtime/platform/gamepad.h"
 #include "common/utilities/pad_sdl.h"
 #include "common/utilities/pad_screen.h"
+#include "common/utilities/exit_codes.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -41,12 +42,6 @@
 #include "common/utilities/window_icon.h"
 #include "nx/runtime/platform/controls_png.h"
 #include "common/utilities/build_info.h"
-#ifdef __APPLE__
-#include <dlfcn.h>
-#endif
-#ifdef __ANDROID__
-#include <jni.h>
-#endif
 
 static SDL_Window* g_win;
 /* the window's size in pixels, width | height << 32: the renderer reads it on its own thread, and one atomic keeps
@@ -74,7 +69,7 @@ static struct {
     SDL_Rect area;
 } g_typing;
 static int g_audio_ready;
-static int g_hidden;      /* the app is in the background (Android) */
+static int g_hidden;      /* the app is in the background */
 static int g_given_up;    /* the window went to a fatal error's screen: the renderer presents nothing more */
 static char g_title[256]; /* the game's name, for that screen */
 /* The press that skips main.c's prepare screen (backend_pressed), taken while that screen asks for one: from its
@@ -95,7 +90,7 @@ static struct {
     } pad[SNX_GAMEPADS];
     char said[64];
 } g_press;
-static SDL_Haptic* g_buzzer; /* the phone's vibrator, for the on-screen controls' taps (Android) */
+static SDL_Haptic* g_buzzer; /* a haptic device for the on-screen controls' taps, when one serves */
 static u32 g_generation;     /* the window's surface came back this many times */
 
 struct PAudio {
@@ -263,7 +258,7 @@ void backend_window_safe(int* x, int* y, int* w, int* h) {
         backend_window_size(w, h);
     }
 }
-/* as SDL queues each event, from its own thread: on Android the main loop is held while the app is in the
+/* as SDL queues each event, from its own thread: the main loop may be held while the app is in the
    background, and presenting must stop before that */
 static bool SDLCALL lifecycle(void* unused, SDL_Event* e) {
     (void)unused;
@@ -280,11 +275,8 @@ static bool SDLCALL lifecycle(void* unused, SDL_Event* e) {
     }
     if (e->type == SDL_EVENT_WILL_ENTER_BACKGROUND) __atomic_store_n(&g_hidden, 1, __ATOMIC_RELEASE);
     if (e->type == SDL_EVENT_DID_ENTER_FOREGROUND) {
-#ifndef SDL_PLATFORM_IOS
-        /* Android makes the window's surface anew when the app comes back. iOS keeps it: making another from the
-           renderer's thread is UIKit work off the main thread, which aborts the app */
+        /* the system makes the window's surface anew when the app comes back */
         __atomic_add_fetch(&g_generation, 1, __ATOMIC_RELEASE);
-#endif
         __atomic_store_n(&g_hidden, 0, __ATOMIC_RELEASE);
     }
     return true;
@@ -331,23 +323,8 @@ static void controls_atlas(void) {
     SDL_DestroySurface(rgba);
     SDL_DestroySurface(png);
 }
-/* Android's vibrator, which SDL lists as VIBRATOR_SERVICE; a gamepad's motors are no buzz for a finger */
+/* a gamepad's motors are no buzz for a finger */
 static void buzzer_open(void) {
-#ifdef __ANDROID__
-    int n = 0;
-    SDL_HapticID* ids;
-    if (!SDL_InitSubSystem(SDL_INIT_HAPTIC)) return;
-    ids = SDL_GetHaptics(&n);
-    for (int i = 0; ids && i < n && !g_buzzer; i++) {
-        const char* name = SDL_GetHapticNameForID(ids[i]);
-        if (name && !strcmp(name, "VIBRATOR_SERVICE")) g_buzzer = SDL_OpenHaptic(ids[i]);
-    }
-    SDL_free(ids);
-    if (g_buzzer && !SDL_InitHapticRumble(g_buzzer)) {
-        SDL_CloseHaptic(g_buzzer);
-        g_buzzer = NULL;
-    }
-#endif
 }
 
 void video_init(const char* title, const char* addons) {
@@ -356,28 +333,15 @@ void video_init(const char* title, const char* addons) {
         unattended_start();
         if (!g_renderer->start()) fatal("Headless Vulkan could not start (see the log). Vulkan 1.3 is required.");
         LOG("renderer: Vulkan headless (no window, surface or swapchain)\n");
+        /* the renderer runs: a fatal from here exits SNX_EXIT_CRASH, and the box keeps its headless guard */
+        plat_window_ready();
         return;
     }
-#ifdef __ANDROID__
-    SDL_SetHint(SDL_HINT_ANDROID_TRAP_BACK_BUTTON, "1"); /* back opens the game's menu (overlay.c), not leaves */
-#endif
     /* a finger and the mouse each reach the touch screen once: SDL would also send each as the other, and a pen as both
        (it stays a finger) */
     SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");
     SDL_SetHint(SDL_HINT_MOUSE_TOUCH_EVENTS, "0");
     SDL_SetHint(SDL_HINT_PEN_MOUSE_EVENTS, "0");
-#ifdef __APPLE__
-    { /* the app's MoltenVK, or the copy deployed beside a game's runtime, which is outside the bundle: SDL's own search
-         finds neither there, and the system may have no loader (docs/APPLE.md). Elsewhere the system's loader */
-        char* self = snx_executable(NULL), *driver = self ? snx_vulkan_driver(self) : NULL;
-        if (driver && !SDL_GetHint(SDL_HINT_VULKAN_LIBRARY)) {
-            SDL_SetHint(SDL_HINT_VULKAN_LIBRARY, driver);
-            LOG("vulkan: the Vulkan driver at %s\n", driver);
-        }
-        free(self);
-        free(driver);
-    }
-#endif
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) fatal("SDL could not start its video: %s", SDL_GetError());
     gamepad_scan();
     /* SDL subsystem initialization belongs to the main thread, before the guest can open audout sessions. */
@@ -411,6 +375,8 @@ void video_init(const char* title, const char* addons) {
         fatal("Vulkan could not start (see the log). " SNX_PROGRAM_NAME
               " needs a GPU and driver with Vulkan 1.3.");
     LOG("renderer: Vulkan\n");
+    /* the window and the renderer both run: from here fatal shows its box and a crash exits SNX_EXIT_CRASH */
+    plat_window_ready();
     /* not for an unattended run: nobody is at the screen, and it would cover the desktop of whoever is */
     if (g_settings.fullscreen && !unattended_active()) set_fullscreen(1);
 #ifdef _WIN32
@@ -421,24 +387,7 @@ void video_init(const char* title, const char* addons) {
 
 void* backend_vk_loader(void) { return (void*)SDL_Vulkan_GetVkGetInstanceProcAddr(); }
 void* backend_vk_driver(void) {
-#ifdef __APPLE__
-    /* The library the program's folders carry (snx_vulkan_driver), for a run with no window: SDL's own search of the
-       bundle needs its video subsystem, and a game's runtime copy is outside the bundle. It stays loaded for the run,
-       as SDL's does */
-    static void* module;
-    static int looked;
-    if (!looked) {
-        char* self = snx_executable(NULL), *driver = self ? snx_vulkan_driver(self) : NULL;
-        looked = 1;
-        if (driver && (module = dlopen(driver, RTLD_NOW | RTLD_LOCAL)) != NULL)
-            LOG("vulkan: the Vulkan driver at %s\n", driver);
-        free(self);
-        free(driver);
-    }
-    return module ? (void*)dlsym(module, "vkGetInstanceProcAddr") : NULL;
-#else
     return NULL;
-#endif
 }
 const char* const* backend_vk_extensions(u32* n) {
     Uint32 c = 0;
@@ -757,39 +706,13 @@ static void ui_draw_sdl(SDL_Renderer* r, SDL_Texture* atlas, int aw, int ah, con
     }
 }
 /* 0 when no box could be shown (no window, the renderer didn't let go, no renderer or atlas here) */
-#ifdef __ANDROID__
-/* the activity's share(path) (GameActivity.java): the file, to the app the player picks */
-static int android_share(const char* path) {
-    JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
-    jobject activity = (jobject)SDL_GetAndroidActivity();
-    jclass type;
-    jmethodID share;
-    jstring text;
-    int ok;
-    if (!env || !activity) return 0;
-    type = (*env)->GetObjectClass(env, activity);
-    share = (*env)->GetMethodID(env, type, "share", "(Ljava/lang/String;)V");
-    text = share ? (*env)->NewStringUTF(env, path) : NULL;
-    if (text) (*env)->CallVoidMethod(env, activity, share, text);
-    ok = text && !(*env)->ExceptionCheck(env);
-    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
-    if (text) (*env)->DeleteLocalRef(env, text);
-    (*env)->DeleteLocalRef(env, type);
-    (*env)->DeleteLocalRef(env, activity);
-    return ok;
-}
-#endif
-/* Share Log, as the launcher's: scarletnx.log beside the game's log, sent to the app the player picks on Android; its
+/* Share Log, as the launcher's: scarletnx.log beside the game's log; its
    path in saved once written (else left as it was), what it did in said */
 static void fatal_share(const char* msg, const char* game_log, char* saved, size_t saved_size, char* said,
                         size_t size) {
     char made[1300], *folder = snx_dirname(game_log);
     int ok = folder && !fatal_share_log(folder, snx_build_info(), msg, game_log, made, sizeof made);
     if (!ok) snprintf(said, size, "The log could not be saved: %s", folder ? made : game_log);
-#ifdef __ANDROID__
-    else if (!android_share(made))
-        snprintf(said, size, "Log saved to %s, but nothing took it to share.", made);
-#endif
     else
         snprintf(said, size, "Log saved to %s.", made);
     if (ok) snprintf(saved, saved_size, "%s", made);
@@ -812,12 +735,8 @@ static int fatal_at(const SnxOverlayError* panel, float x, float y) {
     return FATAL_OUT;
 }
 static int fatal_screen(const char* msg) {
-#ifdef __ANDROID__
-    static const char* const how = "Share Log sends the game's log, which has what ran last.";
-#else
     static const char* const how = "The game's log has what ran last: ";
     char log_url[3608];
-#endif
     static SnxUiQuad quads[4096]; /* as many as the renderer's list: a long message's rows on a wide window */
     SnxUiList l = {quads, 0, 4096};
     char name[256], what[1400], log_path[1200], said[1400], saved[1300] = "", *full;
@@ -870,9 +789,6 @@ static int fatal_screen(const char* msg) {
     full = snx_absolute(log_path);
     if (full && strlen(full) < sizeof log_path) memcpy(log_path, full, strlen(full) + 1);
     free(full);
-#ifdef __ANDROID__
-    snprintf(what, sizeof what, "%s", how);
-#else
     /* a link only to a log that is there: plat.c makes it once the game's code has loaded, so an error before that has
        none, and the path stays plain text */
     if (snx_is_file(log_path) && fatal_log_url(log_path, log_url, sizeof log_url)) {
@@ -880,7 +796,6 @@ static int fatal_screen(const char* msg) {
         panel.log = log_path;
     } else
         snprintf(what, sizeof what, "%s%s", how, log_path);
-#endif
     since = SDL_GetTicks();
     while (!done) {
         SDL_Event e;
@@ -950,9 +865,7 @@ static int fatal_screen(const char* msg) {
                     if (pointer == 3 || (at == pressed && at == FATAL_OUT))
                         done = 1;
                     else if (at == pressed && at == FATAL_LINK) {
-#ifndef __ANDROID__
                         if (!SDL_OpenURL(log_url)) LOG("video: could not open the log: %s\n", SDL_GetError());
-#endif
                     } else if (at == pressed)
                         item = at;
                     pointer = 0;
@@ -987,38 +900,30 @@ static int fatal_screen(const char* msg) {
     SDL_DestroyRenderer(r);
     return 1;
 }
+/* The early error file's path: main.c's snx_early_error_path, with the folder made before the write */
+static char* early_error_path(void) { return snx_early_error_path(1); }
+/* appends text to the early error file. 1 when the state folder is known (the write was tried), 0 when it is not */
+static int win_early_error_line(const char* text) {
+    char* path = early_error_path();
+    if (!path) return 0;
+    if (snx_log_lines(path, text)) {
+        char why[256];
+        fprintf(stderr, "%s could not be written (%s)\n", path, snx_os_error(why, sizeof why));
+    }
+    free(path);
+    return 1;
+}
+/* plat.c's fatal error, its line in the early error file */
+void win_fatal_log(const char* msg) {
+    char* line = snx_format("%s: %s", g_exename[0] ? g_exename : "scarletnx", msg);
+    win_early_error_line(line);
+    free(line);
+}
 /* plat.c's fatal error: the screen above on the main thread, which owns the window; SDL's box when it can't be drawn.
    From another thread, the main thread's loop (video_poll) shows it, and this thread waits for the exit; when the main
    thread doesn't come (held up elsewhere), Windows' own box (it takes any thread) and none on Linux: the error is in
    the log and on stderr. Nothing for an unattended run, where nobody would close it */
 void win_fatal_box(const char* msg) {
-    /* beside the launcher's log (docs/USAGE.md#folders), whose Share Log sends it, for a game of a data folder: in that
-       folder's state folder; another folder's game beside its own log, or before it has one in its folder; on iOS in
-       the app's Documents' logs/, which the Files app shows, since a phone shows no stderr */
-    {
-#ifdef SDL_PLATFORM_IOS
-        char* folder = snx_strdup("logs");
-#else
-        char here[sizeof g_exedir], *moved, *folder;
-        size_t n = strlen(g_exedir);
-        snprintf(here, sizeof here, "%.*s", (int)(n ? n - 1 : 0), g_exedir); /* without its separator */
-        moved = snx_user_path(here[0] ? here : ".", SNX_USER_STATE);
-        folder = moved && strcmp(moved, here[0] ? here : ".") ? snx_menu_dir(here[0] ? here : ".", SNX_USER_STATE)
-                 : g_statedir[0]                              ? snx_strdup(g_statedir)
-                 : here[0]                                    ? snx_strdup(here)
-                                                              : NULL; /* nothing known yet: stderr has it */
-        free(moved);
-#endif
-        char* path = folder && !snx_mkdirs(folder) ? snx_path_join(folder, SNX_ERROR_LOG) : NULL;
-        char* line = snx_format("%s: %s", g_exename[0] ? g_exename : "scarletnx", msg);
-        if (path && snx_log_lines(path, line)) {
-            char why[256];
-            fprintf(stderr, "%s could not be written (%s)\n", path, snx_os_error(why, sizeof why));
-        }
-        free(line);
-        free(path);
-        free(folder);
-    }
     if (g_opt_headless || unattended_active()) return;
     if (SDL_IsMainThread()) {
         /* an error another thread left first: this one followed from it */
@@ -1132,7 +1037,7 @@ static void hotkey(SDL_Keycode k) {
 /* The game's menu takes the keys, the buttons, the fingers and the mouse while it is open, and the keyboard's box
    while it shows and the menu doesn't. Back, Home and F2 open and close the menu, and they and Esc end the on-screen
    controls' edit mode. Under ui_lock: the renderer draws them on its thread */
-/* a finger's id, the pen's apart: SDL gives a pen's touch the id 1 on every platform, the id Android and Wayland
+/* a finger's id, the pen's apart: SDL gives a pen's touch the id 1 on every platform, the id some systems
    give a first finger and any finger may have, and no real finger's id sets bit 63 */
 static u64 finger_id(const SDL_TouchFingerEvent* f) {
     return (u64)f->fingerID | (f->touchID == SDL_PEN_TOUCHID ? 1ull << 63 : 0);
@@ -1438,7 +1343,7 @@ static void touch_mouse(const SDL_Event* e) {
 }
 /* the keys that skip: the letters, digits, Return, Backspace, Tab, Space and the punctuation after them, the arrows
    and the keypad. Not Esc, which quits, the function keys (the runtime's own: F2 opens the menu), Home and the keys
-   around it, the lock and modifier keys, media keys or Android's back; nor a key with Ctrl, Alt or the system key, the
+   around it, the lock and modifier keys, media keys or a back key; nor a key with Ctrl, Alt or the system key, the
    desktop's shortcuts (the system key alone skipped one run) */
 static int press_key(const SDL_KeyboardEvent* k) {
     SDL_Scancode c = k->scancode;
@@ -1561,8 +1466,8 @@ static int press_event(const SDL_Event* e) {
     return 0;
 }
 /* SDL's text input on while the keyboard's box shows with no menu over it, for the kind of text it asks, at its line:
-   where an input method puts its window, and what the system's keyboard leaves in view (Android and iOS move the
-   window for it). The box's answer goes to am once no lock of the UI's is held, as am shows the box under its own */
+   where an input method puts its window, and what the system's keyboard leaves in view. The box's answer goes to am
+   once no lock of the UI's is held, as am shows the box under its own */
 static void keyboard_sync(void) {
     char text[OVERLAY_KB_TEXT];
     OverlayTyping t;
@@ -1622,7 +1527,7 @@ void video_poll(void) {
     if (left) { /* another thread's fatal error, left for this thread to show */
         __atomic_store_n(&g_fatal_taken, 1, __ATOMIC_RELEASE);
         if (!fatal_screen(left)) SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, SNX_PROGRAM_NAME, left, g_win);
-        plat_exit_now(1);
+        plat_exit_now(SNX_EXIT_CRASH);
     }
     /* the menu, or the keyboard's box, had the controls when this poll began: the press that closes it (B, or A that
        gives the box's line) is in this poll's state */
@@ -1861,12 +1766,7 @@ void video_poll(void) {
 }
 
 char* backend_launcher_folder(void) {
-#ifdef SDL_PLATFORM_ANDROID
-    const char* files = SDL_GetAndroidInternalStoragePath();
-    return files ? snx_path_join(files, SNX_PORTABLE_DIR) : NULL;
-#else
     return snx_strdup(g_exedir[0] ? g_exedir : ".");
-#endif
 }
 const char* backend_pressed(void) {
     if (g_opt_headless) return NULL; /* no window, and SDL isn't started for one */

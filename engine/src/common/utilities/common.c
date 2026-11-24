@@ -7,15 +7,13 @@
 /* MAP_ANONYMOUS (snx_vm_reserve) is POSIX only since 2024: older glibc and musl define it with this */
 #define _DEFAULT_SOURCE
 #endif
-#ifdef __APPLE__
-/* the POSIX names above would hide Darwin's own (the sysctl and dyld types) */
-#define _DARWIN_C_SOURCE
-#endif
 #include "common/utilities/common.h"
 #include "common/utilities/ascii.h"
 #include "common/utilities/bits.h"
 #include "common/utilities/endian.h"
+#include "common/utilities/exit_codes.h"
 #include "common/utilities/ini_lines.h"
+#include "common/utilities/progress.h"
 #include <errno.h>
 #include <limits.h>
 #include <stdarg.h>
@@ -49,21 +47,12 @@
 #include <sys/sysctl.h>
 #include <sys/user.h> /* struct kinfo_proc */
 #endif
-#ifdef __APPLE__
-#include <TargetConditionals.h>
-#include <libkern/OSCacheControl.h> /* sys_icache_invalidate */
-#include <mach-o/dyld.h>
-#include <mach/mach.h>
-#if TARGET_OS_IPHONE
-#include <os/proc.h>
-#endif
-#endif
 
 void* snx_alloc(size_t size) {
     void* p = malloc(size ? size : 1);
     if (!p) {
         fputs("scarletnx: out of memory\n", stderr);
-        exit(1);
+        exit(SNX_EXIT_INTERNAL);
     }
     return p;
 }
@@ -71,7 +60,7 @@ void* snx_realloc(void* ptr, size_t size) {
     void* p = realloc(ptr, size ? size : 1);
     if (!p) {
         fputs("scarletnx: out of memory\n", stderr);
-        exit(1);
+        exit(SNX_EXIT_INTERNAL);
     }
     return p;
 }
@@ -142,15 +131,16 @@ int snx_error(const char* fmt, ...) {
     char line[2048];
     va_list ap;
     va_start(ap, fmt);
-    if (g_common.error_sink) {
-        vsnprintf(line, sizeof line, fmt, ap);
+    vsnprintf(line, sizeof line, fmt, ap);
+    va_end(ap);
+    if (g_common.error_sink)
         g_common.error_sink(line);
-    } else {
+    else {
         fputs("scarletnx: ", stderr);
-        vfprintf(stderr, fmt, ap);
+        fputs(line, stderr);
         fputc('\n', stderr);
     }
-    va_end(ap);
+    snx_progress_note_error(line);
     return 1;
 }
 char* snx_os_error(char* out, size_t size) {
@@ -207,9 +197,12 @@ static char* utf8(const wchar_t* s) {
     WideCharToMultiByte(CP_UTF8, 0, s, -1, p, n, NULL, NULL);
     return p;
 }
-static DWORD attributes(const char* path) {
+/* the file's attributes, or INVALID_FILE_ATTRIBUTES with the host's reason in *error (NULL when not wanted): the reason
+   is read before the path's copy is freed, which may change the host's last error */
+static DWORD attributes(const char* path, DWORD* error) {
     wchar_t* p = wide(path);
     DWORD a = p ? GetFileAttributesW(p) : INVALID_FILE_ATTRIBUTES;
+    if (error) *error = a == INVALID_FILE_ATTRIBUTES ? GetLastError() : ERROR_SUCCESS;
     free(p);
     return a;
 }
@@ -482,15 +475,6 @@ char* snx_executable(const char* argv0) {
         buf[n] = 0;
         return snx_strdup(buf);
     }
-#elif defined(__APPLE__)
-    char buf[8192];
-    uint32_t size = sizeof(buf);
-    char* resolved;
-    if (!_NSGetExecutablePath(buf, &size) && (resolved = realpath(buf, NULL)) != NULL) {
-        char* path = snx_strdup(resolved);
-        free(resolved);
-        return path;
-    }
 #endif
     {
         /* the program's own file, where snx_find_tool keeps the name of a link to it */
@@ -501,7 +485,7 @@ char* snx_executable(const char* argv0) {
 }
 int snx_is_file(const char* path) {
 #ifdef _WIN32
-    DWORD a = attributes(path);
+    DWORD a = attributes(path, NULL);
     return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY);
 #else
     struct stat st;
@@ -510,7 +494,7 @@ int snx_is_file(const char* path) {
 }
 int snx_is_dir(const char* path) {
 #ifdef _WIN32
-    DWORD a = attributes(path);
+    DWORD a = attributes(path, NULL);
     return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY) != 0;
 #else
     struct stat st;
@@ -519,7 +503,7 @@ int snx_is_dir(const char* path) {
 }
 int snx_is_link(const char* path) {
 #ifdef _WIN32
-    DWORD a = attributes(path);
+    DWORD a = attributes(path, NULL);
     return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
 #else
     struct stat st;
@@ -528,10 +512,21 @@ int snx_is_link(const char* path) {
 }
 int snx_path_exists(const char* path) {
 #ifdef _WIN32
-    return attributes(path) != INVALID_FILE_ATTRIBUTES;
+    return attributes(path, NULL) != INVALID_FILE_ATTRIBUTES;
 #else
     struct stat st;
     return !lstat(path, &st);
+#endif
+}
+int snx_path_missing(const char* path) {
+#ifdef _WIN32
+    DWORD code;
+    if (attributes(path, &code) != INVALID_FILE_ATTRIBUTES) return 0;
+    return code == ERROR_FILE_NOT_FOUND || code == ERROR_PATH_NOT_FOUND;
+#else
+    struct stat st;
+    if (!lstat(path, &st)) return 0;
+    return errno == ENOENT || errno == ENOTDIR;
 #endif
 }
 static int mkdir_one(const char* path) {
@@ -559,22 +554,38 @@ void snx_free_strings(char** strings, size_t count) {
     for (size_t i = 0; i < count; ++i) free(strings[i]);
     free(strings);
 }
+/* the OS's last error code, which snx_os_error reads: GetLastError on Windows, errno on POSIX */
+#ifdef _WIN32
+typedef DWORD SnxFailCode;
+static SnxFailCode fail_code(void) { return GetLastError(); }
+static void fail_code_keep(SnxFailCode code) { SetLastError(code); }
+#else
+typedef int SnxFailCode;
+static SnxFailCode fail_code(void) { return errno; }
+static void fail_code_keep(SnxFailCode code) { errno = code; }
+#endif
 int snx_list_dir(const char* path, char*** names, size_t* count) {
     char** list = NULL;
     size_t n = 0, cap = 0;
     int error = 0;
+    SnxFailCode code = 0;
 #ifdef _WIN32
     WIN32_FIND_DATAW data;
     char* pattern = snx_path_join(path, "*");
     wchar_t* wp = wide(pattern);
     HANDLE h = wp ? FindFirstFileW(wp, &data) : INVALID_HANDLE_VALUE;
+    if (h == INVALID_HANDLE_VALUE) code = fail_code();
     free(pattern);
     free(wp);
-    if (h == INVALID_HANDLE_VALUE) return 1;
+    if (h == INVALID_HANDLE_VALUE) {
+        fail_code_keep(code);
+        return 1;
+    }
     do {
         if (!wcscmp(data.cFileName, L".") || !wcscmp(data.cFileName, L"..")) continue;
         char* name = utf8(data.cFileName);
         if (!name) {
+            code = fail_code();
             error = 1;
             break;
         }
@@ -584,7 +595,10 @@ int snx_list_dir(const char* path, char*** names, size_t* count) {
         }
         list[n++] = name;
     } while (FindNextFileW(h, &data));
-    if (!error && GetLastError() != ERROR_NO_MORE_FILES) error = 1;
+    if (!error && GetLastError() != ERROR_NO_MORE_FILES) {
+        code = fail_code();
+        error = 1;
+    }
     FindClose(h);
 #else
     DIR* dir = opendir(path);
@@ -594,6 +608,7 @@ int snx_list_dir(const char* path, char*** names, size_t* count) {
         errno = 0;
         ent = readdir(dir);
         if (!ent) {
+            code = fail_code();
             error = errno != 0;
             break;
         }
@@ -608,6 +623,7 @@ int snx_list_dir(const char* path, char*** names, size_t* count) {
 #endif
     if (error) {
         snx_free_strings(list, n);
+        fail_code_keep(code);
         return 1;
     }
     if (n > 1) qsort(list, n, sizeof(*list), snx_compare_strings);
@@ -631,11 +647,15 @@ int snx_remove_tree(const char* path) {
     size_t n;
     int rc = 0;
     int dir = snx_is_dir(path);
+    SnxFailCode first = 0;
     if (dir && !snx_is_link(path)) {
         if (snx_list_dir(path, &names, &n)) return 1;
         for (size_t i = 0; i < n; ++i) {
             p = snx_path_join(path, names[i]);
-            if (snx_remove_tree(p)) rc = 1;
+            if (snx_remove_tree(p)) {
+                if (!rc) first = fail_code(); /* the first failure's code, over the folder's own that follows */
+                rc = 1;
+            }
             free(p);
         }
         snx_free_strings(names, n);
@@ -643,7 +663,12 @@ int snx_remove_tree(const char* path) {
 #ifndef _WIN32
     if (snx_is_link(path)) dir = 0;
 #endif
-    return remove_one(path, dir) || rc;
+    if (remove_one(path, dir)) {
+        if (!rc) first = fail_code();
+        rc = 1;
+    }
+    if (rc) fail_code_keep(first);
+    return rc;
 }
 unsigned char* snx_read_file(const char* path, size_t* size) {
     FILE* f = snx_fopen(path, "rb");
@@ -702,6 +727,96 @@ int snx_write_file(const char* path, const void* data, size_t size) {
     if (!f) return 1;
     int result = fwrite(data, 1, size, f) != size;
     return fclose(f) != 0 || result;
+}
+/* a write() of a size_t in pieces is at most this many bytes: WriteFile takes a DWORD */
+#define SNX_WRITE_NEW_CHUNK ((size_t)1 << 30)
+int snx_write_new_file(const char* path, const void* data, size_t size, char* error, size_t error_size) {
+    const unsigned char* bytes = (const unsigned char*)data;
+    size_t done = 0;
+    int status = 0;
+    int stays_here = 0;
+    char why[256], stays[256];
+    SnxFailCode code = 0;
+    if (error && error_size) error[0] = 0;
+    stays[0] = 0;
+    if (!path) return -1;
+#ifdef _WIN32
+    wchar_t* wide_path = wide(path);
+    HANDLE h = wide_path ? CreateFileW(wide_path, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL)
+                         : INVALID_HANDLE_VALUE;
+    if (h == INVALID_HANDLE_VALUE) {
+        code = fail_code();
+        free(wide_path);
+        if (code == ERROR_FILE_EXISTS || code == ERROR_ALREADY_EXISTS) return 1;
+        fail_code_keep(code);
+        status = -1;
+    } else {
+        while (done < size) {
+            DWORD chunk = (DWORD)(size - done > SNX_WRITE_NEW_CHUNK ? SNX_WRITE_NEW_CHUNK : size - done);
+            DWORD wrote = 0;
+            if (!WriteFile(h, bytes + done, chunk, &wrote, NULL) || wrote != chunk) {
+                code = fail_code();
+                status = -1;
+                break;
+            }
+            done += wrote;
+        }
+        if (!CloseHandle(h) && !status) {
+            code = fail_code();
+            status = -1;
+        }
+        if (status && !DeleteFileW(wide_path)) { /* the write's reason stays the main one */
+            snx_os_error(stays, sizeof stays);
+            stays_here = 1;
+        }
+        free(wide_path);
+        if (!status) return 0;
+        fail_code_keep(code);
+    }
+#else
+    int fd = open(path, O_WRONLY | O_CREAT | O_EXCL, 0666);
+    if (fd < 0) {
+        code = errno;
+        if (code == EEXIST) return 1;
+        errno = code;
+        status = -1;
+    } else {
+        while (done < size) {
+            ssize_t wrote = write(fd, bytes + done, size - done);
+            if (wrote < 0) {
+                if (errno == EINTR) continue;
+                code = errno;
+                status = -1;
+                break;
+            }
+            if (!wrote) {
+                code = EIO;
+                status = -1;
+                break;
+            }
+            done += (size_t)wrote;
+        }
+        if (close(fd) && !status) {
+            code = errno;
+            status = -1;
+        }
+        if (status && unlink(path)) {
+            snx_os_error(stays, sizeof stays);
+            stays_here = 1;
+        }
+        if (!status) return 0;
+        errno = code;
+    }
+#endif
+    if (error && error_size) {
+        snx_os_error(why, sizeof why);
+        if (stays_here)
+            snprintf(error, error_size, "%s could not be written: %s, and the partial file stays at that path (%s)",
+                     path, why, stays);
+        else
+            snprintf(error, error_size, "%s could not be written: %s", path, why);
+    }
+    return -1;
 }
 int snx_write_changed(const char* path, const void* data, size_t size) {
     size_t n;
@@ -807,50 +922,6 @@ int snx_symlink(const char* target, const char* link) {
 #else
     return symlink(target, link) != 0;
 #endif
-}
-char* snx_vulkan_driver(const char* program) {
-#ifdef __APPLE__
-    /* beside the program: the copy a game's runtime is deployed with (snx_deploy_vulkan_driver), which is outside the
-       app that carries the library; then the app bundle's Frameworks, ../Frameworks from its Contents/MacOS; then the
-       framework an iOS app holds in the bundle itself */
-    static const char* const own[] = {"libMoltenVK.dylib", "../Frameworks/libMoltenVK.dylib",
-                                      "Frameworks/MoltenVK.framework/MoltenVK"};
-    char* dir = snx_dirname(program);
-    char* path = NULL;
-    for (size_t i = 0; !path && dir && i < sizeof own / sizeof* own; ++i) {
-        char* found = snx_path_join(dir, own[i]);
-        if (found && snx_is_file(found)) path = found;
-        else free(found);
-    }
-    free(dir);
-    return path;
-#else
-    (void)program;
-    return NULL;
-#endif
-}
-int snx_deploy_vulkan_driver(const char* program, const char* folder) {
-    char *from = snx_vulkan_driver(program), why[256];
-    int rc = 0;
-    /* the system's loader serves everywhere else, and a build that carries none (a checkout's) leaves the system's */
-    if (!from) return 0;
-    char* to = snx_path_join(folder, "libMoltenVK.dylib");
-    if (!to) {
-        snx_error("cannot name the Vulkan driver's place in %s", folder);
-        free(from);
-        return 1;
-    }
-    /* A second name where the disk allows one, so each game does not hold a copy, else a copy. A read-only app image,
-       and an app macOS translocated, take no second name of the library they carry, which is why the copy follows a
-       link that failed. A name of another app's library is broken rather than written through, which would change that
-       app's library and signature too */
-    if (snx_is_file(to) && snx_remove_tree(to))
-        rc = snx_error("cannot remove the Vulkan driver at %s: %s", to, snx_os_error(why, sizeof why));
-    else if (snx_link_file(from, to) && snx_copy_file(from, to))
-        rc = snx_error("cannot put the Vulkan driver %s in %s: %s", from, folder, snx_os_error(why, sizeof why));
-    free(to);
-    free(from);
-    return rc;
 }
 int snx_path_within(const char* path, const char* parent) {
     char *a = snx_absolute(path), *b = snx_absolute(parent);
@@ -1055,10 +1126,10 @@ int snx_same_file(const char* a, const char* b) {
 #endif
 }
 /* The per-user data folder, an installed build's and a build tree's: $XDG_DATA_HOME/nxaevora or
-   ~/.local/share/nxaevora, ~/Library/Application Support/nxaevora on macOS, %APPDATA%\nxaevora on Windows. These are
-   the folders SDL_GetPrefPath("nxaevora", ...) gives the GUI; the app's Documents on iOS. NULL when the environment
+   ~/.local/share/nxaevora, %APPDATA%\nxaevora on Windows. These are
+   the folders SDL_GetPrefPath("nxaevora", ...) gives the GUI. NULL when the environment
    names no home */
-#if !defined(_WIN32) && !defined(SNX_IOS)
+#if !defined(_WIN32)
 /* $var/name, else ~/fallback/name: the XDG spec ignores a relative path */
 static char* home_folder_named(const char* var, const char* fallback, const char* name) {
     const char* base = var ? getenv(var) : NULL;
@@ -1075,26 +1146,15 @@ char* snx_user_data_dir(void) {
 #ifdef _WIN32
     const char* base = getenv("APPDATA");
     return base && base[0] ? snx_path_join(base, SNX_DATA_NAME) : NULL;
-#elif defined(SNX_IOS)
-    /* the app's Documents, which the Files app and the Finder show the user (UIFileSharingEnabled, dist/apple) */
-    const char* home = getenv("HOME");
-    return home && home[0] ? snx_path_join(home, "Documents") : NULL;
-#elif defined(__APPLE__)
-    return home_folder_named(NULL, "Library/Application Support", SNX_DATA_NAME);
 #else
     return home_folder_named("XDG_DATA_HOME", ".local/share", SNX_DATA_NAME);
 #endif
 }
 /* the older version's user data folder: SNX_OLD_DATA_NAME where SNX_DATA_NAME is now */
 static char* old_user_data_dir(void) {
-#if defined(__ANDROID__) || defined(SNX_IOS)
-    /* iOS keeps its data in the app's Documents, and Android's old folder is a game's own: no separate old folder */
-    return NULL;
-#elif defined(_WIN32)
+#ifdef _WIN32
     const char* base = getenv("APPDATA");
     return base && base[0] ? snx_path_join(base, SNX_OLD_DATA_NAME) : NULL;
-#elif defined(__APPLE__)
-    return home_folder_named(NULL, "Library/Application Support", SNX_OLD_DATA_NAME);
 #else
     return home_folder_named("XDG_DATA_HOME", ".local/share", SNX_OLD_DATA_NAME);
 #endif
@@ -1106,16 +1166,6 @@ char* snx_user_dir(int kind) {
     if (kind == SNX_USER_CONFIG) return home_folder_named("XDG_CONFIG_HOME", ".config", SNX_DATA_NAME);
     if (kind == SNX_USER_STATE) return home_folder_named("XDG_STATE_HOME", ".local/state", SNX_DATA_NAME);
     if (kind == SNX_USER_CACHE) return home_folder_named("XDG_CACHE_HOME", ".cache", SNX_DATA_NAME);
-#endif
-#ifdef SNX_IOS
-    /* the Files app shows Documents: what is not the player's to move (settings, state, caches) is in Library, which the system makes */
-    if (kind != SNX_USER_DATA) {
-        const char* home = getenv("HOME");
-        char* base = home && home[0] ? snx_path_join(home, "Library/" SNX_DATA_NAME) : NULL;
-        dir = base ? snx_path_join(base, kind_names[kind]) : NULL;
-        free(base);
-        return dir;
-    }
 #endif
     data = snx_user_data_dir();
     if (!data || kind == SNX_USER_DATA) return data;
@@ -1134,9 +1184,6 @@ int snx_app_dir(const char* folder) {
     if (full && !app)
         app = !strncmp(base, SNX_PORTABLE_DIR, strlen(SNX_PORTABLE_DIR)) &&
               (!base[strlen(SNX_PORTABLE_DIR)] || snx_is_separator(base[strlen(SNX_PORTABLE_DIR)]));
-#ifdef __ANDROID__
-    if (full && !app) app = same_folder(full, SNX_ANDROID_DIR);
-#endif
     free(user);
     free(full);
     return app;
@@ -1384,7 +1431,7 @@ char* snx_dump_name(const char* input) {
 }
 const char* snx_folder_unfit(const char* folder, int run) {
     char* probe;
-#if defined(ST_NOEXEC) && !defined(__ANDROID__) /* there a game's code loads from a copy in the cache */
+#if defined(ST_NOEXEC)
     struct statvfs st;
 #endif
     if (!snx_path_exists(folder)) return "is not there";
@@ -1394,7 +1441,7 @@ const char* snx_folder_unfit(const char* folder, int run) {
     if (!probe) return "cannot be written";
     snx_remove_tree(probe);
     free(probe);
-#if defined(ST_NOEXEC) && !defined(__ANDROID__)
+#if defined(ST_NOEXEC)
     if (run && !statvfs(folder, &st) && (st.f_flag & ST_NOEXEC)) return "is on a disk that runs no programs (noexec)";
 #else
     (void)run;
@@ -1473,7 +1520,7 @@ unsigned snx_cpu_count(void) {
     SYSTEM_INFO info;
     GetSystemInfo(&info);
     return info.dwNumberOfProcessors ? info.dwNumberOfProcessors : 1;
-#elif defined(__linux__) || defined(__APPLE__)
+#elif defined(__linux__)
     long n = sysconf(_SC_NPROCESSORS_ONLN);
     return n > 0 ? (unsigned)n : 1;
 #elif defined(__FreeBSD__)
@@ -1499,13 +1546,7 @@ size_t snx_vm_page_size(void) {
 #endif
 }
 SnxU64 snx_footprint(void) {
-#if defined(__APPLE__)
-    task_vm_info_data_t info;
-    mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
-    if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&info, &count) == KERN_SUCCESS)
-        return info.phys_footprint;
-    return 0;
-#elif defined(__linux__)
+#if defined(__linux__)
     unsigned long long pages = 0, resident = 0;
     FILE* f = fopen("/proc/self/statm", "r");
     if (!f) return 0;
@@ -1540,21 +1581,7 @@ SnxU64 snx_process_cpu_ns(void) {
 #endif
 }
 int snx_memory_available(SnxU64* bytes) {
-#if defined(__APPLE__) && TARGET_OS_IPHONE
-    size_t left = os_proc_available_memory(); /* 0 in the simulator, which has no limit */
-    if (!left) return 0;
-    *bytes = left;
-    return 1;
-#elif defined(__APPLE__)
-    vm_statistics64_data_t vm;
-    mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
-    vm_size_t page = 0;
-    if (host_page_size(mach_host_self(), &page) != KERN_SUCCESS ||
-        host_statistics64(mach_host_self(), HOST_VM_INFO64, (host_info64_t)&vm, &count) != KERN_SUCCESS)
-        return 0;
-    *bytes = ((SnxU64)vm.free_count + vm.inactive_count + vm.purgeable_count) * page;
-    return 1;
-#elif defined(__linux__)
+#if defined(__linux__)
     char line[128];
     unsigned long long kib = 0;
     int found = 0;
@@ -1612,9 +1639,6 @@ void snx_vm_release(void* p, size_t size) {
 void snx_vm_flush_code(void* p, size_t size) {
 #ifdef _WIN32
     FlushInstructionCache(GetCurrentProcess(), p, size);
-#elif defined(__APPLE__)
-    /* the system's own: iOS links no compiler runtime for __builtin___clear_cache's __clear_cache */
-    sys_icache_invalidate(p, size);
 #else
     /* nothing on x86-64, whose instruction fetch sees stores; AArch64 cleans the data cache to the point of
        unification and invalidates the instruction cache over the range */

@@ -9,7 +9,7 @@
 #include "common/utilities/common.h"
 #include "common/utilities/pad_sdl.h"
 #include <SDL3/SDL.h>
-#if (defined(__FreeBSD__) || defined(__linux__)) && !defined(__ANDROID__)
+#if (defined(__FreeBSD__) || defined(__linux__))
 #include <dirent.h>
 #endif
 #include <math.h>
@@ -222,7 +222,7 @@ done:
    and libusb: a pad a kernel driver claimed (xb360gp, hgame, webcamd) is left only as /dev/input/event*, which on
    FreeBSD those backends do not open */
 static void say_hosts(void) {
-#if (defined(__FreeBSD__) || defined(__linux__)) && !defined(__ANDROID__)
+#if (defined(__FreeBSD__) || defined(__linux__))
     struct dirent* d;
     DIR* dir;
     int uhid = 0, event = 0, stick = 0;

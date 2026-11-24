@@ -391,9 +391,9 @@ int main(int argc, char** argv) {
     hle_init();
     u64 info = STACK_BASE, off, mapped = 0, hole = 0;
     u8* p;
-    /* the address space as plat_posix.c reads it, which a host thread that cannot start logs: told on Linux and on
-       Apple's systems, every host's pages whatever their size */
-#if defined(__linux__) || defined(__APPLE__)
+    /* the address space as plat_posix.c reads it, which a host thread that cannot start logs: told on Linux, every
+       host's pages whatever their size */
+#if defined(__linux__)
     CHECK(plat_address_space(&mapped, &hole) && mapped > 0 && hole > 0);
 #else
     CHECK(!plat_address_space(&mapped, &hole));
