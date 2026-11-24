@@ -6582,11 +6582,10 @@ static void settings_arceus_check(App* app) {
     app->arceus_until = SDL_GetTicks() + 5000; /* five seconds, then it is ended and none is checked */
 }
 /* the check running: its output read, a bounded amount a frame; once it ended, the marks */
-static void settings_arceus_pump(App* app) {
+/* up to reads chunks of the check's output, kept */
+static void settings_arceus_read(App* app, int reads) {
     char buffer[4096];
-    int status = 1;
-    if (!app->arceus_check) return;
-    for (int reads = 0; reads < 16; ++reads) {
+    for (; reads > 0; --reads) {
         const int n = gui_process_read(app->arceus_check, buffer, sizeof buffer);
         char* grown = n > 0 ? realloc(app->arceus_lines, app->arceus_size + (size_t)n + 1) : NULL;
         if (!grown) break;
@@ -6594,11 +6593,17 @@ static void settings_arceus_pump(App* app) {
         memcpy(app->arceus_lines + app->arceus_size, buffer, (size_t)n);
         app->arceus_lines[app->arceus_size += (size_t)n] = 0;
     }
+}
+static void settings_arceus_pump(App* app) {
+    int status = 1;
+    if (!app->arceus_check) return;
+    settings_arceus_read(app, 16);
     if (app->arceus_until && SDL_GetTicks() > app->arceus_until) {
         gui_process_terminate(app->arceus_check);
         app->arceus_until = 0; /* ended by the limit: nothing it said is taken */
     }
     if (!gui_process_finished(app->arceus_check, &status)) return;
+    settings_arceus_read(app, 64); /* what it wrote just before it ended, still in the pipe */
     gui_process_destroy(app->arceus_check);
     app->arceus_check = NULL;
     settings_arceus_marks(app, !status && app->arceus_until && app->arceus_size ? app->arceus_lines : NULL);
