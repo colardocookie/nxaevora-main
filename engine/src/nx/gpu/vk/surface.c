@@ -135,6 +135,13 @@ static u32 surf_layer_count(const Surf* s) {
 
 void vk_surf_use(VkCommandBuffer cb, Surf* s, VkImageLayout layout, VkPipelineStageFlags2 stage,
                  VkAccessFlags2 access) {
+    /* SNX_ARCEUS_UPSCALER=spatial: every use of the scene colour after its hook, before any return (vk.h) */
+    if (s == g_vk_watch)
+        vk_temporal_watch(s, access & (VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT |
+                                       VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_SHADER_WRITE_BIT |
+                                       VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT)
+                                 ? VK_WATCH_WRITE
+                                 : VK_WATCH_READ);
     if (s->member) {
         /* one barrier a member's layer, and the members bound now stay */
         for (u32 i = 0; i < s->layers; i++) {
@@ -151,12 +158,13 @@ void vk_surf_use(VkCommandBuffer cb, Surf* s, VkImageLayout layout, VkPipelineSt
         s->access = access;
         return;
     }
-    int writes = (access & (VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT |
-                            VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_SHADER_WRITE_BIT |
-                            VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT)) != 0;
-    int wrote = (s->access & (VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT |
-                              VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_SHADER_WRITE_BIT |
-                              VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT)) != 0;
+    /* every access that writes. MEMORY_WRITE is the catch-all a caller names for work it did not record itself
+       (a library's): no use the renderer asks for by itself has it. */
+    const VkAccessFlags2 writing = VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT |
+                                   VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_SHADER_WRITE_BIT |
+                                   VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+    int writes = (access & writing) != 0;
+    int wrote = (s->access & writing) != 0;
     if (s->layout == layout && !writes && !wrote) {
         /* read after read in the same layout needs no barrier, unless the reader is in a stage the barrier that made
            the last write visible didn't name (a copy after a blit read it): a barrier from the earlier readers
@@ -614,6 +622,7 @@ static u64 g_wseq;
 static u32 g_surf_gen;
 u32 vk_surf_gen(void) { return ++g_surf_gen; }
 void vk_surf_wrote(Surf* s) {
+    if (s == g_vk_watch) vk_temporal_watch(s, VK_WATCH_WROTE);
     s->wgen = vk_surf_gen();
     s->wseq = ++g_wseq;
 }
@@ -1481,6 +1490,7 @@ int vk_rt_drawn_in(u64 lo, u64 hi, Surf** out, int max) {
 /* A surface's image and views go when the frame being recorded is done (descriptors in it may name them). Returns
    the device bytes that go now: a member's image goes with its group, and only the last member frees it */
 static u64 surf_free(Surf* s) {
+    if (s == g_vk_watch) vk_temporal_watch(s, VK_WATCH_FREED);
     g_vk_surf_epoch++;
     if (s->lru) {
         g_held[lru_kind(s)].n--;

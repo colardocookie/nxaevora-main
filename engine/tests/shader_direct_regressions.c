@@ -1357,6 +1357,13 @@ static void issue126_shader_modes(void) {
                           info.img[1].kind == 2,
                       "buffer loads and atomics share an R32ui image, stores take a typeless one");
             if (i == 12) check(info.ntex == 1 && info.tex[0].bindless, "TXQ.B queries its tracked handle");
+            /* the size reads as translated (D3-2 revision 4, research 17:35): a size query marks its slot in
+               tex_txq_mask, a run-time offset the translator moves the coordinates for in tex_offset_size_mask */
+            if (i == 12)
+                check(info.tex_txq_mask == 1 && !info.tex_offset_size_mask, "TXQ.B's slot is marked as queried");
+            if (i == 14)
+                check(info.tex_offset_size_mask == 1 && !info.tex_txq_mask,
+                      "a run-time offset's slot is marked as a size read for offsets, not as queried");
             if (i == 16)
                 check(info.ntex == 1 && info.tex[0].flags == (SNX_TEX_INDEXED | 4 << 4) &&
                           count_opcode(code, words, 17, 5307) == 1,

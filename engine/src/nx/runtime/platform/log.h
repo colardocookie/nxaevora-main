@@ -17,6 +17,9 @@
 
 /* lvl 0 is a warning, 1 a normal line, 2 a verbose one. Checked like printf */
 void logf_(int lvl, const char* fmt, ...) SNX_LOG_FORMAT(2, 3);
+/* The log is a file from the next line on, though no game's code is loaded: for a run that loads none (the
+   upscaler's self-test). The state folder must be known. */
+void log_without_game(void);
 #define WARN(...) logf_(0, __VA_ARGS__)
 #define LOG(...) logf_(1, __VA_ARGS__)
 #define LOGV(...)                                                                                                      \
