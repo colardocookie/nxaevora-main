@@ -155,10 +155,6 @@ extern int g_perf_times;
    counts, which costs in the code it times. 0 unless both are set */
 extern int g_perf_probes;
 extern PerfTimes g_perf;
-/* SNX_ARCEUS_PERF_SUBMIT_US, bench only (research 20:51): the GPU thread's recording time a submission holds at most
-   (vk/cmd.c vk_frame_check), upstream's 1 ms unless set to 250 to 8000 us. Read once at start */
-#define PERF_SUBMIT_EVERY_NS 1000000ull
-extern uint64_t g_perf_submit_every_ns;
 /* SNX_ARCEUS_PERF_COMPUTE_SUBMIT=0, an experiment (PERF-13, research 22:09): a deferred dispatch's results are not
    submitted at once (vk/compute.c), so they go with the next submission. 1 unless set to 0. Read once at start */
 extern int g_perf_compute_submit;

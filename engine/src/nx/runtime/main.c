@@ -966,18 +966,6 @@ int snx_main(int argc, char** argv) {
             LOG("latency-probe: on, a scripted press is stamped where HID hands it to the guest, %u presents before "
                 "and %u from it get a line with a %ux%u picture difference\n",
                 LAT_BEFORE, LAT_AFTER, LAT_W, LAT_H);
-        const char* submit_us = getenv("SNX_ARCEUS_PERF_SUBMIT_US"); /* bench only: a submission's recording time */
-        if (submit_us) {
-            char* end = NULL;
-            const unsigned long us = strtoul(submit_us, &end, 10);
-            if (end != submit_us && !*end && us >= 250 && us <= 8000) {
-                g_perf_submit_every_ns = (uint64_t)us * 1000u;
-                LOG("perf-submit-us: a submission holds %lu us of the GPU thread's recording (upstream 1000), bench "
-                    "only\n", us);
-            } else {
-                LOG("perf-submit-us: \"%s\" is not 250 to 8000, a submission holds upstream's 1000 us\n", submit_us);
-            }
-        }
         /* masked stores in the landing (gpu/vk/landing.h), 3 by default, the only level left: 1 and 2 were removed */
         g_perf_landing = perf_level(landing, 3, 3);
         g_landing_masked = g_perf_landing && landing_masked_supported(); /* the CPU and OS check, once */
