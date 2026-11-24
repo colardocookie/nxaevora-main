@@ -30,7 +30,7 @@
    into such code misses in snx_lookup and costs RtAPI.miss and that load once compiled. Removing one (the game
    unmaps the NRO) waits for the batches reading it and forgets its pcs.
 
-   Not NX-specific: gnuabi's execution can create one too, with its code ranges and table */
+   Not NX-specific: another runtime can create one too, with its code ranges and table */
 #ifndef SNX_RECOMPILER_LLVM_JIT_SERVICE_H
 #define SNX_RECOMPILER_LLVM_JIT_SERVICE_H
 #include "common/cpu/recompiler/codegen.h"

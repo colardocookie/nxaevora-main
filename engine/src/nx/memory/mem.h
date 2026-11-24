@@ -14,7 +14,7 @@
    holds (an IPC buffer descriptor's address among them) has to fit in 36 bits */
 #define AS36 (1ull << 36)
 /* The host reservation, which a guest address of either width is an offset below: AS_MAX, or less where the system
-   allows an app less address space (iOS without the paid extended-virtual-addressing entitlement), when mem_init picks
+   allows an app less address space, when mem_init picks
    a smaller layout to fit it */
 extern u64 g_as_size;
 #define AS_SIZE (g_as_size)

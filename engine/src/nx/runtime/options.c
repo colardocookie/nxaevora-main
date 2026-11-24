@@ -151,6 +151,13 @@ static char g_path[1400];
 static int g_started; /* ini_open is done: the startup settings are kept from now on */
 static u64 g_hash;    /* the file as this run last read or wrote it */
 static u64 g_seen;    /* a changed file seen by the last poll, read once a second poll sees it unchanged */
+/* where the last write_file that failed stopped, and the system's reason: the CLI's settings set names the stage */
+static const char* g_write_stage;
+static char g_write_why[256];
+/* 1 when the last parse of the file did not keep every key: write_file then leaves the file alone, so a write cannot
+   erase a key the store refused. A missing file is not parsed and an empty one gives 0, so the default file is still
+   written */
+static int g_write_blocked;
 
 static u64 fnv1a(const unsigned char* p, size_t n) {
     u64 h = 0xCBF29CE484222325ull;
@@ -171,34 +178,40 @@ static Entry* store_find(const char* key) {
         if (!strcmp(g_store[i].key, key)) return &g_store[i];
     return NULL;
 }
-/* a value that doesn't fit is dropped, never cut */
-static void store_put(const char* key, const char* value) {
+/* a value that doesn't fit is dropped, never cut: 0 stored, -1 left out (the warning says why) */
+static int store_put(const char* key, const char* value) {
     Entry* e = store_find(key);
     size_t n = strlen(value);
     if (strlen(key) >= KEY_MAX) {
         WARN_LIMIT(1, "settings: key %.40s... is too long and is left out\n", key);
-        return;
+        return -1;
     }
     if (n >= VALUE_MAX) {
         WARN_LIMIT(1, "settings: the value of %s is longer than %d bytes and is left out\n", key, VALUE_MAX - 1);
-        return;
+        return -1;
     }
     if (!e) {
         if (g_nstore == STORE_MAX) {
             WARN_LIMIT(1, "settings: more than %d keys, %s and those after it are left out\n", STORE_MAX, key);
-            return;
+            return -1;
         }
         e = &g_store[g_nstore++];
         memcpy(e->key, key, strlen(key) + 1);
     }
     memcpy(e->value, value, n + 1);
+    return 0;
 }
-static void store_parse(char* text) {
+/* the text's keys into the store: 0, or -1 when it holds one the store could not keep. The CLI's settings commands
+   refuse such a file, and the runtime writes no file in such a run, since the write would lose that key */
+static int store_parse(char* text) {
     SnxIni ini;
     char *key, *value;
+    int failed = 0;
     g_nstore = 0;
     snx_ini_start(&ini, text);
-    while (snx_ini_next(&ini, &key, &value)) store_put(key, value);
+    while (snx_ini_next(&ini, &key, &value))
+        if (store_put(key, value)) failed = 1;
+    return failed ? -1 : 0;
 }
 static const char* value_of(const IniOpt* o) {
     const char* v = override_of(o->key);
@@ -401,17 +414,21 @@ static int section_set(const IniSection* section) {
             if (o->def || store_find(o->key)) return 1;
     return 0;
 }
-/* the store into the file: beside it, then moved over it, so the file is always whole. 0, or -1 (warned once) */
+/* the store into the file: beside it, then moved over it, so the file is always whole. 0, -1 (warned once), or 1
+   with nothing written because the last parse of the file was incomplete */
 static int write_file(void) {
-    char tmp[sizeof g_path + 8], why[256];
+    char tmp[sizeof g_path + 8];
     FILE* f;
     int s, t, i, other = 0, failed;
     unsigned char* text;
     size_t size;
+    if (g_write_blocked) return 1;
     snprintf(tmp, sizeof tmp, "%s.tmp", g_path);
     f = fopen(tmp, "wb");
     if (!f) {
-        WARN_LIMIT(1, "settings: could not write %s: %s\n", tmp, snx_os_error(why, sizeof why));
+        snx_os_error(g_write_why, sizeof g_write_why);
+        g_write_stage = "write";
+        WARN_LIMIT(1, "settings: could not write %s: %s\n", tmp, g_write_why);
         return -1;
     }
     put_header(f);
@@ -436,9 +453,11 @@ static int write_file(void) {
     failed = ferror(f);
     if (fclose(f)) failed = 1;
     if (failed || plat_replace_file(tmp, g_path)) {
-        snx_os_error(why, sizeof why); /* before remove's */
+        /* the stream's own failure is the write's; the move's is the replace's */
+        g_write_stage = failed ? "write" : "replace";
+        snx_os_error(g_write_why, sizeof g_write_why); /* before remove's */
         remove(tmp);
-        WARN_LIMIT(1, "settings: could not write %s (%s): this change is not saved\n", g_path, why);
+        WARN_LIMIT(1, "settings: could not write %s (%s): this change is not saved\n", g_path, g_write_why);
         return -1;
     }
     text = snx_read_file(g_path, &size);
@@ -476,6 +495,18 @@ static void debug_shown(int reloaded) {
         LOG("debug: after the reload, every Debug setting is at its default\n");
 }
 
+/* Records whether the last parse kept every key. The change into the blocked state warns once, and the change out of
+   it says that writes start again; a blocked write itself makes no line */
+static void set_write_blocked(int blocked) {
+    if (blocked == g_write_blocked) return;
+    g_write_blocked = blocked;
+    if (blocked)
+        WARN("settings: %s has keys that the store cannot keep; the file is not written in this run, so changes made "
+             "in the game are not saved\n", g_path);
+    else
+        LOG("settings: %s was reloaded whole; the file is written again\n", g_path);
+}
+
 void ini_open(const char* path) {
     Pending taken[PENDING_MAX];
     unsigned char* text;
@@ -488,16 +519,10 @@ void ini_open(const char* path) {
         if (!snx_setting_known(g_over[i].key)) WARN("--%s is not a setting, so it does nothing\n", g_over[i].key);
     text = snx_read_file(g_path, &size);
     if (!text) snx_os_error(why, sizeof why);
-    if (!text && snx_path_exists(g_path)) {
-        WARN("settings: cannot read %s (%s): every setting takes its default, and the file is not written over\n",
-             g_path, why);
-        apply_all();
-        debug_shown(0);
-        g_started = 1;
-        return;
-    }
+    if (!text && !snx_path_missing(g_path))
+        fatal("The settings file %s exists but cannot be read (%s)", g_path, why);
     if (text) {
-        store_parse((char*)text);
+        set_write_blocked(store_parse((char*)text) != 0);
         g_hash = g_seen = fnv1a(text, size);
         free(text);
     }
@@ -510,6 +535,60 @@ void ini_open(const char* path) {
 }
 
 const char* ini_file(void) { return g_path; }
+
+/* ---- the CLI's settings commands (settings_cli.c): the store and the writer above, with no window and no poll ---- */
+
+const IniOpt* snx_setting_row(const char* key) { return find_row(key, NULL); }
+const char* snx_settings_value(const IniOpt* o) { return value_of(o); }
+
+int snx_settings_load(const char* path, char* why, size_t n) {
+    unsigned char* text;
+    size_t size;
+    int failed;
+    snprintf(g_path, sizeof g_path, "%s", path);
+    text = snx_read_file(g_path, &size);
+    if (!text) {
+        if (snx_path_missing(g_path)) return 0;
+        snx_os_error(why, n);
+        return -1;
+    }
+    failed = store_parse((char*)text);
+    free(text);
+    if (failed) {
+        snprintf(why, n, "a key or a value that the store cannot keep (at most %d keys, %d-byte keys, %d-byte values)",
+                 STORE_MAX, KEY_MAX - 1, VALUE_MAX - 1);
+        return -2;
+    }
+    return 1;
+}
+
+/* 1 for a value that the .ini's reader does not give back as written: it splits the file at a '\n' or a '\r' and trims
+   the blanks and tabs of both ends (ini_lines.c), so a line break would become a key and the blanks would be lost.
+   Settings set, through snx_settings_save, and settings check both call it */
+int snx_settings_value_unreadable(const char* key, const char* value, char* out, size_t n) {
+    size_t size = strlen(value);
+    if (strpbrk(value, "\r\n") == NULL &&
+        !(size && (value[0] == ' ' || value[0] == '\t' || value[size - 1] == ' ' || value[size - 1] == '\t')))
+        return 0;
+    snprintf(out, n, "%s: a line break or a blank at an end is not kept by the .ini file", key);
+    return 1;
+}
+
+int snx_settings_save(const char* key, const char* value, char* out, size_t n) {
+    if (snx_settings_value_unreadable(key, value, out, n)) return 1;
+    if (strlen(key) >= KEY_MAX || strlen(value) >= VALUE_MAX) {
+        snprintf(out, n, "%s's value is longer than the %d bytes the file keeps", key, VALUE_MAX - 1);
+        return 1;
+    }
+    if (store_put(key, value)) {
+        snprintf(out, n, "%s: the file keeps at most %d keys, so it is not written", key, STORE_MAX);
+        return -1;
+    }
+    g_write_stage = NULL;
+    if (!write_file()) return 0;
+    snprintf(out, n, "%s %s: %s", g_write_stage ? g_write_stage : "write", g_path, g_write_why);
+    return -1;
+}
 
 void ini_poll(int final) {
     Pending taken[PENDING_MAX];
@@ -535,7 +614,7 @@ void ini_poll(int final) {
     h = fnv1a(text, size);
     if (h != g_hash && (final ? pending : h == g_seen)) {
         /* changed, and settled (seen the same a second before), or the menu's changes are to be saved at exit */
-        store_parse((char*)text);
+        set_write_blocked(store_parse((char*)text) != 0);
         n = pending_take(taken);
         apply_all();
         LOG("settings: %s reloaded\n", g_path);

@@ -5341,7 +5341,7 @@ static int replay_bind_send(NvnNativeReplayHost* host, const uint32_t* words, ui
     }
     return nvn_word_stream_complete(&stream);
 }
-/* SNX_ARCEUS_NVN_BLEND_TARGETS=1: each target's blend bind since the last draw, in the order the game bound them */
+/* SNX_ARCEUS_NVN_BLEND_TARGETS: each target's blend bind since the last draw, in the order the game bound them */
 static void replay_bind_send_blend_slots(NvnNativeReplayHost* host) {
     uint32_t target;
     while (nvn_blend_slots_take(&host->blend, &target)) {

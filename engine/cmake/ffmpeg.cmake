@@ -9,9 +9,8 @@
 # libswresample, which is why that library is in), and for the Vita AAC, ATRAC9, the MP4 demuxer and H.264's Annex B
 # filter: no programs, other formats, filters, devices, network or autodetected system libraries, so the result needs
 # nothing but libc and builds the same everywhere. All of it is LGPL (no --enable-gpl). It needs a POSIX shell and make
-# (gmake on the BSDs), and NASM for the x86-64 assembly. macOS and iOS build it with Xcode's Clang and SDK
-# (cmake/apple.cmake), iOS as a cross build. This file is included into the top-level scope: its variables carry the
-# snx_ffmpeg_ prefix.
+# (gmake on the BSDs), and NASM for the x86-64 assembly. This file is included into the top-level scope: its variables
+# carry the snx_ffmpeg_ prefix.
 set(snx_ffmpeg_src "${PROJECT_BINARY_DIR}/_deps/ffmpeg-patched")
 set(snx_ffmpeg_prefix "${PROJECT_BINARY_DIR}/ffmpeg")
 # FFmpeg's configure stops on a source path with a space in it, which would only show at build time
@@ -72,7 +71,7 @@ set(snx_ffmpeg_args
     --nm=${CMAKE_NM}
     # FFmpeg's own warnings stay out of the build output
     --extra-cflags=-w)
-if((WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux") AND NOT ANDROID)
+if(WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
     # the H.264 decoder's Vulkan Video path, which the vulkan_video setting turns on (src/nx/gpu/vk/nvdec.c). FFmpeg
     # loads Vulkan's functions through the runtime's device (no link to the loader); only the headers are needed
     list(APPEND snx_ffmpeg_args --enable-vulkan --enable-hwaccel=h264_vulkan
@@ -83,9 +82,7 @@ if(WIN32 OR CMAKE_CROSSCOMPILING)
     # architecture AMD64 or ARM64 on Windows, which configure doesn't know
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
         set(snx_ffmpeg_arch x86_64)
-    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$" OR
-           (APPLE AND NOT CMAKE_SYSTEM_PROCESSOR AND CMAKE_OSX_ARCHITECTURES STREQUAL "arm64"))
-        # an iOS build names its architecture in CMAKE_OSX_ARCHITECTURES, CMAKE_SYSTEM_PROCESSOR being optional there
+    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
         set(snx_ffmpeg_arch aarch64)
     elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(ppc64|ppc64le|powerpc64|powerpc64le)$")
         set(snx_ffmpeg_arch ppc64)
@@ -94,27 +91,11 @@ if(WIN32 OR CMAKE_CROSSCOMPILING)
     endif()
     if(WIN32)
         set(snx_ffmpeg_os mingw32)
-    elseif(APPLE)
-        # configure's name for macOS and iOS alike: the SDK in the flags below says which
-        set(snx_ffmpeg_os darwin)
     else()
-        # configure's names for Linux, Darwin, FreeBSD, Android are CMake's in lower case
+        # configure's names for Linux and FreeBSD are CMake's in lower case
         string(TOLOWER "${CMAKE_SYSTEM_NAME}" snx_ffmpeg_os)
     endif()
     list(APPEND snx_ffmpeg_args --target-os=${snx_ffmpeg_os} --arch=${snx_ffmpeg_arch})
-endif()
-if(ANDROID)
-    # the NDK's Clang takes its target and sysroot as flags, which configure does not get from --cc; and the runtime is
-    # a shared library there (src/nx)
-    list(APPEND snx_ffmpeg_args --sysroot=${CMAKE_SYSROOT} --extra-cflags=--target=${CMAKE_C_COMPILER_TARGET}
-         --extra-ldflags=--target=${CMAKE_C_COMPILER_TARGET} --enable-pic)
-endif()
-if(SNX_APPLE_FLAGS)
-    # the architecture, SDK and oldest system version CMake gives its own compiles (cmake/apple.cmake), which configure
-    # does not get from --cc; on iOS without them it would build for the Mac. Its tests link programs, so the linker
-    # gets them too
-    list(JOIN SNX_APPLE_FLAGS " " snx_ffmpeg_apple_flags)
-    list(APPEND snx_ffmpeg_args "--extra-cflags=${snx_ffmpeg_apple_flags}" "--extra-ldflags=${snx_ffmpeg_apple_flags}")
 endif()
 if(SNX_TARGET_FLAGS)
     # a Linux cross build's target and sysroot and the CPU baseline (cmake/cross.cmake), which configure does not get

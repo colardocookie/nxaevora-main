@@ -1,6 +1,6 @@
 # AOT packs from the runtime JIT cache
 
-ScarletNX runs a Switch game with one runtime. A recompiled game module is the default code path (AOT); when
+NXAevora Engine runs a Switch game with one runtime. A recompiled game module is the default code path (AOT); when
 the game reaches a function the module does not have, the runtime compiles that function with the JIT, runs it,
 and returns to the AOT caller. The JIT is always present. The interpreter is not a fallback.
 
@@ -28,11 +28,6 @@ it. The two levels are independent everywhere else: the JIT cache is keyed by it
 runtime library, the CPU and the hooks, so another AOT level neither drops it nor makes it stale, and the shaders and
 their cache are keyed by the GPU, its driver and the build, so no level touches them. A game plays the same at any
 pair of levels until a pack is built.
-
-On Android and iOS the JIT compiles at O0, as any other level breaks it there, and its level is no setting at all: a
-phone's launcher lists no `JIT optimization` row. Every cache a phone writes is O0, and the launcher does not compare
-the two levels there, as a phone's AOT level could only be made to match by recompiling every game at 0. A pack built
-on a phone links the cached code as it is.
 
 The key also contains the ABI, IR object version, target triple, LLVM version, runtime library, host CPU and its
 features, the SVC/hook mode, and whether the SLP vectorizer, FPSR's flags and volatile guest accesses are on. Those
@@ -86,13 +81,13 @@ of a pack build.
 The launcher action is the same build the driver already supports:
 
 ```sh
-scarletnx -r path/to/game --jit-cache path/to/game.jitcache -O 2
+nxaevora-engine -r path/to/game --jit-cache path/to/game.jitcache -O 2
 ```
 
 Add `--hook-direct-calls` when the cache was written with `nvn_trace` on:
 
 ```sh
-scarletnx -r path/to/game --jit-cache path/to/game.jitcache -O 2 --hook-direct-calls
+nxaevora-engine -r path/to/game --jit-cache path/to/game.jitcache -O 2 --hook-direct-calls
 ```
 
 `-O` and `--opt=2` set the same recompiler level; the launcher passes `-O` after the settings so the matched

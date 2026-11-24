@@ -32,23 +32,10 @@ int main(void) {
     assert(gui_menu_key(&menu, GUI_DOWN) == GUI_MENU_STAY && menu.selected == GUI_SWITCH);
     menu.view = GUI_LOAD_NONE;
     gui_menu_key(&menu, GUI_DOWN);
-    assert(menu.selected == GUI_LINUX);
+    assert(menu.selected == GUI_SETTINGS);
     gui_menu_key(&menu, GUI_DOWN);
-    assert(menu.selected == GUI_3DS);
-    gui_menu_key(&menu, GUI_SELECT);
-    assert(menu.active == GUI_3DS && menu.view == GUI_LOAD_DROP);
-    gui_menu_key(&menu, GUI_CANCEL);
-    gui_menu_key(&menu, GUI_RIGHT);
-    assert(menu.selected == GUI_VITA);
-    gui_menu_key(&menu, GUI_SELECT);
-    assert(menu.active == GUI_VITA && menu.view == GUI_LOAD_DROP);
-    gui_menu_key(&menu, GUI_CANCEL);
-    gui_menu_key(&menu, GUI_RIGHT);
-    assert(menu.selected == GUI_GBA);
-    gui_menu_key(&menu, GUI_SELECT);
-    assert(menu.active == GUI_GBA && menu.view == GUI_LOAD_DROP);
-    gui_menu_key(&menu, GUI_CANCEL);
-    gui_menu_key(&menu, GUI_RIGHT);
+    assert(menu.selected == GUI_LOG);
+    gui_menu_key(&menu, GUI_UP);
     assert(menu.selected == GUI_SETTINGS);
     /* Settings opens the screens of the game's settings, the launcher's and its App (settings.h, gui_settings.c) */
     assert(gui_menu_key(&menu, GUI_SELECT) == GUI_MENU_SETTINGS && menu.active == GUI_SETTINGS);
@@ -71,9 +58,9 @@ int main(void) {
     menu = (GuiMenu){0};
     gui_menu_key(&menu, GUI_SELECT); /* Games hidden: the first load */
     assert(menu.active == GUI_SWITCH && menu.view == GUI_LOAD_DROP);
-    menu.selected = GUI_LINUX;
+    menu.selected = GUI_SETTINGS;
     gui_menu_key(&menu, GUI_DOWN);
-    assert(menu.selected == GUI_3DS && menu.active == GUI_SWITCH && menu.view == GUI_LOAD_DROP);
+    assert(menu.selected == GUI_LOG && menu.active == GUI_SWITCH && menu.view == GUI_LOAD_DROP);
     gui_menu_key(&menu, GUI_CANCEL);
     assert(menu.view == GUI_LOAD_NONE && menu.selected == GUI_SWITCH);
 
@@ -109,7 +96,7 @@ int main(void) {
         assert(!strcmp(use, "26.4 GB"));
     }
     /* a run's room: the extraction and a Switch game's RomFS copy each about the dump's size, both from one disk's free
-       space, or each from its own; a 3DS game has no copy */
+       space, or each from its own; a run that copies nothing takes the dump's size alone */
     {
         uint64_t need, left;
         assert(gui_room(10, true, 20, 0, true, &need, &left) && need == 20 && left == 20);
@@ -379,42 +366,14 @@ int main(void) {
     assert(!gui_drop_path("file:///tmp/%zz", true));
     assert(!gui_drop_path("one\ntwo", true));
     assert(!gui_drop_path("", true));
-    /* what a picker gives: the Android one's documents of the device's storage and its cards, a download by path; no
-       other of its documents has a path */
-    path =
-        gui_document_path("content://com.android.externalstorage.documents/document/primary%3ADownload%2FGame%20X.nro");
-    assert(path && !strcmp(path, "/storage/emulated/0/Download/Game X.nro"));
-    free(path);
-    path = gui_document_path("content://com.android.externalstorage.documents/document/1A2B-3C4D%3Agames%2Fa.nro");
-    assert(path && !strcmp(path, "/storage/1A2B-3C4D/games/a.nro"));
-    free(path);
-    path = gui_document_path("content://com.android.providers.downloads.documents/document/"
-                             "raw%3A%2Fstorage%2Femulated%2F0%2FDownload%2Fnotes.txt");
-    assert(path && !strcmp(path, "/storage/emulated/0/Download/notes.txt"));
-    free(path);
-    assert(!gui_document_path("content://com.android.providers.downloads.documents/document/msf%3A1234"));
-    assert(!gui_document_path("content://com.android.providers.media.documents/document/document%3A12"));
-    assert(!gui_document_path("content://com.android.externalstorage.documents/document/primary%3A%zz"));
-    assert(!gui_document_path("content://com.android.externalstorage.documents/document/primary%3A%00.nro"));
-    assert(!gui_document_path("content://com.android.externalstorage.documents/document/primary"));
-    /* a folder its folder picker gave: a tree of the device's storage, its root too, or a card's; Downloads' has none */
-    path = gui_document_path("content://com.android.externalstorage.documents/tree/primary%3AGames%2FSwitch");
-    assert(path && !strcmp(path, "/storage/emulated/0/Games/Switch"));
-    free(path);
-    path = gui_document_path("content://com.android.externalstorage.documents/tree/primary%3A");
-    assert(path && !strcmp(path, "/storage/emulated/0/"));
-    free(path);
-    path = gui_document_path("content://com.android.externalstorage.documents/tree/1A2B-3C4D%3Agames");
-    assert(path && !strcmp(path, "/storage/1A2B-3C4D/games"));
-    free(path);
-    assert(!gui_document_path("content://com.android.providers.downloads.documents/tree/downloads"));
+    /* what a picker gives: a path, or a file:// URI */
     path = gui_document_path("file:///tmp/a%20b.nro");
     assert(path && !strcmp(path, "/tmp/a b.nro"));
     free(path);
     path = gui_document_path("/tmp/ a.nro ");
     assert(path && !strcmp(path, "/tmp/ a.nro "));
     free(path);
-    /* the dumps the Android games/ list offers, to prepare first: NRO files alone */
+    /* the dumps a games/ list offers, to prepare first: NRO files alone */
     assert(gui_is_dump("a.NRO"));
     assert(!gui_is_dump("b.xci") && !gui_is_dump("c.nsp") && !gui_is_dump("d.dxci") && !gui_is_dump("e.dnsp"));
     assert(!gui_is_dump("e_code.so") && !gui_is_dump("nro") && !gui_is_dump("f.nro.ini"));

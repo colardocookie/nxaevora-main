@@ -95,6 +95,17 @@ const IniOpt* snx_recompile_setting(const char* key) {
     if (!o) o = ini_find(g_llvm_ini, key);
     return o ? o : ini_find(g_recompile_game_ini, key);
 }
+/* recompile.c's: the row and opt's words checked, which this test's link has no recompile.c to take (the real one is
+   in runtime_cli_commands) */
+int snx_recompile_value_taken(const IniOpt* o, const char* value, char* out, size_t n) {
+    if (ini_check(o, value, out, n)) return 0;
+    if (!strcmp(o->key, "opt")) {
+        if (strlen(value) == 1 && strchr("0123sz", value[0])) return 1;
+        snprintf(out, n, "opt = %s: not 0, 1, 2, 3, s or z", value);
+        return 0;
+    }
+    return 1;
+}
 /* the game's program and its stamp, as a recompile makes them: the program a copy of this one, a code file beside it */
 static void make_game(const char* folder, const char* name, const SnxPaths* paths) {
     char* game = snx_format("%s/%s%s", folder, name, TEST_PROGRAM_SUFFIX);
@@ -393,7 +404,7 @@ int main(int argc, char** argv) {
         args[0] = argv[0];
         args[1] = NULL;
         if (!strcmp(argv[2], "exec")) args[0] = "/nonexistent/scarletnx-test";
-        return snx_run_stage(args, !strcmp(argv[2], "cwd") ? "/nonexistent/scarletnx-test" : NULL, "Probe");
+        return snx_run_stage(args, !strcmp(argv[2], "cwd") ? "/nonexistent/scarletnx-test" : NULL, "Probe", NULL);
     }
     if (argc > 1) { /* the setup's options taken out first, as the program's entry does (runtime/entry.c) */
         char why[160];
@@ -498,6 +509,14 @@ int main(int argc, char** argv) {
         run(exe, repo, nro, log, 0, "RG", NULL);
         free(stamp);
     }
+    /* a recompile-only --KEY=VALUE is checked in the play path too, before a current stamp skips the recompile: a
+       value the recompile refuses stops the run and the game does not start */
+    set_env("SNX_WORKFLOW_FLAGS", "--aot_threads=abc");
+    run(exe, repo, game, log, 2, "", "aot_threads=abc is not a whole number from 0 to 1024");
+    /* opt is a text setting, so ini_check alone takes a short number: the words check of the same function refuses it */
+    set_env("SNX_WORKFLOW_FLAGS", "--opt=5");
+    run(exe, repo, game, log, 2, "", "opt = 5: not 0, 1, 2, 3, s or z");
+    set_env("SNX_WORKFLOW_FLAGS", "");
     /* a game whose runtime another build of this ABI deployed: played as it is, the runtime replaced by this build's
        first; one already this build's is left as it is (a link to it stays the same file) */
     {
@@ -539,7 +558,7 @@ int main(int argc, char** argv) {
         run(exe, repo, game, log, 0, "G", NULL);
         set_env("SNX_WORKFLOW_HEADLESS", "");
         set_env("SNX_WORKFLOW_FLAGS", "--resoltion=2");
-        run(exe, repo, game, log, 1, "", "unknown option: --resoltion=2");
+        run(exe, repo, game, log, 2, "", "unknown option: --resoltion=2");
         set_env("SNX_WORKFLOW_FLAGS", "--touch=2");
         run(exe, repo, game, log, 0, "G", NULL);
         set_env("SNX_WORKFLOW_FLAGS", "");
@@ -556,7 +575,7 @@ int main(int argc, char** argv) {
         set_env("SNX_WORKFLOW_OUTDIR", "");
         run(exe, repo, moved, log, 0, "G", NULL);
         set_env("SNX_WORKFLOW_OUTDIR", "none");
-        run(exe, repo, nro, log, 1, "", "--outdir requires a directory");
+        run(exe, repo, nro, log, 2, "", "--outdir requires a directory");
         set_env("SNX_WORKFLOW_OUTDIR", "");
         set_env("SNX_WORKFLOW_GAMES", folder);
         free(moved);
@@ -569,16 +588,16 @@ int main(int argc, char** argv) {
         char* addon = snx_path_join(addon_folder, "0100000000AB0000_0100000000AB0800" TEST_PROGRAM_SUFFIX);
         reset(repo, nro);
         CHECK(!snx_mkdirs(addon_folder) && !snx_write_file(addon, "synthetic", 9));
-        run(exe, repo, addon, log, 1, "", "made from a dump");
+        run(exe, repo, addon, log, 3, "", "made from a dump");
         set_env("SNX_WORKFLOW_FLAGS", "-r");
-        run(exe, repo, addon, log, 1, "", "made from a dump");
+        run(exe, repo, addon, log, 3, "", "made from a dump");
         set_env("SNX_WORKFLOW_FLAGS", "");
         free(addon);
         free(addon_folder);
     }
     /* an encrypted dump is refused, with the line that says what to give instead */
     reset(repo, xci);
-    run(exe, repo, xci, log, 1, "", "is an encrypted dump");
+    run(exe, repo, xci, log, 3, "", "is an encrypted dump");
 #ifndef _WIN32
     for (i = 0; i < sizeof(modes) / sizeof(modes[0]); ++i) {
         reset(repo, nro);
@@ -596,7 +615,7 @@ int main(int argc, char** argv) {
     reset(repo, nro);
     set_env("SNX_WORKFLOW_MODE", "missing");
     set_env("SNX_WORKFLOW_FAIL", "R");
-    run(exe, repo, nro, log, 1, "R", "recompilation finished without creating");
+    run(exe, repo, nro, log, 4, "R", "recompilation finished without creating");
     set_env("SNX_WORKFLOW_FAIL", "");
     set_env("SNX_WORKFLOW_MODE", "exit");
     run(exe, repo, nro, log, 0, "RG", NULL);
@@ -649,12 +668,30 @@ int main(int argc, char** argv) {
         setup[1] = "--debug";
         setup[2] = "/nonexistent/game";
         output = NULL;
-        CHECK(snx_run(setup, NULL, home, &output) == 1 && strstr(output, "/nonexistent/game is not a file") &&
+        CHECK(snx_run(setup, NULL, home, &output) == 3 && strstr(output, "/nonexistent/game is not a file") &&
               !strstr(output, "Changed"));
         free(output);
         free(home);
     }
 #endif
+    /* --dump-modules: a program that cannot be loaded is the game's files, 3 */
+    {
+        char* out = snx_path_join(root, "dump out");
+        char* missing = snx_path_join(root, "no such program");
+        char* dump[4];
+        dump[0] = exe;
+        dump[1] = "--dump-modules";
+        dump[2] = missing;
+        dump[3] = out;
+        CHECK(snx_driver(4, dump) == 3);
+        free(missing);
+        free(out);
+    }
+    /* --dump-modules' code of a failed dump, from exit_codes.h: the program's files 3, a failed write or a failure of
+       the host 1 */
+    CHECK(dump_exit_code(SNX_DUMP_INPUT) == 3);
+    CHECK(dump_exit_code(SNX_DUMP_OUTPUT) == 1);
+    CHECK(dump_exit_code(SNX_DUMP_INTERNAL) == 1);
     CHECK(!snx_remove_tree(root));
     free(exe);
     free(root);

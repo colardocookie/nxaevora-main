@@ -714,13 +714,4 @@ u8* vk_readback_buffer(u64 size, VkBuffer* buf) {
 }
 void vk_readback_ready(void) { vmaInvalidateAllocation(g_vk.vma, g_rb_mem, 0, VK_WHOLE_SIZE); }
 
-void vk_wait_foreground(void) {
-#ifdef SNX_IOS
-    int said = 0;
-    while (!backend_window_shown() && !g_quit) {
-        if (!said++) LOG("vulkan: the app is in the background, GPU work waits until it is back\n");
-        plat_sleep_ns(20000000);
-    }
-    if (said) LOG("vulkan: GPU work goes on\n");
-#endif
-}
+void vk_wait_foreground(void) {}

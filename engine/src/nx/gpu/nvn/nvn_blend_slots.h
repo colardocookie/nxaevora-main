@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the NXAevora contributors */
-/* SNX_ARCEUS_NVN_BLEND_TARGETS=1: a blend state object belongs to one colour target, and a game drawing into
+/* SNX_ARCEUS_NVN_BLEND_TARGETS: a blend state object belongs to one colour target, and a game drawing into
    several targets binds one per target before a draw. The replay keeps a slot per target and the next draw sends every
    slot bound since the last one, in bind order, so the methods every bind writes end with the last bind's values as
    on the console. No runtime header, so the host test links it alone. */

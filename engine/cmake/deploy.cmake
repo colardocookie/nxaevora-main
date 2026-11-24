@@ -6,11 +6,8 @@
 # by its own file name, so each game gets a copy under its name. GAMES empty: recompiled/ of the folder the driver
 # beside the runtime works in when no --repo names one (snx_data_dir): a .nxaevora/ beside it, else the user's data
 # folder.
-# A game's folder gets the runtime of the console its <Name>.ini names (system=, which the 3DS, Vita and GBA drivers
-# write): AGB_RUNTIME, scarletnx-agb, for gba. Without one, a 3DS game's folder is named after its title ID (0004 and
-# 12 more hex digits) and gets CTR_RUNTIME, scarletnx-3ds. A Vita game's folder is named after its title ID (four
-# capital letters and five digits) and gets VITA_RUNTIME, scarletnx-vita. Each is nxaevora-engine, which is every driver
-# the build has (src/multicall). One of them empty: its games keep theirs.
+# A game's folder gets the runtime of the console its <Name>.ini names (system=switch): RUNTIME, nxaevora-engine, which
+# is every driver the build has (src/multicall). Any other console's game keeps its own, or gets none of this build's.
 if(WINDOWS)
     set(module_ext dll)
     set(exe_ext .exe)
@@ -19,24 +16,18 @@ else()
     set(exe_ext "")
 endif()
 if(NOT GAMES)
-    if(RUNTIME)
-        get_filename_component(program_dir "${RUNTIME}" DIRECTORY)
-    elseif(CTR_RUNTIME)
-        get_filename_component(program_dir "${CTR_RUNTIME}" DIRECTORY)
-    elseif(VITA_RUNTIME)
-        get_filename_component(program_dir "${VITA_RUNTIME}" DIRECTORY)
-    else()
-        get_filename_component(program_dir "${AGB_RUNTIME}" DIRECTORY)
+    if(NOT RUNTIME)
+        message(STATUS "Runtime not deployed: no runtime to find the games from (set SNX_RECOMPILED_DIR)")
+        return()
     endif()
+    get_filename_component(program_dir "${RUNTIME}" DIRECTORY)
     if(IS_DIRECTORY "${program_dir}/.nxaevora")
         set(data "${program_dir}/.nxaevora")
     elseif(WINDOWS AND DEFINED ENV{APPDATA} AND NOT "$ENV{APPDATA}" STREQUAL "")
         set(data "$ENV{APPDATA}/nxaevora")
-    elseif(MACOS AND DEFINED ENV{HOME} AND NOT "$ENV{HOME}" STREQUAL "")
-        set(data "$ENV{HOME}/Library/Application Support/nxaevora")
-    elseif(NOT WINDOWS AND NOT MACOS AND "$ENV{XDG_DATA_HOME}" MATCHES "^/") # the XDG spec ignores a relative one
+    elseif(NOT WINDOWS AND "$ENV{XDG_DATA_HOME}" MATCHES "^/") # the XDG spec ignores a relative one
         set(data "$ENV{XDG_DATA_HOME}/nxaevora")
-    elseif(NOT WINDOWS AND NOT MACOS AND DEFINED ENV{HOME} AND NOT "$ENV{HOME}" STREQUAL "")
+    elseif(NOT WINDOWS AND DEFINED ENV{HOME} AND NOT "$ENV{HOME}" STREQUAL "")
         set(data "$ENV{HOME}/.local/share/nxaevora")
     else()
         message(STATUS "Runtime not deployed: no home folder to find the games in (set SNX_RECOMPILED_DIR)")
@@ -44,44 +35,22 @@ if(NOT GAMES)
     endif()
     set(GAMES "${data}/recompiled")
 endif()
-# Through a temporary file and a rename, so a game that is running keeps its old copy. A third argument, a system=
-# word: only a folder whose .ini says it
+# Through a temporary file and a rename, so a game that is running keeps its old copy
 function(deploy folder game)
     set(system "")
     if(EXISTS "${folder}/${game}.ini")
-        file(STRINGS "${folder}/${game}.ini" said REGEX "^system=") # the last one counts, as the drivers read it
+        file(STRINGS "${folder}/${game}.ini" said REGEX "^system=") # the last one counts, as the driver reads it
         list(POP_BACK said system)
         string(REGEX REPLACE "^system=" "" system "${system}")
         string(STRIP "${system}" system)
     endif()
-    if(ARGC GREATER 2 AND NOT system STREQUAL "${ARGV2}")
-        return()
-    endif()
-    if(system STREQUAL "gba")
-        set(runtime "${AGB_RUNTIME}")
-    elseif(system STREQUAL "3ds")
-        set(runtime "${CTR_RUNTIME}")
-    elseif(system STREQUAL "vita")
-        set(runtime "${VITA_RUNTIME}")
-    elseif(system STREQUAL "switch")
-        set(runtime "${RUNTIME}")
-    elseif(NOT system STREQUAL "")
-        message(STATUS "Runtime not deployed to ${folder}: its ${game}.ini says system=${system}, which is none of "
-                       "switch, 3ds, vita and gba")
-        return()
-    elseif(game MATCHES "^0004[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]$")
-        set(runtime "${CTR_RUNTIME}")
-    elseif(game MATCHES "^[A-Z][A-Z][A-Z][A-Z][0-9][0-9][0-9][0-9][0-9]$")
-        set(runtime "${VITA_RUNTIME}")
-    else()
-        set(runtime "${RUNTIME}")
-    endif()
-    if(NOT runtime) # another console's game, whose driver deploys its own
+    if(NOT system STREQUAL "" AND NOT system STREQUAL "switch") # another console's game, whose driver this build lacks
         math(EXPR others "${others} + 1")
         set(others "${others}" PARENT_SCOPE)
+        message(STATUS "Runtime not deployed to ${folder}: its ${game}.ini says system=${system}, which is not switch")
         return()
     endif()
-    file(COPY_FILE "${runtime}" "${folder}/.${game}.tmp")
+    file(COPY_FILE "${RUNTIME}" "${folder}/.${game}.tmp")
     file(CHMOD "${folder}/.${game}.tmp" FILE_PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE
          WORLD_READ WORLD_EXECUTE)
     file(RENAME "${folder}/.${game}.tmp" "${folder}/${game}${exe_ext}")
@@ -107,16 +76,6 @@ foreach(module IN LISTS modules)
     string(REGEX REPLACE "_code\\.${module_ext}$" "" game "${name}")
     deploy("${folder}" "${game}")
 endforeach()
-# a GBA game's module is a .so on Windows too (src/agb/cpu/recomp.c): those folders, when their .ini says gba
-if(WINDOWS)
-    file(GLOB modules "${games_glob}/*/*_code.so")
-    foreach(module IN LISTS modules)
-        get_filename_component(folder "${module}" DIRECTORY)
-        get_filename_component(name "${module}" NAME)
-        string(REGEX REPLACE "_code\\.so$" "" game "${name}")
-        deploy("${folder}" "${game}" gba)
-    endforeach()
-endif()
 if(deployed EQUAL 0 AND others EQUAL 0)
     message(STATUS "Runtime not deployed: no game module in ${GAMES}")
 elseif(deployed EQUAL 0)

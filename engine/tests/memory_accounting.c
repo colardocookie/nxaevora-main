@@ -64,7 +64,7 @@ void plat_vm_decommit(u8* p, u64 size) {
 #if defined(__linux__)
     if (madvise(p, size, MADV_DONTNEED) || mprotect(p, size, PROT_NONE)) abort();
 #else
-    /* as plat_posix.c: only Linux's MADV_DONTNEED drops the contents (Darwin's and FreeBSD's keep them) */
+    /* as plat_posix.c: only Linux's MADV_DONTNEED drops the contents (FreeBSD's keeps them) */
     if (mmap(p, size, PROT_NONE, MAP_FIXED | MAP_PRIVATE | MAP_ANONYMOUS, -1, 0) == MAP_FAILED) abort();
 #endif
 }
@@ -475,7 +475,7 @@ static void test_shared_memory(void) {
 
 int main(void) {
     hle_init();
-    /* this host's pages, then those of hosts with larger ones (16 KiB: Apple silicon, some Android kernels; 64 KiB:
+    /* this host's pages, then those of hosts with larger ones (64 KiB:
        PowerPC64 and some AArch64 distributions), which mem.c commits in whole */
     static const u64 pages[] = {16 << 10, 64 << 10};
     unsigned i;

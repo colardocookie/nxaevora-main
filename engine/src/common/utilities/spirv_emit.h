@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* A C SPIR-V writer, for the shaders the runtimes make while a game runs: the Maxwell programs NX translates
-   (nx/gpu/shader/spirv_translate.c and spirv_compute.c) and the 3DS's PICA vertex programs and fragment pipeline
-   (3ds/gpu/vk/vsgen.c and fsgen.c). Instructions append words directly to their logical sections; spv_emit_finish
+/* A C SPIR-V writer, for the shaders the runtime makes while a game runs: the Maxwell programs NX translates
+   (nx/gpu/shader/spirv_translate.c and spirv_compute.c). Instructions append words directly to their logical
+   sections; spv_emit_finish
    orders the sections into a Vulkan shader module of the Logical GLSL450 memory model, SPIR-V 1.6 unless version says
    otherwise.
 

@@ -12,23 +12,6 @@ msgstr ""
 "Language-Team: ScarletNX <https://github.com/scarletnx/ScarletNX>\n"
 "X-Language-Name: Português (Brasil)\n"
 
-#: src/gui/android.c
-msgid "No Android activity to ask."
-msgstr "Sem atividade do Android para chamar."
-
-#: src/gui/android.c
-#, c-format
-msgid "MainActivity.%s did not run."
-msgstr "MainActivity.%s não rodou."
-
-#: src/gui/apple.m
-msgid "The document picker did not open."
-msgstr "O seletor de documentos não abriu."
-
-#: src/gui/apple.m
-msgid "No window to show the picker over."
-msgstr "Sem janela para mostrar o seletor."
-
 #: src/gui/apple.m
 #, c-format
 msgid "The log could not be shown: it is at %s"
@@ -118,14 +101,6 @@ msgid "Load Switch NRO"
 msgstr "Abrir Switch NRO"
 
 #: src/gui/main.c
-msgid "Load Linux ARM ELF"
-msgstr "Abrir Linux ARM ELF"
-
-#: src/gui/main.c
-msgid "Load 3DS game"
-msgstr "Abrir jogo de 3DS"
-
-#: src/gui/main.c
 msgid "Settings"
 msgstr "Configurações"
 
@@ -159,26 +134,6 @@ msgstr "Toque: abrir. Deslize: virar a página. Recompilar: toque nele. Atualiza
 msgid "Back: go back."
 msgstr "Voltar: retornar."
 
-#: src/gui/main.c
-msgid "tap the box to open the file picker"
-msgstr "toque na caixa para abrir o seletor de arquivos"
-
-#: src/gui/main.c
-msgid "Pick a file"
-msgstr "Escolha um arquivo"
-
-#: src/gui/main.c
-msgid "Tap to return to menu"
-msgstr "Toque para voltar ao menu"
-
-#: src/gui/main.c
-msgid "Tap here to abort and return to menu"
-msgstr "Toque aqui para abortar e voltar ao menu"
-
-#: src/gui/main.c
-msgid "No games in recompiled/ or dumps/: put a game's .nro in dumps/."
-msgstr "Nenhum jogo em recompiled/ nem em dumps/: coloque o .nro de um jogo em dumps/."
-
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
@@ -206,26 +161,8 @@ msgstr "Toque numa linha para mudar ou abrir. Voltar: retornar."
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
-msgid "Tap: add."
-msgstr "Toque: adicionar."
-
-#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
-#: src/gui/main.c
-#, snx-keys
-msgid "Tap: change."
-msgstr "Toque: mudar."
-
-#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
-#: src/gui/main.c
-#, snx-keys
 msgid "Tap: delete."
 msgstr "Toque: excluir."
-
-#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
-#: src/gui/main.c
-#, snx-keys
-msgid "Tap: reset."
-msgstr "Toque: restaurar."
 
 #: src/gui/main.c
 #, snx-keys
@@ -499,10 +436,6 @@ msgid "Nothing to keep: no file of the menu's"
 msgstr "Nada a guardar: nenhum arquivo do menu"
 
 #: src/gui/main.c
-msgid "Outside the app, Android checks every file access: games may run slower."
-msgstr "Fora do app, o Android confere cada acesso a arquivo: os jogos podem rodar mais devagar."
-
-#: src/gui/main.c
 msgid "Abort the recompile? Its work is lost."
 msgstr "Abortar a recompilação? O trabalho feito se perde."
 
@@ -513,10 +446,6 @@ msgstr "Abortar a execução?"
 #: src/gui/main.c
 msgid "Left by older versions"
 msgstr "Deixados por versões antigas"
-
-#: src/gui/main.c
-msgid "While the app is in testing, Android's Settings > Apps > ScarletNX > Storage > Clear storage takes the menu's files above, with every game, save and key in the app"
-msgstr "Enquanto o app está em testes, Configurações > Apps > ScarletNX > Armazenamento > Limpar armazenamento do Android apaga os arquivos do menu acima, com todos os jogos, saves e chaves do app"
 
 #: src/gui/main.c
 msgid "counting"
@@ -540,10 +469,6 @@ msgstr "e mais %d, que o Compartilhar log lista"
 #: src/gui/main.c
 msgid "OK"
 msgstr "OK"
-
-#: src/gui/main.c
-msgid "tap again"
-msgstr "toque de novo"
 
 #: src/gui/main.c
 msgid "press again"
@@ -815,16 +740,8 @@ msgid "Add a folder"
 msgstr "Adicionar pasta"
 
 #: src/gui/main.c
-msgid "Linux ARM ELF, run with scarletnx-gnuabi"
-msgstr "ELF Linux ARM, rodado com o scarletnx-gnuabi"
-
-#: src/gui/main.c
 msgid "The recent games not shown"
 msgstr "Os jogos recentes não mostrados"
-
-#: src/gui/main.c
-msgid "3DS game, opened with scarletnx-3ds"
-msgstr "Jogo de 3DS, aberto com o scarletnx-3ds"
 
 #: src/gui/main.c
 msgid "A dump, prepared when it runs"
@@ -1072,10 +989,6 @@ msgid "app.ini, which names the other folders, and each game's .ini: a portable 
 msgstr "app.ini, que indica as outras pastas, e o .ini de cada jogo: uma cópia portátil (.scarletnx ao lado do programa) tem a sua"
 
 #: src/gui/main.c
-msgid "outside the app"
-msgstr "fora do app"
-
-#: src/gui/main.c
 msgid "custom"
 msgstr "personalizada"
 
@@ -1127,10 +1040,6 @@ msgid "Not changed: %s %s"
 msgstr "Não mudou: %s %s"
 
 #: src/gui/main.c
-msgid "Not changed"
-msgstr "Não mudou"
-
-#: src/gui/main.c
 #, c-format
 msgid "They are the defaults: %s"
 msgstr "Já estão no padrão: %s"
@@ -1151,18 +1060,8 @@ msgstr "A pasta %s %s %s. Configurações > App > Pastas escolhe outra."
 
 #: src/gui/main.c
 #, c-format
-msgid "Needs about %s, %s free."
-msgstr "Precisa de uns %s, %s livres."
-
-#: src/gui/main.c
-#, c-format
 msgid "The folder picker could not open: %s"
 msgstr "O seletor de pastas não abriu: %s"
-
-#: src/gui/main.c
-#, c-format
-msgid "Folders: the folder picker could not open: %s"
-msgstr "Pastas: o seletor de pastas não abriu: %s"
 
 #: src/gui/main.c
 #, c-format
@@ -1858,14 +1757,6 @@ msgid "Driver exited with status %d."
 msgstr "O driver saiu com status %d."
 
 #: src/gui/main.c
-msgid "Failed"
-msgstr "Falhou"
-
-#: src/gui/main.c
-msgid "Ready"
-msgstr "Pronto"
-
-#: src/gui/main.c
 msgid "That path is not a readable file. Try again or press ESC."
 msgstr "Esse caminho não é um arquivo legível. Tente de novo ou aperte ESC."
 
@@ -1890,11 +1781,6 @@ msgstr "Nenhum jogo em foco para recompilar."
 #: src/gui/main.c
 msgid "R recompiles Switch games only."
 msgstr "R só recompila jogos de Switch."
-
-#: src/gui/main.c
-#, c-format
-msgid "Cannot read this file by its path. Check that ScarletNX may access the device's files in Android's settings, then pick it from the device's storage (%s)."
-msgstr "Não foi possível ler este arquivo pelo caminho. Confira nas configurações do Android se o ScarletNX pode acessar os arquivos do aparelho e escolha-o no armazenamento do aparelho (%s)."
 
 #: src/gui/main.c
 #, c-format
@@ -2138,10 +2024,6 @@ msgstr "Não foi possível criar a fonte do menu: %s"
 #: src/gui/main.c
 msgid "Cannot start the menu: out of memory"
 msgstr "Não foi possível iniciar o menu: sem memória"
-
-#: src/gui/main.c
-msgid "Cannot find the folder of the app's libraries"
-msgstr "Não foi possível achar a pasta das bibliotecas do app"
 
 #: src/gui/main.c
 #, c-format

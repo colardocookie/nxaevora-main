@@ -25,12 +25,12 @@ the process's heap region (`m_max_process_memory`), not at the application pool:
 
 The memory behavior below was checked against Atmosphere's Mesosphere sources at
 commit `c7e6c35e900b52c364d557bdbfe554c857158d97`. This is an independently written
-implementation in ScarletNX, not a port of Atmosphere's GPL-2.0-only code.
+implementation in NXAevora Engine, not a port of Atmosphere's GPL-2.0-only code.
 
 ## Implemented behavior
 
 - Charge the page-rounded loaded images, including data and BSS, and the main
-  thread's page-rounded stack instead of a fixed 256 MiB. ScarletNX's unmapped
+  thread's page-rounded stack instead of a fixed 256 MiB. NXAevora Engine's unmapped
   guard pages are not physical allocations. Images are charged by the loader and
   the main stack is charged before the guest main thread starts.
 - For a single application with a private NPDM system resource, charge that
@@ -38,7 +38,7 @@ implementation in ScarletNX, not a port of Atmosphere's GPL-2.0-only code.
   is not the same quantity as the slab usage returned by GetInfo 17.
 - Use application pool sizes of 3285, 4916 and 6964 MiB for the 4, 6 and 8 GiB
   layouts. The latter two are 417 MiB smaller than the previous extended settings.
-- With `memory_fit=1` (iOS's default), the pool the game is told is at most what
+- With `memory_fit=1`, the pool the game is told is at most what
   the host can still give the process as the game starts, plus what the process
   holds, less what the rest takes (the runtime then and 256 MiB for the graphics,
   700 MiB at least), never under 1 GiB (`mem_fit_budget`). Every GetInfo above and

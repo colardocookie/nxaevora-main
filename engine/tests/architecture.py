@@ -12,12 +12,8 @@ from pathlib import Path
 BOUNDARIES = {
     'common': {'common'},
     'nx': {'nx', 'common'},
-    'gnuabi': {'gnuabi', 'common'},
-    '3ds': {'3ds', 'common'},
-    'vita': {'vita', 'common'},
-    'agb': {'agb', 'common'},
-    # scarletnx's main, every driver the build has: their entries, by the name it runs under
-    'multicall': {'multicall', 'nx', 'gnuabi', '3ds', 'vita', 'agb', 'gui', 'common'},
+    # scarletnx's main, every driver the build has: the Switch driver's entry, by the name it runs under
+    'multicall': {'multicall', 'nx', 'gui', 'common'},
 }
 INCLUDE = re.compile(r'^\s*#\s*include\s*(["<])([^">]+)[">]', re.MULTILINE)
 
@@ -87,68 +83,17 @@ def check_graph(graph):
         return {nodes.get(item, item) for item in result}
 
     errors = []
-    for owner, forbidden in (
-        (
-            'scarletnx-common',
-            (
-                'scarletnx-nx',
-                'scarletnx-gnuabi',
-                'scarletnx-3ds',
-                'scarletnx-agb',
-                'snx_ctr_board',
-                'snx_ctr_memory',
-                'snx_ctr_loader',
-            ),
-        ),
-        (
-            'scarletnx-nx',
-            ('scarletnx-gnuabi', 'scarletnx-3ds', 'scarletnx-agb', 'snx_ctr_board', 'snx_ctr_memory', 'snx_ctr_loader'),
-        ),
-        (
-            'scarletnx-gnuabi',
-            ('scarletnx-nx', 'scarletnx-3ds', 'scarletnx-agb', 'snx_ctr_board', 'snx_ctr_memory', 'snx_ctr_loader'),
-        ),
-        ('scarletnx-3ds', ('scarletnx-nx', 'scarletnx-gnuabi', 'scarletnx-agb', 'snx_driver', 'snx_nx_module')),
-        (
-            'scarletnx-agb',
-            (
-                'scarletnx-nx',
-                'scarletnx-gnuabi',
-                'scarletnx-3ds',
-                'snx_ctr_board',
-                'snx_ctr_memory',
-                'snx_ctr_loader',
-                'snx_driver',
-                'snx_nx_module',
-            ),
-        ),
-        ('snx_ctr_program', ('scarletnx-nx', 'scarletnx-gnuabi', 'scarletnx-agb', 'snx_driver', 'snx_nx_module')),
-        ('snx_agb_program', ('scarletnx-nx', 'scarletnx-gnuabi', 'scarletnx-3ds', 'snx_driver', 'snx_nx_module')),
-        (
-            'snx_switch_program',
-            ('scarletnx-gnuabi', 'scarletnx-3ds', 'scarletnx-agb', 'snx_ctr_board', 'snx_ctr_memory', 'snx_ctr_loader'),
-        ),
-        ('snx_ctr_board', ('scarletnx-nx', 'scarletnx-gnuabi')),
-        ('snx_ctr_memory', ('scarletnx-nx', 'scarletnx-gnuabi')),
-        ('snx_ctr_loader', ('scarletnx-nx', 'scarletnx-gnuabi', 'snx_driver', 'snx_nx_module')),
-        ('snx_ctr_cpu', ('scarletnx-nx', 'scarletnx-gnuabi', 'snx_driver', 'snx_nx_module', 'snx_arm_llvm')),
-        ('snx_ctr_process', ('scarletnx-nx', 'scarletnx-gnuabi', 'snx_driver', 'snx_nx_module', 'snx_arm_llvm')),
-        ('snx_ctr_native', ('scarletnx-nx', 'scarletnx-gnuabi', 'snx_driver', 'snx_nx_module', 'snx_arm_llvm')),
-    ):
-        if owner not in by_name:
-            if owner == 'scarletnx-common':
-                errors.append(f'CMake graph is missing target {owner}')
-            continue
-        dependencies = closure(by_name[owner])
-        for target in forbidden:
-            if target in dependencies:
-                errors.append(f'{owner} transitively links forbidden target {target}')
-        if owner in ('scarletnx-common', 'scarletnx-gnuabi', 'scarletnx-agb'):
-            for target in dependencies:
-                if re.search(
-                    r'(?:^|[-_:])(gpu|maxwell|vulkan|volk|glslang|sdl3|ffmpeg|spirv)(?:$|[-_:])', target, re.IGNORECASE
-                ) or target in {'snx_vk', 'snx_null', 'snx_shader', 'snx_video', 'snx_platform'}:
-                    errors.append(f'{owner} transitively links graphics/media target {target}')
+    if 'scarletnx-common' not in by_name:
+        errors.append('CMake graph is missing target scarletnx-common')
+    else:
+        dependencies = closure(by_name['scarletnx-common'])
+        if 'scarletnx-nx' in dependencies:
+            errors.append('scarletnx-common transitively links forbidden target scarletnx-nx')
+        for target in dependencies:
+            if re.search(
+                r'(?:^|[-_:])(gpu|maxwell|vulkan|volk|glslang|sdl3|ffmpeg|spirv)(?:$|[-_:])', target, re.IGNORECASE
+            ) or target in {'snx_vk', 'snx_null', 'snx_shader', 'snx_video', 'snx_platform'}:
+                errors.append(f'scarletnx-common transitively links graphics/media target {target}')
     return errors
 
 
@@ -299,8 +244,6 @@ def check_target_sources(repo, build):
             owner = {
                 'scarletnx-common': 'common',
                 'scarletnx-nx': 'nx',
-                'scarletnx-gnuabi': 'gnuabi',
-                'scarletnx-agb': 'agb',
             }.get(entry['name'])
             target = json.loads((reply / entry['jsonFile']).read_text(encoding='utf-8'))
             directory = (repo / target.get('paths', {}).get('source', '')).resolve()

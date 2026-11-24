@@ -232,7 +232,6 @@ setting Memory fit
     key memory_fit
     int 0 1
     default 0
-    default-if SNX_IOS 1
     startup
     words Off|On
     help On = the game sees no more of Memory (GB) than the device can still give it, measured as it starts, less what
@@ -248,7 +247,6 @@ setting Map limit (MB)
     key map_limit_mb
     int 0 1048576
     default 0
-    default-if SNX_IOS 256
     startup
     words No limit|#
     help The most of the game's files mapped into memory, in MB, as the game first reads them; 0 = no limit. A file past
@@ -258,7 +256,6 @@ setting Map limit (files)
     key map_limit_files
     int 0 1000000
     default 0
-    default-if SNX_IOS 2048
     startup
     words No limit|#
     help The most of the game's files mapped, as the game first reads them; 0 = no limit. A file past it is read from
@@ -268,7 +265,6 @@ setting Thread stack (MB)
     key thread_stack_mb
     int 1 256
     default 32
-    default-if SNX_IOS 8
     startup
     help The host stack of each of the game's threads, in MB: a game's deep calls take it. Less leaves address space
     help for more threads where a device has little, and a game that calls very deep may then stop
@@ -298,7 +294,7 @@ setting Prepare shaders
     help is updated. Off = shaders are made only when the game first draws with them. While playing = prepared in the
     help background, used once all are ready. Before starting = a loading screen waits for them and for the shader cache
     help of earlier sessions. Any key, button or tap starts the game at once and the rest is prepared while you play.
-    help Esc quits (on Android, back opens the menu)
+    help Esc quits
 setting JIT threads
     key jit_threads
     int 0 4
@@ -307,10 +303,7 @@ setting JIT threads
     words Auto|#
     help Threads compiling the code the recompiler missed: 0 = every CPU the game may use but two (at most 4).
     help They yield to the game
-# The JIT's level is the recompile's Optimization level by default (g_recompile_ini's opt, 2), as an AOT pack built from
-# the cache needs the cache's level and the pack's to agree. A phone has no such setting: its JIT compiles at O0, as any
-# other level breaks it (guest_jit.c), and cmake/settings.cmake leaves the block out
-# SNX_PHONE_BEGIN
+# The JIT's level is the recompile's Optimization level by default (g_recompile_ini's opt, 2)
 setting JIT optimization
     key jit_opt
     text 2
@@ -320,7 +313,6 @@ setting JIT optimization
     help LLVM's optimization of the code the runtime JIT compiles when the game reaches code the recompiler missed:
     help 0 none, 3 the most, s or z the smallest. It is the recompile's Optimization level by default (2), which an AOT
     help pack built from the cache needs to match. It applies to the next run, which compiles its JIT code again
-# SNX_PHONE_END
 
 # the on-screen controls' (platform/vpad.c): their settings in the game's menu's order, then a control's place in the
 # order of SNX_VPAD_ (VPAD_CONTROLS, which the list controls follows)
@@ -329,7 +321,6 @@ setting Show controls
     key controls
     int 0 1
     default 0
-    default-if __ANDROID__ 1
     set vpad_on_set
     words Off|On
     help The on-screen controls: 1 = shown, 0 = hidden. The game's menu (Back, Home or F2) sets them
@@ -373,7 +364,7 @@ setting Haptics
     int 0 1
     default 1
     words Off|On
-    help 1 = a short buzz on each press and release (Android)
+    help 1 = a short buzz on each press and release
 setting Control place
     key controls_<ID>
     each controls
@@ -735,7 +726,7 @@ setting Alias pool
     startup
     words Off|On
     help 1 = a view of guest memory (MapMemory, MapProcessMemory, code memory's owner and slave) shares its source's
-    help host pages, as the console's do, where the host's pages are 4 KiB (Linux and Android). 0 = every view is a
+    help host pages, as the console's do, where the host's pages are 4 KiB (Linux). 0 = every view is a
     help copy: a write through it reaches the source at its unmap, or at a flushed line (IC IVAU, DC CVAC) after the
     help write, as hosts without a pool run (Windows among them). For tests of that path, and a diagnosis
 setting Profiler
@@ -1043,100 +1034,6 @@ setting State checks
     help Save state round trips, a comma between: at saves the game at that many ms of the scripted input's clock into
     help the check slot, loads it back at once, and logs whether guest memory and guest time came back the same
 
-# ---- the 3DS driver's (scarletnx-3ds --key=value), in no section of the game's .ini ----
-
-table g_ctr_debug_ini
-setting CTR IPC trace
-    key ctr_ipc_trace
-    int 0 1
-    default 0
-    words Off|On
-    help 1 = logs each service request the 3DS game sends, its service and header, in the order sent
-setting CTR SVC trace
-    key ctr_svc_trace
-    int 0 2
-    default 0
-    words Off|Failures|All
-    help 1 = logs each SVC the 3DS game makes that answers a failure (r0 with its top bit set), 2 = every SVC, with
-    help the thread, its pc and r0 to r3 before and after
-setting CTR GPU trace
-    key ctr_gpu_trace
-    int 0 1
-    default 0
-    words Off|On
-    help 1 = logs each GX command the 3DS game queues, and each framebuffer swap the display takes or drops (and why)
-setting CTR run-time compile trace
-    key ctr_jit_trace
-    int 0 1
-    default 0
-    words Off|On
-    help 1 = logs each block the 3DS runtime compiles while the game runs (the static module lacked it), Thumb ones
-    help with the pc's low bit set as the hints file writes them
-setting CTR answer unknown commands
-    key ctr_auto_stub_ipc
-    int 0 1
-    default 1
-    words Off|On
-    help 1 = a command of a 3DS service the runtime doesn't know answers success, and a service it doesn't have is a
-    help stand-in that answers each command so (each logged the first time), as auto_stub_ipc does for a Switch game;
-    help 0 = the run stops at the first, saying which, except for the services --ipc-stubs names
-setting CTR script
-    key ctr_script
-    text 4096
-    default ""
-    help The 3DS game's scripted input (--script= too): when:buttons, comma between, when in ms from the start and
-    help buttons in hex as hid:USER's pad has them (1 A, 2 B, 4 Select, 8 Start, 10 Right, 20 Left, 40 Up, 80 Down,
-    help 100 R, 200 L, 400 X, 800 Y), each held for press_len ms
-
-# ---- the Vita driver's (scarletnx-vita --key=value), in no section of the game's .ini ----
-
-table g_vita_debug_ini
-setting Vita import trace
-    key vita_hle_trace
-    int 0 2
-    default 0
-    words Off|Missing|All
-    help 1 = logs each call of an imported function the runtime doesn't implement, 2 = every call, with its
-    help thread, r0 to r3 and its result
-setting Vita run-time compile trace
-    key vita_jit_trace
-    int 0 1
-    default 0
-    words Off|On
-    help 1 = logs each block the Vita runtime compiles while the game runs (the game's module lacked it), Thumb ones
-    help with the pc's low bit set as the hints file writes them
-setting Vita GXM trace
-    key vita_gxm_trace
-    int 0 1
-    default 0
-    words Off|On
-    help 1 = logs each scene, draw and display queue entry the Vita game makes through sceGxm
-setting Vita shader corpus
-    key vita_shader_corpus
-    text 1024
-    default ""
-    help A folder the Vita runtime writes each GXP program it translates to, with what it was translated for, as
-    help <hash>.gxp: tools/snx_vita_usse.c translates such a folder again (the game's own code: keep it local)
-setting Vita script
-    key vita_script
-    text 4096
-    default ""
-    help The Vita game's scripted input (--script= too): when:buttons, comma between, when in ms from the start and
-    help buttons in hex as SceCtrl has them (1 Select, 8 Start, 10 Up, 20 Right, 40 Down, 80 Left, 100 L, 200 R,
-    help 1000 Triangle, 2000 Circle, 4000 Cross, 8000 Square, and the left stick pushed all the way: 1000000 right,
-    help 2000000 left, 4000000 up, 8000000 down), each held for vita_press_len ms
-setting Vita press length
-    key vita_press_len
-    int 0 INT_MAX
-    default 300
-    help How long each press of the Vita game's script is held, in ms (--press_len= too)
-setting Vita screenshot interval
-    key vita_shot_every
-    int 0 INT_MAX
-    default 0
-    help With --shot=PATH, also a screenshot every this many vblanks (60 a second), PATH_0000.ppm on; 0 = only the
-    help last frame's
-
 section Game: g_game_ini
 section Display: g_display_ini
 section Graphics: g_graphics_ini
@@ -1190,12 +1087,9 @@ setting Unit size
     key unit_instructions
     int 1 INT_MAX
     default 90000
-    default-if __ANDROID__ 20000
-    default-if SNX_IOS 20000
     words # instructions
     help The instructions a code unit takes, whole functions at a time, when the game is recompiled: each is compiled
-    help on its own, and a smaller one takes less memory at once, which a phone needs (Android's allocator ran out at
-    help 90000 on several threads, and iOS ends an app at its limit). A game made already keeps its units until it is
+    help on its own, and a smaller one takes less memory at once. A game made already keeps its units until it is
     help recompiled
 setting Unit cache limit
     key unit_cache_gb

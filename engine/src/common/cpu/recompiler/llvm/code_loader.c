@@ -4,8 +4,6 @@
    code_loader_coff.c) */
 #ifdef __linux__
 #define _GNU_SOURCE /* memfd_create, syscall */
-#elif defined(__APPLE__)
-#define _DARWIN_C_SOURCE /* MAP_ANON, MAP_JIT and pthread_jit_write_protect_np besides POSIX */
 #endif
 #include "common/cpu/recompiler/llvm/code_loader_int.h"
 #include "common/cpu/recompiler/llvm/gdb_jit.h"
@@ -27,33 +25,8 @@
 #endif
 #if defined(__linux__)
 #include <sys/syscall.h>
-#elif defined(__APPLE__)
-#include <TargetConditionals.h>
 #elif defined(__FreeBSD__)
 #include <sys/shm.h>
-#endif
-/* macOS on Apple silicon: the arena is MAP_JIT memory, which each thread sees either writable or executable
-   (apple_arena), and other threads are synchronized with new code through the kernel (sync_threads) */
-#if defined(__APPLE__) && defined(__aarch64__) && (TARGET_OS_OSX || TARGET_OS_SIMULATOR)
-#define APPLE_JIT 1
-#include <mach/mach.h>
-#include <pthread.h>
-#if TARGET_OS_SIMULATOR
-/* The iOS simulator is a Mac process that has MAP_JIT as macOS does, but its SDK marks pthread_jit_write_protect_np
-   unavailable on iOS: the symbol is there, found by name */
-#include <dlfcn.h>
-#endif
-#endif
-/* iOS on a device: an app may not make memory executable, so a debugger does it for the app (ios_arena), and the other
-   threads are synchronized with new code as on macOS (sync_threads) */
-#if defined(__APPLE__) && defined(__aarch64__) && TARGET_OS_IOS && !TARGET_OS_SIMULATOR
-#define IOS_JIT 1
-#include <mach/mach.h>
-#include <mach/vm_map.h>
-#include <sys/sysctl.h>
-#endif
-#if defined(APPLE_JIT) || defined(IOS_JIT)
-#define APPLE_THREADS 1
 #endif
 #if defined(__linux__) && defined(__aarch64__)
 /* <linux/membarrier.h>'s commands (Linux 4.16), by number for C libraries whose headers predate them */
@@ -65,14 +38,10 @@
 typedef char snx_code_loader_needs_64_bits[sizeof(size_t) >= 8 ? 1 : -1];
 
 /* the machine whose code this process runs, as an ELF e_machine: x86-64's 62, AArch64's 183; Windows' x86-64 COFF.
-   macOS on Apple silicon loads ELF objects as well: the IR backend writes them for the loader with Darwin's calling
-   convention (snx_ir_new_jit), and so does iOS, with a debugger attached (ios_arena), and the iOS simulator on Apple
-   silicon as macOS does. 0 where the loader cannot run what it loads: Intel Macs, never tried */
+   0 where the loader cannot run what it loads */
 #if defined(_WIN32) && (defined(__x86_64__) || defined(_M_X64))
 #define HOST_MACHINE SNX_CODE_COFF_X64
-#elif defined(APPLE_JIT) || defined(IOS_JIT)
-#define HOST_MACHINE 183u
-#elif defined(_WIN32) || defined(__APPLE__)
+#elif defined(_WIN32)
 #define HOST_MACHINE 0u
 #elif defined(__x86_64__) || defined(_M_X64)
 #define HOST_MACHINE 62u
@@ -157,117 +126,6 @@ static int windows_arena(SnxCodeLoader* loader, char* error, size_t error_size) 
     loader->region[DATA].write = base + loader->region[DATA].start;
     return 0;
 }
-#elif defined(APPLE_JIT)
-/* The arena on macOS on Apple silicon, where memory becomes executable only as MAP_JIT memory, which mmap places where
-   it likes and never shares (MAP_FIXED and MAP_SHARED fail with it: XNU's bsd/kern/kern_mman.c), so it has no second
-   view. Code and read-only data are one MAP_JIT mapping, readable, writable and executable in the page tables, which
-   each thread sees either executable or writable, as it last chose with pthread_jit_write_protect_np (executable
-   until then). Every thread runs code from it, and only the loading thread sees it writable, while it writes a load
-   (snx_code_writable): to the others the read-only data stays read-only, and no thread can write and run the code at
-   once. Data is ordinary private memory mapped over the mapping's end, made read-write as loads reach it. An app
-   without the hardened runtime, as the ad hoc signed ScarletNX.app is (cmake/apple_package.cmake), needs no entitlement for
-   MAP_JIT and may have several such mappings, one per loader; with it, com.apple.security.cs.allow-jit allows one. 0,
-   or -1 with the reason in error */
-static int apple_arena(SnxCodeLoader* loader, char* error, size_t error_size) {
-    void* base =
-        mmap(NULL, loader->reserved, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANON | MAP_JIT, -1, 0);
-    if (base == MAP_FAILED) {
-        snprintf(error, error_size, "cannot map %lu MiB of JIT memory for code",
-                 (unsigned long)(loader->reserved >> 20));
-        return -1;
-    }
-    loader->base = (unsigned char*)base;
-    if (mmap(loader->base + loader->region[DATA].start, loader->region[DATA].size, PROT_NONE,
-             MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0) == MAP_FAILED) {
-        snprintf(error, error_size, "cannot map the code arena's data");
-        return -1;
-    }
-    for (int i = CODE; i < REGIONS; ++i) loader->region[i].write = loader->base + loader->region[i].start;
-    return 0;
-}
-#elif defined(IOS_JIT)
-/* StikJIT's protocol (INTEGRATION.md): the command in x16, the arguments in x0 and x1, and brk #0xf00d, which only an
-   attached debugger answers; without one the brk kills the process, so ios_arena checks first. Command 1 prepares a
-   region: with x0 NULL the debugger maps x1 bytes read-execute (read and execute, not execute-only, on an A16 with
-   iOS 26.6.1: .context/ios-jit-results.md) and touches each of its pages, about 4 s for a GiB, and returns its address
-   in x0, which stays as it was when it fails. Written from the protocol's description, not from the debugger's code */
-__attribute__((noinline, optnone, naked)) static void* ios_jit_prepare(void* address, size_t length) {
-    __asm__ volatile("mov x16, #1\n brk #0xf00d\n ret\n");
-}
-
-/* P_TRACED: a debugger is attached now. CS_DEBUGGED stays set after it lets go, so it says nothing about the brk */
-static int debugger_attached(void) {
-    int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, (int)getpid()};
-    struct kinfo_proc kp = {0};
-    size_t n = sizeof(kp);
-    return sysctl(mib, 4, &kp, &n, NULL, 0) == 0 && (kp.kp_proc.p_flag & P_TRACED);
-}
-
-/* The arena on iOS. The debugger prepares the whole arena as one region (read-execute), and code and read-only data
-   are written through a read-write alias of their part of it (vm_remap, then vm_protect), which every load goes
-   through. The data region is the region's tail, given back and mapped again as ordinary memory at the same place:
-   the pages after a debugger's region are not always free (an arena of a device's app found them taken), and this way
-   the three regions stay one arena's reach apart whatever is around it. The debugger can be let go after this: the
-   prepared pages stay executable, and what is written into them later runs. 0, or -1 with the reason in error */
-static int ios_arena(SnxCodeLoader* loader, char* error, size_t error_size) {
-    size_t code = loader->region[DATA].start; /* CODE and RODATA */
-    vm_address_t alias = 0;
-    vm_prot_t cur, max;
-    if (!debugger_attached()) {
-        snprintf(error, error_size,
-                 "iOS makes memory executable only for an attached debugger: enable JIT for this app (StikDebug, with "
-                 "universal.js assigned to it) before opening a game");
-        return -1;
-    }
-    fprintf(stderr, "jit arena: debugger attached, asking it for %lu MiB (CODE %lu, RODATA %lu, DATA %lu MiB)\n",
-            (unsigned long)(loader->reserved >> 20), (unsigned long)(loader->region[CODE].size >> 20),
-            (unsigned long)(loader->region[RODATA].size >> 20), (unsigned long)(loader->region[DATA].size >> 20));
-    unsigned char* base = (unsigned char*)ios_jit_prepare(NULL, loader->reserved);
-    fprintf(stderr, "jit arena: the debugger answered %p\n", (void*)base);
-    if (!base || base == (unsigned char*)(size_t)-1 || (size_t)base % loader->page) {
-        snprintf(error, error_size, "the debugger did not prepare %lu MiB of code memory",
-                 (unsigned long)(loader->reserved >> 20));
-        return -1;
-    }
-    loader->base = base;
-    kern_return_t kr = vm_remap(mach_task_self(), &alias, code, 0, VM_FLAGS_ANYWHERE, mach_task_self(),
-                                (vm_address_t)base, FALSE,
-                  &cur, &max, VM_INHERIT_NONE);
-    if (kr == KERN_SUCCESS) kr = vm_protect(mach_task_self(), alias, code, FALSE, VM_PROT_READ | VM_PROT_WRITE);
-    if (kr != KERN_SUCCESS) {
-        snprintf(error, error_size, "cannot map the prepared code memory writable (%d)", (int)kr);
-        return -1;
-    }
-    fprintf(stderr, "jit arena: write alias at %p (current %d, maximum %d)\n", (void*)alias, (int)cur, (int)max);
-    for (int i = CODE; i <= RODATA; ++i) loader->region[i].write = (unsigned char*)alias + loader->region[i].start;
-    vm_address_t data = (vm_address_t)(base + loader->region[DATA].start);
-    /* the tail as read-write where it is first (it drops the execute right only), and when the system refuses, given
-       back and mapped again as ordinary memory. The pages are zeroed: the debugger touched each one */
-    kr = vm_protect(mach_task_self(), data, loader->region[DATA].size, FALSE, VM_PROT_READ | VM_PROT_WRITE);
-    if (kr == KERN_SUCCESS) {
-        memset((void*)data, 0, loader->region[DATA].size);
-        kr = vm_protect(mach_task_self(), data, loader->region[DATA].size, FALSE, VM_PROT_NONE);
-    } else {
-        kern_return_t freed = vm_deallocate(mach_task_self(), data, loader->region[DATA].size), mapped = freed;
-        if (!freed) mapped = vm_allocate(mach_task_self(), &data, loader->region[DATA].size, VM_FLAGS_FIXED);
-        if (!freed && !mapped)
-            kr = vm_protect(mach_task_self(), data, loader->region[DATA].size, FALSE, VM_PROT_NONE);
-        else {
-            snprintf(error, error_size,
-                     "cannot make the code arena's data out of the debugger's region (in place %d, given back %d, "
-                     "mapped again %d)",
-                     (int)kr, (int)freed, (int)mapped);
-            return -1;
-        }
-    }
-    if (kr != KERN_SUCCESS) {
-        snprintf(error, error_size, "cannot protect the code arena's data (%d)", (int)kr);
-        return -1;
-    }
-    fprintf(stderr, "jit arena: data at %p ready\n", (void*)data);
-    loader->region[DATA].write = base + loader->region[DATA].start;
-    return 0;
-}
 #else
 /* Shared memory of size bytes, mapped at at (in the arena's reservation) readable, and executable when asked, and once
    more read-write where the system puts it: that view, or NULL with the reason in error */
@@ -278,15 +136,15 @@ static unsigned char* map_views(unsigned char* at, size_t size, int executable, 
     fd = shm_open_anon(O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW, 0600);
 #elif defined(__FreeBSD__)
     fd = shm_open(SHM_ANON, O_RDWR, 0600);
-#elif defined(__APPLE__) || defined(__managarm__)
-    /* macOS doesn't have memfd_create, use anonymous temporary file */
+#elif defined(__managarm__)
+    /* managarm doesn't have memfd_create, use anonymous temporary file */
     char template_path[] = "/tmp/eden_mem_XXXXXX";
     fd = mkstemp(template_path);
     if (fd >= 0) {
         unlink(template_path);
     }
 #elif defined(__linux__) && defined(SYS_memfd_create)
-    /* the system call itself: Android's C library has memfd_create only from Android 11 (API 30) */
+    /* the system call itself, for C libraries without memfd_create */
     fd = (int)syscall(SYS_memfd_create, "snx-jit-code", 1u /* MFD_CLOEXEC */);
 #else
     fd = memfd_create("HostMemory", 0);
@@ -312,7 +170,7 @@ static unsigned char* map_views(unsigned char* at, size_t size, int executable, 
    AArch64 core may hold instructions it fetched before the code was written, which neither the writer's cache
    maintenance nor the reader's acquire load discards: each core needs a context synchronization event, which
    membarrier's SYNC_CORE command makes every thread of the process take (an ISB on the way back to user space), and
-   which the process registers for once (on macOS, a context switch: sync_threads). Without it a load would hand out
+   which the process registers for once. Without it a load would hand out
    code another core might run stale, so the loader refuses and the JIT stays off (the interpreter runs those
    functions) */
 static int can_publish(unsigned machine, char* error, size_t error_size) {
@@ -321,10 +179,6 @@ static int can_publish(unsigned machine, char* error, size_t error_size) {
 #if defined(__linux__) && defined(__NR_membarrier)
     if (!syscall(__NR_membarrier, MEMBARRIER_REGISTER_SYNC_CORE, 0u, 0)) return 1;
     snprintf(error, error_size, "the kernel has no membarrier SYNC_CORE (Linux 4.16), which publishing JIT code needs");
-#elif defined(APPLE_THREADS)
-    (void)error;
-    (void)error_size;
-    return 1; /* XNU has no membarrier: each load passes the other threads through the kernel instead (sync_threads) */
 #else
     snprintf(error, error_size, "no way to synchronize other cores with new JIT code on this system");
 #endif
@@ -437,11 +291,6 @@ static SnxCodeLoader* new_loader(size_t reserve, const size_t* sizes, unsigned m
     } else {
         if (!reserve) {
             reserve = SNX_CODE_ARENA_DEFAULT;
-#ifdef IOS_JIT
-            /* address space and the debugger's preparing time (4 s a GiB) are scarce on a device, and the code the JIT
-               adds to a game's is small (17 KiB in a minute of one game) */
-            reserve = (size_t)1 << 27;
-#endif
         }
         if (reserve <= (size_t)1 << 31) reserve = (size_t)snx_align_up(reserve, 8 * page); /* whole pages */
         if (reserve > (size_t)1 << 31) {
@@ -471,18 +320,6 @@ static SnxCodeLoader* new_loader(size_t reserve, const size_t* sizes, unsigned m
 #ifdef _WIN32
     (void)i;
     if (windows_arena(loader, error, error_size)) {
-        snx_code_loader_free(loader);
-        return NULL;
-    }
-#elif defined(APPLE_JIT)
-    (void)i;
-    if (apple_arena(loader, error, error_size)) {
-        snx_code_loader_free(loader);
-        return NULL;
-    }
-#elif defined(IOS_JIT)
-    (void)i;
-    if (ios_arena(loader, error, error_size)) {
         snx_code_loader_free(loader);
         return NULL;
     }
@@ -531,7 +368,7 @@ void snx_code_loader_free(SnxCodeLoader* loader) {
             for (int i = CODE; i < REGIONS; ++i) VirtualFree(loader->base + loader->region[i].start, 0, MEM_RELEASE);
     }
 #else
-    /* the read-write views, where they are mappings of their own (macOS writes the arena itself: apple_arena) */
+    /* the read-write views, where they are mappings of their own */
     {
         for (int i = CODE; i <= RODATA; ++i)
             if (loader->region[i].write && loader->region[i].write != loader->base + loader->region[i].start)
@@ -545,7 +382,7 @@ void snx_code_loader_free(SnxCodeLoader* loader) {
 }
 
 int snx_code_loader_unshare(SnxCodeLoader* loader, char* error, size_t error_size) {
-#if defined(_WIN32) || defined(APPLE_JIT) || defined(IOS_JIT)
+#if defined(_WIN32)
     (void)loader;
     snprintf(error, error_size, "a code arena is unshared only on Linux and the BSDs");
     return -1;
@@ -631,37 +468,6 @@ int snx_code_commit(SnxCodeLoader* loader, uint64_t end, char* error, size_t err
     return 0;
 }
 
-#ifdef APPLE_THREADS
-/* Every other thread of the process through a context synchronization event, as membarrier's SYNC_CORE does on Linux
-   (can_publish), which XNU lacks. thread_get_state on a thread that is running stops it until it has left its core
-   (thread_get_state_internal's thread_stop: osfmk/kern/thread_act.c, sched_prim.c), and a thread off its core comes
-   back through a context switch, which XNU synchronizes for user space (an ISB requested on each switch within a task,
-   machine_switch_context's arm_context_switch_requires_sync in osfmk/arm64/pcb.c, where an exception return is not one
-   by itself). Threads started after the list was taken have fetched nothing. 0, or -1 with the reason in error */
-static int sync_threads(char* error, size_t error_size) {
-    thread_act_array_t threads;
-    mach_msg_type_number_t count;
-    mach_port_t self = mach_thread_self();
-    arm_thread_state64_t state;
-    kern_return_t kr = task_threads(mach_task_self(), &threads, &count);
-    if (kr != KERN_SUCCESS) {
-        mach_port_deallocate(mach_task_self(), self);
-        snprintf(error, error_size, "cannot list the process's threads to publish JIT code (%d)", (int)kr);
-        return -1;
-    }
-    for (mach_msg_type_number_t i = 0; i < count; ++i) {
-        /* again when interrupted before the thread had stopped. One that has ended runs nothing */
-        mach_msg_type_number_t n = ARM_THREAD_STATE64_COUNT;
-        while (threads[i] != self &&
-               thread_get_state(threads[i], ARM_THREAD_STATE64, (thread_state_t)&state, &n) == KERN_ABORTED)
-            n = ARM_THREAD_STATE64_COUNT;
-        mach_port_deallocate(mach_task_self(), threads[i]);
-    }
-    vm_deallocate(mach_task_self(), (vm_address_t)threads, count * sizeof(*threads));
-    mach_port_deallocate(mach_task_self(), self);
-    return 0;
-}
-#endif
 
 /* The code is complete: visible to instruction fetch before any address goes out (code_loader.h). On AArch64 the
    clear-cache builtin cleans the data cache to the point of unification and invalidates the instruction cache by
@@ -670,17 +476,13 @@ static int sync_threads(char* error, size_t error_size) {
    view (it needs a readable one: the arena's code is read-execute); an instruction cache may be virtually indexed, so
    only the addresses instruction fetch uses invalidate the lines it would hit. Both operations reach every core of the
    inner shareable domain. The read-only data and GOT need none: no instruction is fetched from them, and data accesses
-   are coherent between the views. On macOS (one view, apple_arena) the flush is sys_icache_invalidate, the same IC IVAU
-   with the DSBs and the ISB around it; Apple's data caches need no cleaning for instruction fetch (libplatform's
-   sys_dcache_flush is a DSB alone) */
+   are coherent between the views */
 int snx_code_publish(const SnxCodeLoader* loader, uint64_t start, uint64_t end, char* error, size_t error_size) {
     if (end <= start) return 0;
     snx_vm_flush_code((void*)(size_t)start, (size_t)(end - start));
     /* and every other core of the process drops what it fetched before (can_publish) */
 #if defined(__linux__) && defined(__aarch64__) && defined(__NR_membarrier)
     if (loader->machine == HOST_MACHINE) syscall(__NR_membarrier, MEMBARRIER_SYNC_CORE, 0u, 0);
-#elif defined(APPLE_THREADS)
-    if (loader->machine == HOST_MACHINE) return sync_threads(error, error_size);
 #endif
     (void)loader;
     (void)error;
@@ -689,18 +491,7 @@ int snx_code_publish(const SnxCodeLoader* loader, uint64_t start, uint64_t end, 
 }
 
 void snx_code_writable(int writable) {
-#if defined(APPLE_JIT) && TARGET_OS_SIMULATOR
-    static void (*protect)(int);
-    if (!protect) {
-        void* sym = dlsym(RTLD_DEFAULT, "pthread_jit_write_protect_np");
-        memcpy(&protect, &sym, sizeof protect); /* a function pointer isn't a void*'s object to store through */
-    }
-    if (protect) protect(!writable);
-#elif defined(APPLE_JIT)
-    pthread_jit_write_protect_np(!writable);
-#else
     (void)writable; /* the loader writes through the read-write views */
-#endif
 }
 
 #if !defined(_WIN32)
@@ -1161,7 +952,7 @@ static int load(SnxCodeLoader* loader, const SnxLinkInput* inputs, size_t count,
         }
     }
     if (snx_code_commit(loader, end[DATA], error, error_size)) goto done;
-    /* Written through the read-write views (on macOS the arena itself, writable to this thread meanwhile), from each
+    /* Written through the read-write views, from each
        region's first free byte: a failed load leaves its bytes for the next to write over, since no address of theirs
        went out and nothing runs there. Between functions and in unused stubs, an instruction that traps: int3 on
        x86-64, UDF #0 (all zero bits) on AArch64 */

@@ -4,7 +4,7 @@ The portable specification witnesses exercise base Cortex-A57 FP semantics.
 They need neither game assets nor an emulator:
 
 ```sh
-cmake -S . -B build/fp -DSNX_TOOLS_ONLY=ON -DSNX_BUILD_GNUABI=OFF
+cmake -S . -B build/fp -DSNX_TOOLS_ONLY=ON
 cmake --build build/fp --target snx-test-a64-fp snx-test-a64-fp-arithmetic snx_codegen_test
 ctest --test-dir build/fp -R '^(a64_fp_.*witnesses|native_codegen)$' --output-on-failure
 ```

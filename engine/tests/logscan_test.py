@@ -399,6 +399,11 @@ def main():
         check('**Signature:** `svcBreak in _ZN2nn3hid18GetNpadJoyHoldTypeEv`' in md, 'markdown from a file')
         check('IAudioDevice` cmd 7 (undeclared, 2x)' in md, 'markdown service commands')
         check(len(run([str(path), str(path)]).splitlines()) == 2, 'json: a line a log')
+        # an option as the last argument has no value: the usage message, exit 2, even with a log file before it
+        for option in ('--format', '--name'):
+            out = subprocess.run(PROGRAM + [str(path), option], capture_output=True)
+            check(out.returncode == 2, f'{option} without a value: exit {out.returncode}')
+            check(option.encode() in out.stderr, f'{option} without a value: {out.stderr!r}')
     print('logscan_test: ok')
 
 
