@@ -23,6 +23,7 @@
 #include <string.h>
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
+#include <direct.h>
 #include <fcntl.h>
 #include <io.h>
 #include <process.h>
@@ -138,19 +139,29 @@ static int run_split(const char* const* argv, const char* cwd, char** out_text, 
     HANDLE old_out, old_err;
     intptr_t status;
     char** quoted;
+    char* previous = NULL;
     /* the stdout file is text mode, as a cmd redirect gives the child: the stream must keep its LF */
     ofd = _open(out, _O_CREAT | _O_TRUNC | _O_WRONLY | _O_TEXT, _S_IREAD | _S_IWRITE);
     efd = _open(err, _O_CREAT | _O_TRUNC | _O_WRONLY | _O_BINARY, _S_IREAD | _S_IWRITE);
     if (ofd < 0 || efd < 0) goto done;
     fflush(NULL);
-    saved_out = _dup(1);
-    saved_err = _dup(2);
-    if (saved_out < 0 || saved_err < 0) goto done;
     old_out = GetStdHandle(STD_OUTPUT_HANDLE);
     old_err = GetStdHandle(STD_ERROR_HANDLE);
+    saved_out = _dup(1);
+    saved_err = _dup(2);
+    if (saved_out < 0 || saved_err < 0) goto restore;
     if (_dup2(ofd, 1) || _dup2(efd, 2)) goto restore;
     SetStdHandle(STD_OUTPUT_HANDLE, (HANDLE)_get_osfhandle(ofd));
     SetStdHandle(STD_ERROR_HANDLE, (HANDLE)_get_osfhandle(efd));
+    /* the child runs in cwd, as snx_run's CreateProcessW does with its directory */
+    if (cwd) {
+        previous = _getcwd(NULL, 0);
+        if (!previous || _chdir(cwd)) {
+            free(previous);
+            previous = NULL;
+            goto restore;
+        }
+    }
     quoted = quoted_argv(argv);
     if (quoted) {
         status = _spawnvp(_P_WAIT, argv[0], (const char* const*)quoted);
@@ -158,6 +169,10 @@ static int run_split(const char* const* argv, const char* cwd, char** out_text, 
         rc = status < 0 ? 1 : (int)status;
     }
 restore:
+    if (previous) {
+        _chdir(previous);
+        free(previous);
+    }
     if (saved_out >= 0) {
         _dup2(saved_out, 1);
         SetStdHandle(STD_OUTPUT_HANDLE, old_out);
@@ -177,7 +192,9 @@ restore:
     fflush(NULL);
     saved_out = dup(1);
     saved_err = dup(2);
-    if (saved_out < 0 || saved_err < 0) goto done;
+    if (saved_out < 0 || saved_err < 0) goto restore;
+    fcntl(saved_out, F_SETFD, FD_CLOEXEC);
+    fcntl(saved_err, F_SETFD, FD_CLOEXEC);
     if (dup2(ofd, 1) < 0 || dup2(efd, 2) < 0) goto restore;
     close(ofd);
     ofd = -1;
@@ -193,10 +210,14 @@ restore:
         while (waitpid(pid, &status, 0) < 0 && errno == EINTR) continue;
     rc = pid > 0 && WIFEXITED(status) ? WEXITSTATUS(status) : 1;
 restore:
-    dup2(saved_out, 1);
-    dup2(saved_err, 2);
-    close(saved_out);
-    close(saved_err);
+    if (saved_out >= 0) {
+        dup2(saved_out, 1);
+        close(saved_out);
+    }
+    if (saved_err >= 0) {
+        dup2(saved_err, 2);
+        close(saved_err);
+    }
 #endif
 done:
     if (ofd >= 0) {
@@ -781,6 +802,36 @@ int main(int argc, char** argv) {
         free(json);
         free(human);
         free(prepared);
+    }
+    /* the child runs in cwd: the relative input and --outdir are read and written there, not in this process's folder */
+    {
+        char* relative_out = snx_path_join(root, "llvm-relative");
+#ifdef _WIN32
+        char* relative_code = snx_path_join(relative_out, "Program/Program_code.dll");
+#else
+        char* relative_code = snx_path_join(relative_out, "Program/Program_code.so");
+#endif
+        k = 0;
+        args[k++] = argv[1];
+        args[k++] = "-r";
+        args[k++] = "program.nro";
+        args[k++] = "Program";
+        args[k++] = "--outdir";
+        args[k++] = "llvm-relative";
+        args[k++] = "--repo";
+        args[k++] = argv[2];
+        args[k++] = "--runtime";
+        args[k++] = self;
+        args[k++] = "--chunk";
+        args[k++] = "4";
+        args[k++] = "-q";
+        args[k] = NULL;
+        check(!run_split(args, root, &json, &human), "a recompile with a relative input and outdir in cwd");
+        check(snx_is_file(relative_code), "the recompiled code is written in cwd");
+        free(json);
+        free(human);
+        free(relative_out);
+        free(relative_code);
     }
     free(stream_dir);
     /* func, which main's BL at 0x90 calls on each pass of the loop */

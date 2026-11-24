@@ -777,6 +777,7 @@ int snx_main(int argc, char** argv) {
         goto done; /* before any other thread */
     }
     if (argc == 2 && !strncmp(argv[1], "--settings=", 11)) {
+        snx_tool_console();
         fprintf(stderr, "scarletnx: %s: not --settings (the game's) or --settings=recompile\n", argv[1]);
         status = SNX_EXIT_USAGE;
         goto done;

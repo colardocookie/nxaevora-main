@@ -285,7 +285,7 @@ relative path argument uses the current directory. Every other path does not dep
 | Command | Job | Old form |
 |---|---|---|
 | `recompile <game folder> [options] [--KEY=VALUE]` | Recompile the game. All current recompile options stay | `-r` |
-| `run <game program> [--KEY=VALUE] [-- game arguments]` | Run the game | Play mode and `--game=PATH` |
+| `run <game program> [--KEY=VALUE] [-- game arguments]` | Run the game | Play mode (`nxaevora-engine --game=PATH`, no command) |
 | `settings list [--scope=game\|recompile]` | Print the nine-field settings text, with the current format | `--settings`, `--settings=recompile` |
 | `settings schema` | Print the settings definition as one JSON document on stdout | None |
 | `settings get KEY --game=PATH` | Read one value of the game's `<config>/<id>.ini` | None |
@@ -332,7 +332,7 @@ The old flags are aliases:
 | Old form | Command |
 |---|---|
 | `-r` | `recompile` |
-| Play mode and `--game=PATH` | `run` |
+| Play mode (`nxaevora-engine --game=PATH`, no command) | `run` |
 | `--settings` | `settings list` |
 | `--settings=recompile` | `settings list --scope=recompile` |
 | No argument | The old start GUI, until unit 5 |

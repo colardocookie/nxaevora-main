@@ -30,7 +30,7 @@ The first argument selects the command:
 | Command | Job | Old form |
 |---|---|---|
 | `recompile <game folder> [options] [--KEY=VALUE]` | Recompile the game. All recompile options stay | `-r` |
-| `run <game program> [--KEY=VALUE] [-- game arguments]` | Run the game | Play mode and `--game=PATH` |
+| `run <game program> [--KEY=VALUE] [-- game arguments]` | Run the game | Play mode (`nxaevora-engine --game=PATH`, no command) |
 | `settings list [--scope=game\|recompile]` | Print the nine-field settings text | `--settings`, `--settings=recompile` |
 | `settings schema` | Print the settings definition as one JSON document on stdout | None |
 | `settings get KEY --game=PATH` | Print one value of the game's `.ini`, or its default | None |
@@ -83,7 +83,7 @@ The old flags are aliases:
 | Old form | Command |
 |---|---|
 | `-r` | `recompile` |
-| Play mode and `--game=PATH` | `run` |
+| Play mode (`nxaevora-engine --game=PATH`, no command) | `run` |
 | `--settings` | `settings list` |
 | `--settings=recompile` | `settings list --scope=recompile` |
 | No argument | The old start GUI, until unit 5 |
@@ -392,9 +392,17 @@ is not written: the command path loads the game folder with `snx_load_program` a
 not written: the link is inside the module build. With `--quiet` the stream has no `progress` lines.
 
 The last line is the exit line, `{"v":1,"event":"exit","code":N}`. A game that ends with a nonzero code gives the
-`run` stage an error line with `"code":8` and `"game_code":N`, then the exit line with code 8. A test reads the
-stream of a recompile. An error after a stage has closed gets that stage's name, when the process noted an error
-after the close.
+`run` stage an error line with `"code":8` and `"game_code":N`, then the exit line with code 8.
+A crash of the game writes the error line of the open stage (the `run` stage once the game runs) with `"code":6`.
+The exit line with code 6 follows only under the `run` command, where the game child writes the crash error
+line and the driver writes the exit line. A game started from the bare `--game=PATH` form with `--progress`
+writes the crash error line and no exit line, and a Windows exception that does not pass `crash_filter` writes no
+crash error line from the game, so the driver exit line then has code 1.
+A child stage that ends by itself with a nonzero code writes its own error line, so the parent writes no
+second one. After an interrupt of the parent (Ctrl+C), after a signal ends the child and after a child that does not
+start, the parent writes its own error line. An error after a stage has closed gets that stage's name: the stage of
+the parent's next work, which is the stage that the child writes its start and done lines for. A test reads the
+stream of a recompile.
 
 `--progress=jsonl-stage` is internal: the driver gives it to its child stages, which write stage and error lines and
 no exit line.

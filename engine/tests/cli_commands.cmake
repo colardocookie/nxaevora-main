@@ -34,7 +34,7 @@ endif()
 # the line's own words (a wrong line then fails here)
 foreach(case "settings list extra|extra" "settings list --scope=bogusscope|bogusscope" "settings|name a command"
              "settings bogus|bogus" "logs|name a command" "cache|name a command"
-             "run|name a game program" "run -x|-x")
+             "run|name a game program" "run -x|-x" "run --game=missing.nro|is an option, not a program")
     string(REPLACE "|" ";" fields "${case}")
     list(GET fields 0 args)
     list(GET fields 1 part)

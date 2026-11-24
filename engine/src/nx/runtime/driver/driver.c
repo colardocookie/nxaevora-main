@@ -256,7 +256,7 @@ static int play_dump(const char* input, const SnxPaths* paths, unsigned flags, c
     const char** command =
         (const char**)snx_alloc((size_t)(game_argc + settings + recompiling + 24) * sizeof(*command));
     int rc = SNX_EXIT_INTERNAL, nro = is_nro_path(input), prepared = prepared_game(input, &folder, &name), named = 0;
-    int n, j, child_started = 0;
+    int n, j, child_result = SNX_CHILD_NOT_STARTED;
     SnxNpdm npdm;
     snx_progress_stage(SNX_PROGRESS_STAGE_INPUT);
     command[0] = paths->executable;
@@ -346,11 +346,13 @@ made:
             command[n++] = source;
             if (named) command[n++] = name;
             command[n] = NULL;
+            snx_progress_stage_name(SNX_PROGRESS_STAGE_BUILD);
             snx_progress_child_redirect();
-            rc = snx_run_stage(command, NULL, "Recompilation", &child_started);
-            snx_progress_child_restore(child_started);
+            rc = snx_run_stage(command, NULL, "Recompilation", &child_result);
+            snx_progress_child_restore(child_result);
             if (rc) goto done;
             if (!snx_is_file(game)) {
+                snx_progress_stage_name(SNX_PROGRESS_STAGE_BUILD);
                 snx_error("recompilation finished without creating %s", game);
                 rc = SNX_EXIT_RECOMPILE;
                 goto done;
@@ -361,6 +363,7 @@ made:
     rc = SNX_EXIT_OK;
     if (flags & SNX_RECOMP) goto done;
     /* the game may start with another environment than this run's (its copy outside an AppImage, a shortcut) */
+    snx_progress_stage_name(SNX_PROGRESS_STAGE_BUILD);
     if (snx_record_folders(folder, name)) {
         rc = SNX_EXIT_INTERNAL;
         goto done;
@@ -384,10 +387,11 @@ made:
     if (game_argc) command[n++] = "--";
     for (j = 0; j < game_argc; ++j) command[n++] = game_argv[j];
     command[n] = NULL;
+    snx_progress_stage_name(SNX_PROGRESS_STAGE_RUN);
     snx_progress_child_redirect();
-    rc = (flags & SNX_GDB) ? snx_run_debug_stage(command, folder, "Game", &child_started)
-                           : snx_run_stage(command, folder, "Game", &child_started);
-    snx_progress_child_restore(child_started);
+    rc = (flags & SNX_GDB) ? snx_run_debug_stage(command, folder, "Game", &child_result)
+                           : snx_run_stage(command, folder, "Game", &child_result);
+    snx_progress_child_restore(child_result);
 done:
     free(name);
     free(games);
