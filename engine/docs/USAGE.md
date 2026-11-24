@@ -649,7 +649,7 @@ written, so a data folder with no users.ini plays as `Player`, uid `0123456789ab
 
 ## Settings / input
 
-`Game.ini`: help rewritten at startup, most settings hot-reload. `--key=value` overrides one run.
+`Game.ini`: help rewritten at startup, most settings hot-reload. `--key=value` overrides one run. The runtime does not write the file back in a run whose last read found a key that the store cannot keep (more than 256 keys, a key of 64 bytes or more, or a value of 2048 bytes or more), so changes made in the game are not saved. The log warns once, and a reload of a complete file lets the writes start again.
 Restart for `fullscreen`, `language`, `render_resolution`, `anisotropy`, `memory_gb`, `memory_fit`, `heap_max_mb`,
 `thread_stack_mb`, `map_limit_mb`, `map_limit_files`, `airplane_mode`, `ldn`, `room`, `pipeline_threads`, `prepare_shaders`, `jit_threads`, and the `[Debug]` settings other than `log`, `auto_stub_ipc` and `diag`.
 `nxaevora-engine --settings` prints each setting the launcher's Settings offer, one a line: its section, key, default,
