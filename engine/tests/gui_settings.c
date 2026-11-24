@@ -507,7 +507,11 @@ int main(int argc, char** argv) {
             next = c + strcspn(c, "\n");
             if (*next) ++next;
         }
-        assert(pages > 0 && !gui_settings_read(&s, output) && s.count == s.own + lines + 2 * pages);
+        /* and the Arceus graphics page's import, a row of its own before the page's first */
+        const int imports = !strncmp(output, GUI_SETTINGS_ARCEUS "\t", sizeof GUI_SETTINGS_ARCEUS) ||
+                            strstr(output, "\n" GUI_SETTINGS_ARCEUS "\t") != NULL;
+        assert(pages > 0 && !gui_settings_read(&s, output) && s.count == s.own + lines + 2 * pages + imports);
+        assert(imports && at(&s, "Import from a launcher file") >= 0);
         /* each player's own, on Controllers' Player page: a word row whose default is every player's */
         assert(words(key(&s, "gamepad_p1_swap_ab")) == 4 && !strcmp(key(&s, "gamepad_p8_swap_ab")->words[1], "As All"));
         assert(key(&s, "gamepad_p3_device")->type == GUI_KEY_TEXT &&

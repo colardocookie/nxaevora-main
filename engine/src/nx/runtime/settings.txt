@@ -1075,6 +1075,7 @@ section Game: g_game_ini
 section Display: g_display_ini
 section Graphics: g_graphics_ini
 section Performance: g_performance_ini
+section Arceus graphics: g_arceus_graphics_ini
 section On-screen controls: g_vpad_ini, g_backend_ini, g_vpad_shown_ini/Buttons    backend
 section Mouse: g_mouse_ini    backend
 section Keyboard: g_keyboard_ini    backend
@@ -1082,7 +1083,6 @@ section Controllers: g_gamepad_ini, g_gamepad_map_ini/Button map, g_gamepad_play
 section Network: g_network_ini
 section User: g_user_ini
 section Debug: g_debug_ini
-section Arceus graphics: g_arceus_graphics_ini
 
 # ---- the launcher's own, and the recompiler's ----
 
