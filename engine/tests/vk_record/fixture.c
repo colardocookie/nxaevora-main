@@ -20,7 +20,7 @@
 
 /* ------------------------------------------------------------ what the recorder's file needs of the runtime */
 FixtureSettings g_settings;
-VkState g_vk = {(VkDevice)0x10, (VkQueue)0x20};
+VkState g_vk = {(VkDevice)0x10, (VkQueue)0x20, VK_NULL_HANDLE};
 /* the renderer's outer lock, as gpu/vk/device.c has it: reentrant on the thread that holds it */
 static PMutex g_vklock = PMUTEX_INIT;
 static __thread int t_vkdepth;
@@ -154,6 +154,12 @@ VkResult vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* info) {
     (void)queue;
     (void)info;
     return VK_SUCCESS;
+}
+VkResult vkAcquireNextImageKHR(VkDevice dev, VkSwapchainKHR sc, uint64_t timeout, VkSemaphore sem, VkFence fence,
+                               u32* idx) {
+    (void)dev, (void)sc, (void)timeout, (void)sem, (void)fence, (void)idx;
+    assert(0); /* the WSI lock's acquire is not part of vk_rec_direct */
+    return VK_ERROR_DEVICE_LOST;
 }
 VkResult vkAllocateDescriptorSets(VkDevice dev, const VkDescriptorSetAllocateInfo* info, VkDescriptorSet* sets) {
     (void)dev;
