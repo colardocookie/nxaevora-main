@@ -1576,13 +1576,17 @@ static void timing_research_init(void) {
    The update averages GPU duration against 33.333 ms and chooses the 0.90/0.85,
    0.85/0.80 and 0.80/0.70 scene scales. Its mode setter is separate (CC3888):
    normal mode begins at 1.0/1.0, with explicit half-size/custom/special modes.
-   Keep those setters intact and skip only this automatic governor's update.
-   The native Vulkan render scale still controls the allocated image size. */
+   Keep those setters intact and skip only this automatic governor's update, by default on the PC port (=0 keeps
+   the governor). The native Vulkan render scale still controls the allocated image size. It needs nothing of the
+   clocks, so it finds the main module itself and runs at every rate, the game's own 30 FPS included */
 static int fixed_resolution_active; /* the governor's patch went in */
 static void fixed_resolution_init(void) {
-    const char* enabled = getenv("SNX_ARCEUS_FIXED_RESOLUTION");
-    if (!main_base || !enabled || strcmp(enabled, "1")) return;
-    const u64 pc = main_base + 0xcc35a4;
+    if (!arceus_switch_enabled("SNX_ARCEUS_FIXED_RESOLUTION", 1)) return;
+    const SnxModInfo* mod = NULL;
+    for (u32 i = 0; g_mod && i < g_mod->nmods; i++)
+        if (!strcmp(g_mod->mods[i].name, "main")) mod = &g_mod->mods[i];
+    if (!mod || memcmp(mod->build_id, arceus_main_id, sizeof arceus_main_id)) return;
+    const u64 pc = mod->base + 0xcc35a4;
     int covered = 0;
     if (!g_mod->fn_lo || !g_mod->fn_len || !g_mod->stale || !g_mod->entry_fn) return;
     for (u32 i = 0; i < g_mod->nfns; i++)
@@ -1635,7 +1639,7 @@ static void scene_scale_init(void) {
     if (guard != ARCEUS_SCENE_GUARD_OK) {
         WARN("arceus-scene-scale: refused (%s). Nothing changed. The table's words: %08x %08x, %08x %08x, %08x "
              "%08x, %08x %08x, %08x %08x\n",
-             guard == ARCEUS_SCENE_GUARD_GOVERNOR ? "the governor is not off: it needs SNX_ARCEUS_FIXED_RESOLUTION=1"
+             guard == ARCEUS_SCENE_GUARD_GOVERNOR ? "the governor is not off: SNX_ARCEUS_FIXED_RESOLUTION=0, or its patch was refused"
              : guard == ARCEUS_SCENE_GUARD_PAIR   ? "the default pair is not 1.0 and 1.0"
                                                   : "the pair after the default one is not 0.5 and 0.5",
              words[0], words[1], words[2], words[3], words[4], words[5], words[6], words[7], words[8], words[9]);
@@ -5784,6 +5788,7 @@ static void text_tick_init(void) {
 }
 void arceus_clock_post_jit(void) {
     throw_guard_init(); /* before the master's return: the guard does not depend on it */
+    fixed_resolution_init(); /* at every rate, outside the timing layer and its master switch */
     if (!arceus_switch_enabled("SNX_ARCEUS_TIMING_FIXES", 1)) return;
     event_probe_init(); /* read-only, before the return below so that 30 FPS has it too */
     demo_probe_init(arceus_probe_base());
@@ -5793,8 +5798,7 @@ void arceus_clock_post_jit(void) {
     camera_trace_only = main_base && !target_fps_explicit && probe && !strcmp(probe, "1");
     timer_carry_fix = arceus_switch_enabled("SNX_ARCEUS_TIMER_CARRY_FIX", 1);
     if (timer_carry_fix) LOG("arceus-timer-carry: integer timer catch-up enabled, backlog capped at 1 second\n");
-    fixed_resolution_init();
-    scene_scale_init(); /* after the governor's patch, which it needs */
+    scene_scale_init(); /* after the governor's patch (top of this function), which it needs */
     /* Before the research probe, which compiles and keeps this wrapper's body. */
     physics_timestep_init();
     navigation_timestep_init();

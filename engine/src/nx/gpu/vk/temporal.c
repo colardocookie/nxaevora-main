@@ -330,6 +330,11 @@ static int upscaler_on(void);
 static int upscaler_jittered(u32 frame);
 static int upscaler_decide(u32 frame, int accepted);
 static void upscaler_outcome(u32 frame, int jittered, int outcome, const char* what);
+/* SNX_ARCEUS_FIXED_RESOLUTION as arceus_clock.c reads it: on unless set to something other than 1 */
+static int fixed_resolution_on(void) {
+    const char* fixed = getenv("SNX_ARCEUS_FIXED_RESOLUTION");
+    return !fixed || !strcmp(fixed, "1");
+}
 
 static int temporal_on(void) {
     if (g_t.mode < 0) {
@@ -3478,12 +3483,11 @@ static int spatial_now(u32 frame) {
 /* The switch's start (from upscaler_start): it needs the anti-aliasing in the rectangle and the fixed resolution,
    and refuses the sharpen and the views, which read or write the scene colour after the resolve (revision 3) */
 static void spatial_start(void) {
-    const char* fixed = getenv("SNX_ARCEUS_FIXED_RESOLUTION");
     const char* view = getenv("SNX_ARCEUS_TEMPORAL_VIEW");
     const char* sharpen = getenv("SNX_ARCEUS_TEMPORAL_SHARPEN");
     const char* why = g_t.mode != MODE_TAA                  ? "it needs SNX_ARCEUS_TEMPORAL=taa"
                       : !g_t.rect                           ? "it needs SNX_ARCEUS_TEMPORAL_RECT=1"
-                      : !fixed || strcmp(fixed, "1")        ? "it needs SNX_ARCEUS_FIXED_RESOLUTION=1"
+                      : !fixed_resolution_on()             ? "SNX_ARCEUS_FIXED_RESOLUTION=0 keeps the governor"
                       : sharpen && strtof(sharpen, NULL) != 0.0f ? "SNX_ARCEUS_TEMPORAL_SHARPEN is not 0"
                       : view && view[0] && strcmp(view, "0") ? "SNX_ARCEUS_TEMPORAL_VIEW is not 0"
                                                              : NULL;
@@ -3944,9 +3948,8 @@ static void upscaler_start(void) {
         "SNX_ARCEUS_TEMPORAL_HISTORY, _CLAMP, _BLEND, _NEAREST, _LUMA, _SHARPEN, _VIEW and _RECT\n");
     /* D3-3, D3-4 and XeSS: with the fixed resolution, frames below native at a listed scale go to the library on
        D3-2's hand-over, whose lines say "spatial" (the hand-over's name); the scene scale itself is the opt-in */
-    const char* fixed = getenv("SNX_ARCEUS_FIXED_RESOLUTION");
     const int dlss = !strcmp(name, "dlss"), xess = !strcmp(name, "xess");
-    g_u.below = fixed && !strcmp(fixed, "1") && (!strcmp(name, "fsr") || dlss || xess);
+    g_u.below = fixed_resolution_on() && (!strcmp(name, "fsr") || dlss || xess);
     if (g_u.below) {
         g_u.armed_spatial = !g_s.asked;
         g_s.asked = 1;

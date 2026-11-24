@@ -43,7 +43,7 @@ text += upscaler + '\n' + state + '\n' + (watch.group(0) if watch else '')
 if case.stem == 'startup':
     text += ''.join(re.findall(r'^#define UPSCALED_(?:FORMAT|USAGE) .+\n', temporal, re.M))
     text += (here / 'startup_stubs.c').read_text()
-    names += ['spatial_start', 'upscaler_start']
+    names += ['fixed_resolution_on', 'spatial_start', 'upscaler_start']
 text += ''.join(function(temporal, n) for n in names)
 text += function(tests, 'spatial_draw')
 text += case.read_text()

@@ -597,7 +597,7 @@ after the frames in flight. Only once a submission did not run as recorded, or a
 (that sets the same mark), is nothing destroyed any more, to the end of the session. A frame has one
 fate in the counts, the first reported for it, and is counted in one window with its decision.
 
-Below native size (`SNX_ARCEUS_UPSCALER=fsr`, `dlss` or `xess` with `SNX_ARCEUS_FIXED_RESOLUTION=1` and a scene
+Below native size (`SNX_ARCEUS_UPSCALER=fsr`, `dlss` or `xess` with the fixed resolution (on unless `SNX_ARCEUS_FIXED_RESOLUTION=0`) and a scene
 scale of 1/2, 3/5, 2/3, 3/4 or 4/5): the library takes the scene's rectangle as its render size and the target as its
 output, and its picture is handed to the game's readers in a larger texture, as the spatial path's hand-over does.
 DLSS and XeSS take the mode whose optimal render size the library gives as the rectangle, else the nearest one whose

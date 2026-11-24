@@ -69,7 +69,16 @@ int main(void) {
                     no_factories();
                     restorations++;
                 }
-    const char* native[] = {NULL, "0"};
+    /* The fixed resolution is on by default (arceus_clock.c): unset goes below native as 1 does, 0 or any other
+       value keeps the game's governor and stays at native size */
+    for (unsigned a = 0; a < 2; a++) {
+        reset_start(adapters[a]);
+        flag("SNX_ARCEUS_FIXED_RESOLUTION", NULL);
+        upscaler_start();
+        assert(g_u.asked && g_u.below && g_u.armed_spatial && g_s.asked);
+        no_factories();
+    }
+    const char* native[] = {"0", "2"};
     for (unsigned a = 0; a < 2; a++)
         for (unsigned f = 0; f < 2; f++) {
             reset_start(adapters[a]);

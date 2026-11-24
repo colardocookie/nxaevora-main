@@ -80,9 +80,9 @@ int mem_map(u64 address, u64 size, u32 state, u32 perm) {
     (void)address; (void)size; (void)state; (void)perm;
     assert(0); return -1;
 }
-/* Only the text probe's and the throw guard's install tests compile. Every change is noted. The text probe's
-   (jit_stub_on): each jit_wait answers the next of jit_bodies. The throw guard's (jit_allowed): jit_wait answers
-   jit_answer for the last changed pc. */
+/* Only the text probe's, the throw guard's and the fixed resolution's install tests compile. Every change is noted.
+   The text probe's (jit_stub_on): each jit_wait answers the next of jit_bodies. The throw guard's and the fixed
+   resolution's (jit_allowed): jit_wait answers jit_answer for the last changed pc. */
 static int jit_stub_on, jit_allowed;
 static GuestFn jit_bodies[2], jit_answer;
 static unsigned jit_waits, jit_changes;
@@ -316,6 +316,77 @@ static void unset_flag(const char* name) {
     assert(!unsetenv(name));
 #endif
 }
+/* The governor patch at CC35A4 (the user, 2026-11-20: fixed resolution by default): unset or 1 turns its range
+   check's SUB into MOV W9,#3, the governor's early return, 0 or any other value leaves it. */
+static void jit_compiled(CPU* c, u64 entry) { (void)c, (void)entry; }
+static void test_fixed_resolution(void) {
+    static u64 lo[1];
+    static const u32 len[1] = {0x2c8};
+    static u8 stale[1];
+    static GuestFn entry[1];
+    const u64 pc = 256;
+    SnxModInfo info = {.name = "main", .base = pc - 0xcc35a4};
+    memcpy(info.build_id, arceus_main_id, sizeof info.build_id < sizeof arceus_main_id ? sizeof info.build_id
+                                                                                        : sizeof arceus_main_id);
+    const SnxModule module = {.nmods = 1, .mods = &info, .nfns = 1, .fn_lo = lo, .fn_len = len, .stale = stale,
+                              .entry_fn = entry};
+    const SnxModule* const saved_mod = g_mod;
+    const u64 saved_base = main_base, saved_lo = g_code_lo, saved_hi = g_code_hi;
+    const int saved_timing = timing_enabled, saved_clocks = clocks_installed, saved_active = fixed_resolution_active;
+    const char* const values[] = {NULL, "1", "0", "2"};
+    g_mod = &module, main_base = 0, lo[0] = pc, g_code_lo = 0, g_code_hi = sizeof memory; /* main_base unused */
+    jit_answer = jit_compiled;
+    for (unsigned i = 0; i < sizeof values / sizeof values[0]; i++) {
+        memset(memory + pc, 0, 0x2c8);
+        gw32(pc, 0xd10103ff), gw32(pc + 0x20, 0x51000509), gw32(pc + 0x24, 0x7100093f);
+        gw32(pc + 0x28, 0x54000308), gw32(pc + 0x94, 0xd65f03c0);
+        if (values[i]) flag("SNX_ARCEUS_FIXED_RESOLUTION", values[i]);
+        else unset_flag("SNX_ARCEUS_FIXED_RESOLUTION");
+        const int on = i < 2;
+        jit_allowed = 1, jit_changes = 0, fixed_resolution_active = 0;
+        fixed_resolution_init();
+        jit_allowed = 0;
+        assert(gr32(pc + 0x20) == (on ? 0x52800069u : 0x51000509u) && jit_changes == (unsigned)on);
+        assert(gr32(pc) == 0xd10103ff && gr32(pc + 0x24) == 0x7100093f && gr32(pc + 0x94) == 0xd65f03c0);
+        /* the scene scale's guard reads this: set exactly when the patch went in */
+        assert(fixed_resolution_active == on);
+    }
+    /* At the game's own 30 FPS the timing layer is off and main_base stays 0, and with SNX_ARCEUS_TIMING_FIXES=0
+       post_jit returns before every timing fix: it still patches the governor first, and =0 still keeps it */
+    for (int master_off = 0; master_off < 2; master_off++)
+        for (int keep = 0; keep < 2; keep++) {
+            memset(memory + pc, 0, 0x2c8);
+            gw32(pc, 0xd10103ff), gw32(pc + 0x20, 0x51000509), gw32(pc + 0x24, 0x7100093f);
+            gw32(pc + 0x28, 0x54000308), gw32(pc + 0x94, 0xd65f03c0);
+            if (keep) flag("SNX_ARCEUS_FIXED_RESOLUTION", "0");
+            else unset_flag("SNX_ARCEUS_FIXED_RESOLUTION");
+            if (master_off) flag("SNX_ARCEUS_TIMING_FIXES", "0");
+            else unset_flag("SNX_ARCEUS_TIMING_FIXES");
+            timing_enabled = clocks_installed = 0, main_base = 0;
+            jit_allowed = 1, jit_changes = 0, fixed_resolution_active = 0;
+            arceus_clock_post_jit();
+            jit_allowed = 0;
+            assert(gr32(pc + 0x20) == (keep ? 0x51000509u : 0x52800069u) && jit_changes == (unsigned)!keep);
+            assert(fixed_resolution_active == !keep);
+        }
+    unset_flag("SNX_ARCEUS_TIMING_FIXES");
+    jit_answer = NULL;
+    /* Another main build is left alone */
+    gw32(pc + 0x20, 0x51000509);
+    unset_flag("SNX_ARCEUS_FIXED_RESOLUTION");
+    info.build_id[0] ^= 1;
+    fixed_resolution_init();
+    assert(gr32(pc + 0x20) == 0x51000509u);
+    info.build_id[0] ^= 1;
+    /* A changed function is refused with the switch on */
+    gw32(pc + 0x20, 0x51000509), gw32(pc + 0x24, 0);
+    fixed_resolution_init();
+    assert(gr32(pc + 0x20) == 0x51000509u);
+    memset(memory + pc, 0, 0x2c8);
+    g_mod = saved_mod, main_base = saved_base, g_code_lo = saved_lo, g_code_hi = saved_hi;
+    timing_enabled = saved_timing, clocks_installed = saved_clocks, fixed_resolution_active = saved_active;
+}
+
 /* Discord presence is on by default, needs an application id, and says why it is off only when asked for */
 static void test_discord_default(void) {
     static GuestFn table[1];
@@ -514,7 +585,8 @@ static void test_defaults_on(void) {
         "SNX_ARCEUS_LIST_SCROLL_FIX", "SNX_ARCEUS_WALL_JUMP_FIX", "SNX_ARCEUS_LEDGE_FIX",
         "SNX_ARCEUS_MOVEMENT_FIX", "SNX_ARCEUS_CAPPED_FALL_FIX", "SNX_ARCEUS_AIR_STEERING_FIX",
         "SNX_ARCEUS_RIDE_SWAP_FIX", "SNX_ARCEUS_RIDE_RAMP_FIX",
-        "SNX_ARCEUS_DIRECT_MOVE_FIX", "SNX_ARCEUS_FIELD_WAZA_FIX", "SNX_ARCEUS_WAZA_OBJECT_FIX"
+        "SNX_ARCEUS_DIRECT_MOVE_FIX", "SNX_ARCEUS_FIELD_WAZA_FIX", "SNX_ARCEUS_WAZA_OBJECT_FIX",
+        "SNX_ARCEUS_FIXED_RESOLUTION"
     };
     for (unsigned i = 0; i < sizeof enabled / sizeof enabled[0]; i++)
         assert(arceus_switch_enabled(enabled[i], 1));
@@ -556,8 +628,7 @@ static void test_defaults_on(void) {
     unset_flag("SNX_ARCEUS_BATTLE_SEQUENCE_FIX");
     static const char* const probes[] = {
         "SNX_ARCEUS_CLOCK_TRACE", "SNX_ARCEUS_DIALOGUE_TRACE", "SNX_ARCEUS_CAMERA_TRACE",
-        "SNX_ARCEUS_TIMING_RESEARCH", "SNX_ARCEUS_CADENCE_CENSUS", "SNX_ARCEUS_GRAVITY_PROBE",
-        "SNX_ARCEUS_FIXED_RESOLUTION"
+        "SNX_ARCEUS_TIMING_RESEARCH", "SNX_ARCEUS_CADENCE_CENSUS", "SNX_ARCEUS_GRAVITY_PROBE"
     };
     for (unsigned i = 0; i < sizeof probes / sizeof probes[0]; i++)
         assert(!arceus_switch_enabled(probes[i], 0));
@@ -4324,6 +4395,7 @@ int main(void) {
     test_text_tick();
     test_ride_swap();
     test_defaults_on();
+    test_fixed_resolution();
     test_discord_default();
     test_tick_switch_defaults();
     test_capped_fall_body();
