@@ -624,6 +624,13 @@ add_executable(snx-test-draw-record nvn/draw_record.c "${PROJECT_SOURCE_DIR}/src
 snx_test_target(snx-test-draw-record 11)
 add_test(NAME draw_record COMMAND snx-test-draw-record)
 
+add_executable(snx-test-nvn-blend-slots nvn/nvn_blend_slots.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_params.c")
+snx_test_target(snx-test-nvn-blend-slots 11)
+if(NOT WIN32)
+    target_link_libraries(snx-test-nvn-blend-slots PRIVATE m)
+endif()
+add_test(NAME nvn_blend_slots COMMAND snx-test-nvn-blend-slots)
+
 add_executable(snx-test-nvn-measure nvn/nvn_measure.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/diag/nvn_measure_calc.c")
 snx_test_target(snx-test-nvn-measure 11)
 add_test(NAME nvn_measure COMMAND snx-test-nvn-measure)
@@ -1181,6 +1188,13 @@ add_test(NAME runtime_settings_partial COMMAND "${CMAKE_COMMAND}" "-DRUNTIME=$<T
          "-DMODULE=$<TARGET_FILE:snx-test-module-abi>"
          "-DABI_HEADER=${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu.h"
          -P "${CMAKE_CURRENT_SOURCE_DIR}/settings_partial.cmake")
+# the store's dirty flag (runtime/options.c): an in-game change written to the file, a full store, a blocked write and
+# a reload that keeps the game's value
+add_executable(snx-test-runtime-settings-dirty runtime_settings_dirty.c runtime_settings_dirty_stub.c
+    "${PROJECT_SOURCE_DIR}/src/nx/runtime/options.c" "${PROJECT_SOURCE_DIR}/src/common/utilities/ini_lines.c")
+snx_test_target(snx-test-runtime-settings-dirty 11)
+target_link_libraries(snx-test-runtime-settings-dirty PRIVATE scarletnx-common)
+add_test(NAME runtime_settings_dirty COMMAND snx-test-runtime-settings-dirty)
 # the module contract's layout as recorded when SNX_ABI last rose (docs/ARCHITECTURE.md, Module ABI)
 add_executable(snx-test-module-contract module_contract.c)
 snx_test_target(snx-test-module-contract 99)
