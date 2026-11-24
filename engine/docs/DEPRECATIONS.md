@@ -62,8 +62,8 @@ renderer=opengl
 | LLVM's SLP vectorizer, on in the recompile and the JIT (LLVM's own) | [recompiler] LLVM's SLP vectorizer off by default | `slp_vectorizer = 0` in `[Debug]`; Settings > Debug > SLP vectorizer turns it on, which the next recompile and the JIT's next run take: LLVM 23 can break a module with it and stop the recompile (llvm-project issue 231525) | the setup's notice, once |
 | `ui_scale = auto`, `0.25`, `0.5` or `0.75` in `app.ini`'s `[app]` (`text_size =` before), Settings > App's UI scale **Auto** and its parts (the letters have whole sizes only) | [gui] Take out UI scale's Auto, an old one read as its number | `ui_scale =` 1 to 4: the number Auto gave on that screen, which a start without one takes | the launcher as it opens: `app.ini` is written again with the number, said once |
 
-Settings > App > Move Old Files in the launcher, or `scarletnx --migrate=yes`, moves the rest of these, an entry at a
-time, each to the folder its line names; `scarletnx --migrate` says first what would move ([USAGE](USAGE.md#folders)).
+Settings > App > Move Old Files in the launcher, or `nxaevora-engine --migrate=yes`, moves the rest of these, an entry at a
+time, each to the folder its line names; `nxaevora-engine --migrate` says first what would move ([USAGE](USAGE.md#folders)).
 
 To move a game an older version laid out beside the others: recompile it once from its decrypted game folder with `-r`,
 which makes `recompiled/<id>/`; move its saves, `<Game>_data/save/` and `<Game>_data/sdmc/`, into

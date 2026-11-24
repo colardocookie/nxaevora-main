@@ -29,9 +29,6 @@ FILES = [
     'ScarletNX-linux-riscv64.AppImage',
     'ScarletNX-linux-loongarch64.AppImage',
     'ScarletNX-windows-x86_64.zip',
-    'ScarletNX-android-universal.apk',
-    'ScarletNX-macos-arm64.zip',
-    'ScarletNX-ios-arm64.ipa',
 ]
 ZSYNC = [
     'ScarletNX-linux-x86_64.AppImage.zsync',
@@ -132,10 +129,6 @@ with tempfile.TemporaryDirectory() as temporary:
                 'ScarletNX-linux-loongarch64.AppImage.zsync': 'zsync loong',
             },
             f'ScarletNX-windows-x86_64-{short}': {'bin/nxaevora-engine.exe': 'MZ', 'share/licenses/LICENSE': 'GPL'},
-            f'ScarletNX-android-universal-{short}.apk': {f'ScarletNX-android-universal-{short}.apk': 'PK apk'},
-            # skip-decompress: the macOS zip lands at the artifact's own path, the IPA inside its folder
-            f'ScarletNX-macos-arm64-{short}.zip': {'': 'PK app'},
-            f'ScarletNX-ios-arm64-{short}.ipa': {f'ScarletNX-ios-arm64-{short}.ipa': 'PK ipa'},
         }
         for artifact, files in made.items():
             for file, text in files.items():
@@ -270,7 +263,7 @@ with tempfile.TemporaryDirectory() as temporary:
     check(
         'its notes: the files linked from this release, the changes, the source',
         made
-        and f'https://github.com/{TO}/releases/download/{tag}/ScarletNX-android-universal.apk' in made['body']
+        and f'https://github.com/{TO}/releases/download/{tag}/ScarletNX-linux-x86_64.AppImage' in made['body']
         and f'- \\[ci\\] its title ([#5](https://github.com/{REPO}/pull/5))' in made['body']
         and f'https://github.com/{REPO}/tree/{sha}' in made['body']
         and 'newest 2 nightlies' in made['body']
@@ -281,11 +274,6 @@ with tempfile.TemporaryDirectory() as temporary:
     data = {a['name']: a['data'] for a in made['assets']} if made else {}
     archive = data.get('ScarletNX-windows-x86_64.zip', '')
     check('the Windows build zipped from its folder', archive.startswith('PK') and 'bin/nxaevora-engine.exe' in archive)
-    check(
-        'the macOS app and the iOS IPA as their jobs made them, not zipped again',
-        data.get('ScarletNX-macos-arm64.zip') == 'PK app' and data.get('ScarletNX-ios-arm64.ipa') == 'PK ipa',
-        {k: v[:20] for k, v in data.items()},
-    )
     check(
         'only the newest 2 kept, the oldest and its tag gone',
         sorted(r['tag_name'] for r in releases(s=s)) == sorted([tag, f'nightly-2026-10-15-{previous[:7]}'])
@@ -308,7 +296,7 @@ with tempfile.TemporaryDirectory() as temporary:
         and not linked['assets']
         and linked['prerelease']
         and f'https://github.com/{TO}/releases/tag/{tag}' in linked['body']
-        and f'[APK](https://github.com/{TO}/releases/download/{tag}/ScarletNX-android-universal.apk)' in linked['body']
+        and f'[AppImage](https://github.com/{TO}/releases/download/{tag}/ScarletNX-linux-x86_64.AppImage)' in linked['body']
         and f'([#5](https://github.com/{REPO}/pull/5))' in linked['body']
         and s['tags'][REPO]['nightly'] == sha,
         linked,
@@ -351,27 +339,6 @@ with tempfile.TemporaryDirectory() as temporary:
         partial = ['--run', '42', '--sha', sha, '--artifacts', str(artifacts(f'part-{len(skip)}', sha, (skip,)))]
         done = publish('nightly', *partial, '--checkout', str(checkout))
         check(f'a nightly missing {skip} stops', done.returncode != 0 and said in done.stderr, done.stderr)
-    # macOS and iOS may fail without failing the run (continue-on-error): the nightly goes out without them and says so
-    apple = [
-        '--run',
-        '43',
-        '--sha',
-        sha,
-        '--artifacts',
-        str(artifacts('part-apple', sha, ('ScarletNX-macos', 'ScarletNX-ios'))),
-    ]
-    done = publish('nightly', *apple, '--checkout', str(checkout))
-    made = find(tag)
-    check(
-        'a nightly without the macOS and iOS packages publishes the rest, saying those were not built',
-        done.returncode == 0
-        and made
-        and not any(a['name'].startswith(('ScarletNX-macos', 'ScarletNX-ios')) for a in made['assets'])
-        and '| **macOS** | ARM64 | not built, [see the run](https://github.com/owner/repo/actions/runs/43) |  |'
-        in made['body']
-        and '| **iOS** | ARM64 | not built' in made['body'],
-        done.stderr + (made['body'] if made else ''),
-    )
     # dry run: reads only
     log_file.unlink(missing_ok=True)
     save_state(with_releases(TO, [r for r in releases() if r['tag_name'] != tag]))
@@ -476,7 +443,6 @@ with tempfile.TemporaryDirectory() as temporary:
             'Linux AppImage (riscv64)',
             'Linux AppImage (loongarch64)',
             'Windows (Clang + LLVM)',
-            'Android APK',
         ]
         return {
             'id': number,

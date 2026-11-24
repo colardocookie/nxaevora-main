@@ -21,7 +21,7 @@ bool snx_vk_has_instance_extension(const char* name);
 /* An instance of Vulkan 1.3, volk loaded for it. extensions are the window's (SDL's or a backend's). validation adds
    VK_LAYER_KHRONOS_validation with VK_EXT_debug_utils when it is installed, and a messenger of warnings and errors
    to debug when that is given, sync_validation its synchronization validation too (VK_EXT_validation_features);
-   portability enumerates portability drivers (MoltenVK) when the loader can */
+   portability enumerates portability drivers when the loader can */
 typedef struct {
     const char* app_name;
     const char* const* extensions;

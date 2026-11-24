@@ -18,7 +18,7 @@ Cross-referenced with Eden at commit `a594c8d60ef79280adc046760561912207e16e17`:
   `ClientProcessId` consumes **eight raw bytes**, even though its value comes from the HIPC descriptor.
   Consequently LoadNro's four arguments begin at raw offsets 8, 16, 24 and 32.
 
-This is a C implementation for ScarletNX's single-process memory model, not a copy of Eden's page-table code.
+This is a C implementation for NXAevora Engine's single-process memory model, not a copy of Eden's page-table code.
 The runtime now injects its process ID into incoming PID descriptors rather than trusting a client placeholder;
 its current-process pseudo handle also resolves to a process object for Initialize's copied handle.
 
@@ -45,7 +45,7 @@ its code, so an NRO mapped at the same place later is compiled afresh. NRO pcs a
 next run maps the NRO elsewhere. Without the JIT (a system it can't start on), NRO code can't run.
 
 A host `dlopen()` alone cannot execute ARM64 NRO bytes on another host architecture. Nor can an existing fixed-base
-ScarletNX AOT module be relocated just by moving its dispatch entries: generated PC-relative addresses and direct
+NXAevora Engine AOT module be relocated just by moving its dispatch entries: generated PC-relative addresses and direct
 calls use its original guest addresses. The JIT compiles the NRO at the address it is mapped at, so neither is needed.
 
 `mem_map_code` / `mem_unmap_code` in `src/nx/memory/mem.c`:

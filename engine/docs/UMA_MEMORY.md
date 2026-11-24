@@ -1,8 +1,8 @@
 # Guest buffers on unified memory
 
-ScarletNX does not currently import guest RAM into Vulkan. `vk_stage` maps a Vulkan buffer that the GPU reads directly,
+NXAevora Engine does not currently import guest RAM into Vulkan. `vk_stage` maps a Vulkan buffer that the GPU reads directly,
 but `vk_buf_copy` first copies bytes out of guest RAM. Exporting the final image as a dma-buf, as desktop compositors do,
-would not remove this copy: ScarletNX already presents its Vulkan image without an app-managed dma-buf handoff.
+would not remove this copy: NXAevora Engine already presents its Vulkan image without an app-managed dma-buf handoff.
 
 ## Measured workload
 

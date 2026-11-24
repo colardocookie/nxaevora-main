@@ -232,7 +232,6 @@ setting Memory fit
     key memory_fit
     int 0 1
     default 0
-    default-if SNX_IOS 1
     startup
     words Off|On
     help On = the game sees no more of Memory (GB) than the device can still give it, measured as it starts, less what
@@ -248,7 +247,6 @@ setting Map limit (MB)
     key map_limit_mb
     int 0 1048576
     default 0
-    default-if SNX_IOS 256
     startup
     words No limit|#
     help The most of the game's files mapped into memory, in MB, as the game first reads them; 0 = no limit. A file past
@@ -258,7 +256,6 @@ setting Map limit (files)
     key map_limit_files
     int 0 1000000
     default 0
-    default-if SNX_IOS 2048
     startup
     words No limit|#
     help The most of the game's files mapped, as the game first reads them; 0 = no limit. A file past it is read from
@@ -268,7 +265,6 @@ setting Thread stack (MB)
     key thread_stack_mb
     int 1 256
     default 32
-    default-if SNX_IOS 8
     startup
     help The host stack of each of the game's threads, in MB: a game's deep calls take it. Less leaves address space
     help for more threads where a device has little, and a game that calls very deep may then stop
@@ -298,7 +294,7 @@ setting Prepare shaders
     help is updated. Off = shaders are made only when the game first draws with them. While playing = prepared in the
     help background, used once all are ready. Before starting = a loading screen waits for them and for the shader cache
     help of earlier sessions. Any key, button or tap starts the game at once and the rest is prepared while you play.
-    help Esc quits (on Android, back opens the menu)
+    help Esc quits
 setting JIT threads
     key jit_threads
     int 0 4
@@ -307,10 +303,7 @@ setting JIT threads
     words Auto|#
     help Threads compiling the code the recompiler missed: 0 = every CPU the game may use but two (at most 4).
     help They yield to the game
-# The JIT's level is the recompile's Optimization level by default (g_recompile_ini's opt, 2), as an AOT pack built from
-# the cache needs the cache's level and the pack's to agree. A phone has no such setting: its JIT compiles at O0, as any
-# other level breaks it (guest_jit.c), and cmake/settings.cmake leaves the block out
-# SNX_PHONE_BEGIN
+# The JIT's level is the recompile's Optimization level by default (g_recompile_ini's opt, 2)
 setting JIT optimization
     key jit_opt
     text 2
@@ -320,7 +313,6 @@ setting JIT optimization
     help LLVM's optimization of the code the runtime JIT compiles when the game reaches code the recompiler missed:
     help 0 none, 3 the most, s or z the smallest. It is the recompile's Optimization level by default (2), which an AOT
     help pack built from the cache needs to match. It applies to the next run, which compiles its JIT code again
-# SNX_PHONE_END
 
 # the on-screen controls' (platform/vpad.c): their settings in the game's menu's order, then a control's place in the
 # order of SNX_VPAD_ (VPAD_CONTROLS, which the list controls follows)
@@ -329,7 +321,6 @@ setting Show controls
     key controls
     int 0 1
     default 0
-    default-if __ANDROID__ 1
     set vpad_on_set
     words Off|On
     help The on-screen controls: 1 = shown, 0 = hidden. The game's menu (Back, Home or F2) sets them
@@ -373,7 +364,7 @@ setting Haptics
     int 0 1
     default 1
     words Off|On
-    help 1 = a short buzz on each press and release (Android)
+    help 1 = a short buzz on each press and release
 setting Control place
     key controls_<ID>
     each controls
@@ -735,7 +726,7 @@ setting Alias pool
     startup
     words Off|On
     help 1 = a view of guest memory (MapMemory, MapProcessMemory, code memory's owner and slave) shares its source's
-    help host pages, as the console's do, where the host's pages are 4 KiB (Linux and Android). 0 = every view is a
+    help host pages, as the console's do, where the host's pages are 4 KiB (Linux). 0 = every view is a
     help copy: a write through it reaches the source at its unmap, or at a flushed line (IC IVAU, DC CVAC) after the
     help write, as hosts without a pool run (Windows among them). For tests of that path, and a diagnosis
 setting Profiler
@@ -1096,12 +1087,9 @@ setting Unit size
     key unit_instructions
     int 1 INT_MAX
     default 90000
-    default-if __ANDROID__ 20000
-    default-if SNX_IOS 20000
     words # instructions
     help The instructions a code unit takes, whole functions at a time, when the game is recompiled: each is compiled
-    help on its own, and a smaller one takes less memory at once, which a phone needs (Android's allocator ran out at
-    help 90000 on several threads, and iOS ends an app at its limit). A game made already keeps its units until it is
+    help on its own, and a smaller one takes less memory at once. A game made already keeps its units until it is
     help recompiled
 setting Unit cache limit
     key unit_cache_gb

@@ -9,32 +9,6 @@ msgstr ""
 "Content-Transfer-Encoding: 8bit\n"
 "X-Language-Name: \n"
 
-#: src/gui/android.c
-msgid "an exception that says nothing"
-msgstr ""
-
-#: src/gui/android.c
-msgid "No Android activity to ask."
-msgstr ""
-
-#: src/gui/android.c
-#, c-format
-msgid "MainActivity.%s did not run: %s"
-msgstr ""
-
-#: src/gui/android.c
-#, c-format
-msgid "MainActivity.%s did not run."
-msgstr ""
-
-#: src/gui/apple.m
-msgid "The document picker did not open."
-msgstr ""
-
-#: src/gui/apple.m
-msgid "No window to show the picker over."
-msgstr ""
-
 #: src/gui/browser.c
 #, c-format
 msgid "DLC %u"
@@ -281,220 +255,6 @@ msgstr ""
 #: src/gui/editor.c
 #, c-format
 msgid "Saved in %s"
-msgstr ""
-
-#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
-#: src/gui/main.c
-#, snx-keys
-msgid "Tap: select. Refresh. Back."
-msgstr ""
-
-#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
-#: src/gui/main.c
-#, snx-keys
-msgid "Tap: select. Refresh."
-msgstr ""
-
-#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
-#: src/gui/main.c
-#, snx-keys
-msgid "Tap: open. Drag: scroll. Refresh. Back."
-msgstr ""
-
-#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
-#: src/gui/main.c
-#, snx-keys
-msgid "Tap: open. Drag: scroll. Refresh."
-msgstr ""
-
-#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
-#: src/gui/main.c
-#, snx-keys
-msgid "Recompile."
-msgstr ""
-
-#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
-#: src/gui/main.c
-#, snx-keys
-msgid "Mods."
-msgstr ""
-
-#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
-#: src/gui/main.c
-#, snx-keys
-msgid "AOT pack."
-msgstr ""
-
-#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
-#: src/gui/main.c
-#, snx-keys
-msgid "Save states."
-msgstr ""
-
-#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
-#: src/gui/main.c
-#, snx-keys
-msgid "Back."
-msgstr ""
-
-#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
-#: src/gui/main.c
-#, snx-keys
-msgid "Pick the game file."
-msgstr ""
-
-#: src/gui/main.c
-msgid "tap the box to open the file picker"
-msgstr ""
-
-#: src/gui/main.c
-msgid "Pick a file"
-msgstr ""
-
-#: src/gui/main.c
-msgid "Tap to return to menu"
-msgstr ""
-
-#: src/gui/main.c
-msgid "Tap here to abort and return to menu"
-msgstr ""
-
-#: src/gui/main.c
-msgid "No games in recompiled/ or dumps/: put a game's .nro in dumps/."
-msgstr ""
-
-#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
-#: src/gui/main.c
-#, snx-keys
-msgid "Tap: change. Back."
-msgstr ""
-
-#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
-#: src/gui/main.c
-#, snx-keys
-msgid "Tap: change."
-msgstr ""
-
-#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
-#: src/gui/main.c
-#, snx-keys
-msgid "Drag: change. Tap #RRGGBB: type. Tap outside: OK. Back: cancel."
-msgstr ""
-
-#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
-#: src/gui/main.c
-#, snx-keys
-msgid "Drag: change. Tap #RRGGBB: type. Tap outside: OK."
-msgstr ""
-
-#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
-#: src/gui/main.c
-#, snx-keys
-msgid "Tap: open. Back."
-msgstr ""
-
-#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
-#: src/gui/main.c
-#, snx-keys
-msgid "Tap: open."
-msgstr ""
-
-#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
-#: src/gui/main.c
-#, snx-keys
-msgid "Refresh. Back."
-msgstr ""
-
-#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
-#: src/gui/main.c
-#, snx-keys
-msgid "Refresh."
-msgstr ""
-
-#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
-#: src/gui/main.c
-#, snx-keys
-msgid "Tap: open or change."
-msgstr ""
-
-#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
-#: src/gui/main.c
-#, snx-keys
-msgid "Tap: open or remove."
-msgstr ""
-
-#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
-#: src/gui/main.c
-#, snx-keys
-msgid "Tap: add."
-msgstr ""
-
-#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
-#: src/gui/main.c
-#, snx-keys
-msgid "Tap: reset."
-msgstr ""
-
-#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
-#: src/gui/main.c
-#, snx-keys
-msgid "Tap: select. Tap again: press. Back."
-msgstr ""
-
-#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
-#: src/gui/main.c
-#, snx-keys
-msgid "Tap: select. Tap again: press."
-msgstr ""
-
-#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
-#: src/gui/main.c
-#, snx-keys
-msgid "Tap: rename. Back."
-msgstr ""
-
-#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
-#: src/gui/main.c
-#, snx-keys
-msgid "Tap: rename."
-msgstr ""
-
-#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
-#: src/gui/main.c
-#, snx-keys
-msgid "Tap: select."
-msgstr ""
-
-#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
-#: src/gui/main.c
-#, snx-keys
-msgid "Games."
-msgstr ""
-
-#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
-#: src/gui/main.c
-#, snx-keys
-msgid "Take out."
-msgstr ""
-
-#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
-#: src/gui/main.c
-#, snx-keys
-msgid "Back: abort."
-msgstr ""
-
-#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
-#: src/gui/main.c
-#, snx-keys
-msgid "Tap again: play."
-msgstr ""
-
-#: src/gui/main.c
-msgid "Back: to Games. Tap its row again: play"
-msgstr ""
-
-#: src/gui/main.c
-msgid "Back: to Games"
 msgstr ""
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
@@ -1029,18 +789,6 @@ msgstr ""
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
-msgid "Folders."
-msgstr ""
-
-#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
-#: src/gui/main.c
-#, snx-keys
-msgid "View."
-msgstr ""
-
-#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
-#: src/gui/main.c
-#, snx-keys
 msgid "P: folders."
 msgstr ""
 
@@ -1112,10 +860,6 @@ msgid "List the games in its subfolders too?"
 msgstr ""
 
 #: src/gui/main.c
-msgid "Outside the app, Android checks every file access: games may run slower."
-msgstr ""
-
-#: src/gui/main.c
 msgid "A compile goes: exiting ScarletNX stops it, its work lost."
 msgstr ""
 
@@ -1133,10 +877,6 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "Left by older versions"
-msgstr ""
-
-#: src/gui/main.c
-msgid "While the app is in testing, Android's Settings > Apps > ScarletNX > Storage > Clear storage takes the menu's files above, with every game, save and key in the app"
 msgstr ""
 
 #: src/gui/main.c
@@ -1161,10 +901,6 @@ msgstr ""
 #: src/gui/main.c
 #, c-format
 msgid "and %d more, which Share Log lists"
-msgstr ""
-
-#: src/gui/main.c
-msgid "tap again"
 msgstr ""
 
 #: src/gui/main.c
@@ -1193,10 +929,6 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "With Subfolders"
-msgstr ""
-
-#: src/gui/main.c
-msgid "Use Anyway"
 msgstr ""
 
 #: src/gui/main.c
@@ -1310,11 +1042,6 @@ msgstr ""
 #: src/gui/main.c
 #, c-format
 msgid "%s is not there yet"
-msgstr ""
-
-#: src/gui/main.c
-#, c-format
-msgid "%s is out of the Files app's reach, which shows the app's Documents alone"
 msgstr ""
 
 #: src/gui/main.c
@@ -2155,10 +1882,6 @@ msgid "Main"
 msgstr ""
 
 #: src/gui/main.c
-msgid "outside the app"
-msgstr ""
-
-#: src/gui/main.c
 msgid "custom"
 msgstr ""
 
@@ -2227,10 +1950,6 @@ msgid "Not changed: %s %s"
 msgstr ""
 
 #: src/gui/main.c
-msgid "Not changed"
-msgstr ""
-
-#: src/gui/main.c
 #, c-format
 msgid "They are the defaults: %s"
 msgstr ""
@@ -2247,16 +1966,6 @@ msgstr ""
 #: src/gui/main.c
 #, c-format
 msgid "%s folder %s %s. Settings > App > Folders picks another."
-msgstr ""
-
-#: src/gui/main.c
-#, c-format
-msgid "The folder picker could not open: %s"
-msgstr ""
-
-#: src/gui/main.c
-#, c-format
-msgid "Folders: the folder picker could not open: %s"
 msgstr ""
 
 #: src/gui/main.c
@@ -2458,30 +2167,6 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "was"
-msgstr ""
-
-#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
-#: src/gui/main.c
-#, snx-keys
-msgid "Tap: choose. Back."
-msgstr ""
-
-#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
-#: src/gui/main.c
-#, snx-keys
-msgid "Tap: choose."
-msgstr ""
-
-#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
-#: src/gui/main.c
-#, snx-keys
-msgid "Type the nickname. Back."
-msgstr ""
-
-#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
-#: src/gui/main.c
-#, snx-keys
-msgid "Type the nickname."
 msgstr ""
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
@@ -2900,14 +2585,6 @@ msgid "The run ended with status %d."
 msgstr ""
 
 #: src/gui/main.c
-msgid "Failed"
-msgstr ""
-
-#: src/gui/main.c
-msgid "Ready"
-msgstr ""
-
-#: src/gui/main.c
 #, c-format
 msgid "%s: into which folder of the recompiled library?"
 msgstr ""
@@ -2981,11 +2658,6 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "That path is not a readable file. Try again or press ESC."
-msgstr ""
-
-#: src/gui/main.c
-#, c-format
-msgid "%s is compiling (%d%%): the game plays once the queue ends"
 msgstr ""
 
 #: src/gui/main.c
@@ -3095,14 +2767,6 @@ msgid "Recompiled in %s."
 msgstr ""
 
 #: src/gui/main.c
-msgid "AOT pack built"
-msgstr ""
-
-#: src/gui/main.c
-msgid "Compiled"
-msgstr ""
-
-#: src/gui/main.c
 msgid "SDL gave no reason"
 msgstr ""
 
@@ -3153,11 +2817,6 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
-msgid "Cannot read this file by its path. Check that ScarletNX may access the device's files in Android's settings, then pick it from the device's storage (%s)."
-msgstr ""
-
-#: src/gui/main.c
-#, c-format
 msgid "Pick the file from this computer's storage (%s)."
 msgstr ""
 
@@ -3173,10 +2832,6 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "Drop one local file path, not a list or remote URL."
-msgstr ""
-
-#: src/gui/main.c
-msgid "the launcher's log has no folder in Documents"
 msgstr ""
 
 #: src/gui/main.c
@@ -3538,6 +3193,11 @@ msgid "Drop one local folder"
 msgstr ""
 
 #: src/gui/main.c
+#, c-format
+msgid "The folder picker could not open: %s"
+msgstr ""
+
+#: src/gui/main.c
 msgid "No folder was picked."
 msgstr ""
 
@@ -3553,10 +3213,6 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "Cannot start the menu: out of memory"
-msgstr ""
-
-#: src/gui/main.c
-msgid "Cannot find the folder of the app's libraries"
 msgstr ""
 
 #: src/gui/main.c
@@ -3590,21 +3246,12 @@ msgid "Where the app keeps each kind of its files, and the libraries: each folde
 msgstr ""
 
 #: src/gui/process_posix.c
-#, c-format
-msgid "Cannot start the run: %s"
-msgstr ""
-
-#: src/gui/process_posix.c
 msgid "A run is already going"
 msgstr ""
 
 #: src/gui/process_posix.c
 #, c-format
 msgid "Cannot launch driver: %s"
-msgstr ""
-
-#: src/gui/process_posix.c
-msgid "the driver runs on a thread of the app, at the app's priority"
 msgstr ""
 
 #: src/gui/process_win32.c
@@ -4236,7 +3883,7 @@ msgid "Unit size"
 msgstr ""
 
 #: src/nx/runtime/settings.txt
-msgid "The instructions a code unit takes, whole functions at a time, when the game is recompiled: each is compiled on its own, and a smaller one takes less memory at once, which a phone needs (Android's allocator ran out at 90000 on several threads, and iOS ends an app at its limit). A game made already keeps its units until it is recompiled"
+msgid "The instructions a code unit takes, whole functions at a time, when the game is recompiled: each is compiled on its own, and a smaller one takes less memory at once. A game made already keeps its units until it is recompiled"
 msgstr ""
 
 #: src/nx/runtime/settings.txt

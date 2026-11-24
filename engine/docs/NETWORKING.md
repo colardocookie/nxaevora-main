@@ -48,7 +48,7 @@ TCP sockets stay the host's: Eden makes every socket the room's and answers
 TCP's calls without sending anything, and a room carries datagrams alone. A
 datagram carries Eden's protocol number for its socket (1 for a socket opened
 with protocol 0, 4 for UDP) and reaches only a socket of the same one, so an
-Eden and a ScarletNX of one game meet. At exit every ldn closes its network
+Eden and an NXAevora Engine of one game meet. At exit every ldn closes its network
 before the console leaves the room, since an Eden on the other side hears only
 that, never who left.
 

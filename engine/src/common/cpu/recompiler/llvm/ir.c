@@ -117,29 +117,10 @@ static LLVMCodeGenOptLevel codegen_level(char opt) {
     }
 }
 
-/* The host's triple, for objects the JIT loader loads when jit is nonzero. The loader reads ELF (and Windows' COFF),
-   and Darwin's objects are Mach-O: there the triple names ELF as its object format (arm64-apple-darwin<version>-elf),
-   and the code stays Darwin's. LLVM's AArch64 backend picks the calling convention, the reserved registers and the
-   library calls by the operating system, not by the object format: DarwinPCS (variadic arguments on the stack, small
-   arguments extended by the caller), x18 and x29 never allocated, bzero and memset_pattern16 for memset (libc.inc).
-   Only the sections, relocations and symbol names (no leading underscore) are ELF's */
+/* The host's triple, for objects the JIT loader loads when jit is nonzero. The loader reads ELF (and Windows' COFF) */
 static char* host_triple(int jit) {
     char* triple = LLVMGetDefaultTargetTriple();
-#ifdef __APPLE__
-    if (jit && !strstr(triple, "-elf")) {
-        size_t n = strlen(triple);
-        char* elf = (char*)malloc(n + sizeof("-elf"));
-        if (elf) {
-            memcpy(elf, triple, n);
-            memcpy(elf + n, "-elf", sizeof("-elf"));
-            LLVMDisposeMessage(triple);
-            triple = LLVMCreateMessage(elf);
-            free(elf);
-        }
-    }
-#else
     (void)jit;
-#endif
     return triple;
 }
 
@@ -236,11 +217,6 @@ static SnxIr* new_ir(const char* name, char opt, const char* target_triple, int 
         ir->tm = LLVMCreateTargetMachine(target, triple, cpu, features, codegen_level(opt), LLVMRelocPIC,
                                          loongarch_triple(triple) ? LLVMCodeModelMedium : LLVMCodeModelDefault);
     }
-#ifdef __ANDROID__
-    /* AArch64's machine outliner holds a unit's functions in memory and outlines nothing at O2: on Android that memory
-       runs the recompile out of mappings */
-    LLVMSetTargetMachineMachineOutliner(ir->tm, 0);
-#endif
     ir->windows = strstr(triple, "windows") != NULL || strstr(triple, "mingw") != NULL;
     ir->features = target_triple ? &generic_features : &snx_ir_host;
     ir->ctx = LLVMContextCreate();

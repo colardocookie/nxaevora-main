@@ -64,10 +64,6 @@ __pycache__/
 # What patch or git apply --reject leaves behind when a hunk does not apply
 *.rej
 
-# Gradle's state and the SDK's path when dist/android is built in place (its output goes to the stage folder)
-/dist/android/.gradle/
-/dist/android/local.properties
-
 # Third-party packages downloaded by CPM.cmake (cmake/dependencies.cmake), and the Windows toolchain from
 # scripts/bootstrap.ps1
 /.cache/

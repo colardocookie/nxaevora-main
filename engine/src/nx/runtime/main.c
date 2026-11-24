@@ -9,7 +9,9 @@
 #include "common/cpu/recompiler/llvm/ir.h"
 #include "common/utilities/build_info.h"
 #include "common/utilities/common.h"
+#include "common/utilities/exit_codes.h"
 #include "common/utilities/ini_lines.h"
+#include "common/utilities/progress.h"
 #include "nx/gpu/nvn/diag/draw_record.h"
 #include "nx/gpu/nvn/nvn_cmdlist.h"
 #include "nx/gpu/gpu.h"
@@ -52,32 +54,14 @@
 #include <stdlib.h>
 #include <string.h>
 
-#ifdef __APPLE__
-#include <TargetConditionals.h>
-#endif
-/* iOS loads no code that was not shipped with the app: the game's code is a pack of objects (recompile --target ios)
-   that the JIT loader places in memory a debugger made executable (load_pack) */
-#if defined(__APPLE__) && TARGET_OS_IOS
-#define MODULE_PACK 1
-#include "common/cpu/recompiler/llvm/code_loader.h"
-#include "common/cpu/recompiler/llvm/objects_pack.h"
-/* src/gui/apple.m's (gui/apple.h pulls in SDL's headers, which this part of the runtime is not built with) */
-void gui_apple_stats(char* out, size_t size);
-#include "common/cpu/recompiler/llvm/rtlib_object.h"
-#endif
-
 #if defined(_WIN32)
 #define MODULE_SUFFIX "_code.dll"
-#elif defined(MODULE_PACK)
-#define MODULE_SUFFIX "_code.snxobj"
 #else
 #define MODULE_SUFFIX "_code.so"
 #endif
 /* The old user data folder, named without the account's path in the log */
 #ifdef _WIN32
 #define SNX_OLD_USER_FOLDER_TEXT "the old user data folder (%APPDATA%\\scarletnx)"
-#elif defined(__APPLE__)
-#define SNX_OLD_USER_FOLDER_TEXT "the old user data folder (~/Library/Application Support/scarletnx)"
 #else
 #define SNX_OLD_USER_FOLDER_TEXT "the old user data folder ($XDG_DATA_HOME/scarletnx or ~/.local/share/scarletnx)"
 #endif
@@ -145,8 +129,9 @@ static void drop_suffix(char* name, const char* suffix) {
 
 /* g_exedir and g_exename from the path of the game or of the runtime's copy named after it: a folder is the game of
    its own name in it (games/<id>/ is games/<id>/<id>), and the program's suffixes and the code module's are dropped,
-   so any of them names the same game */
-static void name_game(const char* from) {
+   so any of them names the same game. The CLI's settings commands call it for their --game, with no game started
+   (settings_cli.c) */
+void snx_game_locate(const char* from) {
     char path[1024], base[256];
     size_t n, cut;
     snprintf(path, sizeof path, "%s", from);
@@ -165,7 +150,6 @@ static void name_game(const char* from) {
     drop_suffix(g_exename, ".AppImage");
     drop_suffix(g_exename, "_code.so");
     drop_suffix(g_exename, "_code.dll");
-    drop_suffix(g_exename, "_code.snxobj");
     path[cut] = 0;
 #if defined(_WIN32)
     snprintf(g_exedir, sizeof g_exedir, "%s", path);
@@ -185,57 +169,6 @@ static const char* program_path(const char* argv0) {
 
 /* ---- the game's code ---- */
 
-#ifdef MODULE_PACK
-/* The pack's objects loaded into an arena of the JIT loader's, after the runtime library this app embeds (the pack has
-   none: its host had none for this machine). Each of the arena's regions is what the two loads take of it
-   (snx_code_need), not a share of twice the file: a pack whose code passes five eighths of that fits, and an arena
-   whose every page is prepared (ios_arena's debugger) costs the memory the code uses. The module's descriptor is its
-   one export. A debugger the arena needs is asked for by the loader, which says what to enable when there is none */
-static const SnxModule* load_pack(const char* path) {
-    SnxLinkInput rtlib, *inputs;
-    SnxCodeLoader* loader;
-    const char* names[1];
-    SnxU64 address = 0;
-    ModuleFn get;
-    size_t size = 0, count = 0, need[3], rtlib_need[3], k;
-    unsigned char* data = (unsigned char*)snx_read_file(path, &size);
-    char error[1024];
-    if (!data) fatal("%s could not be read", path);
-    inputs = snx_objects_unpack(data, size, "game code", &count);
-    if (!inputs) fatal("%s is not a pack of recompiled code: recompile the game with --target ios", path);
-    memset(&rtlib, 0, sizeof(rtlib));
-    rtlib.data = snx_rtlib_object;
-    rtlib.size = snx_rtlib_object_size;
-    rtlib.name = "rtlib";
-    if (snx_code_need(&rtlib, 1, rtlib_need, error, sizeof(error)) ||
-        snx_code_need(inputs, count, need, error, sizeof(error)))
-        fatal("The game's code cannot be loaded: %s", error);
-    for (k = 0; k < 3; ++k) need[k] += rtlib_need[k];
-    LOG("game: a code arena of %.1f MiB of code, %.1f MiB of read-only data and %.1f MiB of data for its %.1f MB of "
-        "objects\n",
-        (double)need[0] / 1048576.0, (double)need[1] / 1048576.0, (double)need[2] / 1048576.0, (double)size / 1e6);
-    loader = snx_code_loader_new_regions(need, error, sizeof(error));
-    if (!loader) fatal("The game's code cannot be loaded: %s", error);
-    names[0] = "snx_module";
-    if (snx_code_load(loader, &rtlib, 1, NULL, 0, NULL, error, sizeof(error)) ||
-        snx_code_load(loader, inputs, count, names, 1, &address, error, sizeof(error)))
-        fatal("The game's code cannot be loaded: %s", error);
-    free(inputs);
-    free(data); /* the loaded code is a copy */
-    {
-        SnxU64 variants = 0;
-        if (snx_code_lookup(loader, "snx_variants", &variants)) { /* a global of the pack, in the loader's table */
-            VariantsFn get_variants = (VariantsFn)(uintptr_t)variants;
-            g_variants = get_variants();
-            if (!g_variants || g_variants->version != SNX_VARIANTS_VERSION)
-                fatal("%s has a runtime variant table of another version", path);
-        }
-    }
-    get = (ModuleFn)(uintptr_t)address;
-    return get();
-}
-#endif
-
 static const SnxModule* load_module(const char* path) {
     void *lib, *sym;
     ModuleFn get;
@@ -245,16 +178,11 @@ static const SnxModule* load_module(const char* path) {
     const SnxModule* m;
     if (snx_module_static) return snx_module_static();
     if (!snx_is_file(path))
-        fatal("Cannot find the recompiled code: %s. A copy of the runtime runs the game it is named after, with "
-              "that code beside it, or --game=PATH names the game (--game=recompiled/Game)",
-              path);
-#ifdef MODULE_PACK
-    m = load_pack(path);
-    if (!m) fatal("%s could not be loaded: it describes no game", path);
-    return m;
-#endif
+        fatal_game_files("Cannot find the recompiled code: %s. A copy of the runtime runs the game it is named after, "
+                         "with that code beside it, or --game=PATH names the game (--game=recompiled/Game)",
+                         path);
     lib = plat_dl_open(path);
-    if (!lib) fatal("%s could not be loaded: %s", path, plat_dl_error());
+    if (!lib) fatal_game_files("%s could not be loaded: %s", path, plat_dl_error());
     if ((sym = plat_dl_sym(lib, "snx_module")) != NULL) {
         memcpy(&get, &sym, sizeof get); /* ISO C has no conversion from an object pointer to a function's */
         m = get();
@@ -265,19 +193,19 @@ static const SnxModule* load_module(const char* path) {
            reports are grouped by */
         if (arm && arm->abi != SNX_ARM_MODULE_ABI) {
             WARN("game: its code is %s\n", path);
-            fatal("The recompiled code is from another ScarletNX version (32-bit ABI %08x, where this one runs %08x): "
-                  "recompile the game with this one",
-                  (unsigned)arm->abi, (unsigned)SNX_ARM_MODULE_ABI);
+            fatal_game_files("The recompiled code is from another ScarletNX version (32-bit ABI %08x, where this one "
+                             "runs %08x): recompile the game with this one",
+                             (unsigned)arm->abi, (unsigned)SNX_ARM_MODULE_ABI);
         }
         m = arm_module(arm);
     } else
-        fatal("%s is not a ScarletNX game module", path);
-    if (!m) fatal("%s could not be loaded: it describes no game", path);
+        fatal_game_files("%s is not a ScarletNX game module", path);
+    if (!m) fatal_game_files("%s could not be loaded: it describes no game", path);
     if ((sym = plat_dl_sym(lib, "snx_variants")) != NULL) {
         memcpy(&get_variants, &sym, sizeof get_variants);
         g_variants = get_variants();
         if (!g_variants || g_variants->version != SNX_VARIANTS_VERSION)
-            fatal("%s has a runtime variant table of another version", path);
+            fatal_game_files("%s has a runtime variant table of another version", path);
     }
     return m;
 }
@@ -292,10 +220,8 @@ static void dispatch_init(void) {
     if (g_code_hi <= g_code_lo) return;
     words = (g_code_hi - g_code_lo) / 4;
     if (words > SIZE_MAX / sizeof *g_disp) fatal("The game's code range is too large");
-    g_disp = (GuestFn*)calloc((size_t)words, sizeof *g_disp);
-    if (!g_disp)
-        fatal("Out of memory for the game's dispatch table (%llu MiB)",
-              (unsigned long long)(words * sizeof *g_disp >> 20));
+    g_disp = (GuestFn*)snx_alloc((size_t)words * sizeof *g_disp);
+    memset(g_disp, 0, (size_t)words * sizeof *g_disp);
     for (i = 0; i < g_mod->nentries; i++) {
         u64 a = g_mod->entry_addr[i];
         if (a >= g_code_lo && a < g_code_hi && !(a & 3)) g_disp[(a - g_code_lo) / 4] = g_mod->entry_fn[i];
@@ -305,8 +231,10 @@ static void dispatch_init(void) {
 /* ---- folders ---- */
 
 /* the folder of kind for the game's files of that kind: recorded, the one the file record names, when it is there;
-   else beside the game, or the XDG folder for a game of an installed build's data folder */
-static void kind_dir(char* out, size_t cap, int kind, const char* what, const char* recorded, const char* record) {
+   else beside the game, or the XDG folder for a game of an installed build's data folder. make makes that folder, and
+   keeps the files beside the game when it cannot */
+static void kind_dir(char* out, size_t cap, int kind, int make, const char* what, const char* recorded,
+                     const char* record) {
     char here[1024];
     size_t n = strlen(g_exedir);
     char *moved, *full;
@@ -320,7 +248,7 @@ static void kind_dir(char* out, size_t cap, int kind, const char* what, const ch
         snprintf(here, sizeof here, "%.*s", (int)(n - 1), g_exedir);
         moved = snx_user_path(here, kind);
         if (moved && strcmp(moved, here)) {
-            if (snx_mkdirs(moved))
+            if (make && snx_mkdirs(moved))
                 WARN("%s cannot be created, so the game's %s stay beside it\n", moved, what);
             else {
                 snprintf(out, cap, "%s/", moved);
@@ -339,8 +267,8 @@ static void kind_dir(char* out, size_t cap, int kind, const char* what, const ch
 
 /* the game's folders of each kind: those its driver recorded in <name>.folders beside it (snx_record_folders), which
    the environment the game runs in may not name (an AppImage's copy, without its portable home or config), else its
-   environment's */
-static void game_dirs(void) {
+   environment's. make makes the folders; without it the same paths are only resolved (snx_game_folders_find) */
+static void game_folders(int make) {
     static const char* const keys[] = {"config", "state", "cache"};
     char path[sizeof g_exedir + sizeof g_exename + 16], why[256], *text, *key, *value, *full;
     char* recorded[SNX_USER_CACHE + 1] = {NULL}; /* in text */
@@ -363,9 +291,10 @@ static void game_dirs(void) {
             WARN("%s: %s=%s is none of config=, state= and cache=, the folders the game reads from it\n", record, key,
                  value);
     }
-    kind_dir(g_confdir, sizeof g_confdir, SNX_USER_CONFIG, "settings", recorded[SNX_USER_CONFIG], record);
-    kind_dir(g_statedir, sizeof g_statedir, SNX_USER_STATE, "log and threads.txt", recorded[SNX_USER_STATE], record);
-    kind_dir(g_cachedir, sizeof g_cachedir, SNX_USER_CACHE, "caches", recorded[SNX_USER_CACHE], record);
+    kind_dir(g_confdir, sizeof g_confdir, SNX_USER_CONFIG, make, "settings", recorded[SNX_USER_CONFIG], record);
+    kind_dir(g_statedir, sizeof g_statedir, SNX_USER_STATE, make, "log and threads.txt", recorded[SNX_USER_STATE],
+             record);
+    kind_dir(g_cachedir, sizeof g_cachedir, SNX_USER_CACHE, make, "caches", recorded[SNX_USER_CACHE], record);
     if (!text && snx_path_exists(path))
         WARN("cannot read %s (%s): the game's settings are in %s, its log in %s, its caches in %s\n", record, why,
              g_confdir, g_statedir, g_cachedir);
@@ -373,28 +302,71 @@ static void game_dirs(void) {
     free(full);
 }
 
-/* An update of the game whose folder it is in (snx_addon_name: <folder>/<folder>_<the update's title ID>) runs as
-   that game: with its settings, ini set to the game's .ini, and its data folder, its saves the
-   game's (g_datadir, set by the caller from base). Its own .ini names only the add-on's dump, source=, and its own data
-   folder lies over the game's, both read by fs.c. base: the game's name, "" for no add-on */
-static void addon_init(char* ini, size_t ini_size, char* base, size_t base_size) {
-    char* dir = snx_absolute(g_exedir[0] ? g_exedir : ".");
-    size_t n = dir ? strlen(dir) : 0, cut;
-    base[0] = 0;
-    while (n > 1 && is_separator(dir[n - 1])) dir[--n] = 0;
-    for (cut = n; cut && !is_separator(dir[cut - 1]); cut--) continue;
-    if (dir && snx_addon_name(dir + cut, g_exename, &g_addon)) {
-        SnxU64 game = 0;
-        snx_title_parse(dir + cut, &game);
-        if (snx_addon_kind(game, g_addon) != SNX_ADDON_UPDATE)
-            fatal("%s is a DLC's program, which an older version made: a DLC plays with its game, checked in the "
-                  "game's list of updates and DLCs (addons= in its .ini). Play the DLC's dump again",
-                  g_exename);
-        snprintf(base, base_size, "%s", dir + cut);
-        snprintf(g_addondir, sizeof g_addondir, "%s%s_data/", g_exedir, g_exename);
-        snprintf(ini, ini_size, "%s%s.ini", g_confdir, base);
+/* The game's folders, made: snx_main calls it before it opens the game's .ini */
+void snx_game_folders(void) { game_folders(1); }
+
+/* The same paths, resolved only, with no folder made and no "cannot be created" warning: the CLI's settings and
+   maintenance commands call it after snx_game_locate, before they open the game's .ini */
+void snx_game_folders_find(void) { game_folders(0); }
+
+/* The early error file's path: beside the launcher's log (docs/USAGE.md#folders), whose Share Log sends it, for a game
+   of a data folder in that folder's state folder; another folder's game beside its own log, or before it has one in its
+   folder. make makes the folder first, as the backend does before a write; logs export passes 0 and only reads the
+   path. NULL when no folder is known yet or make fails */
+char* snx_early_error_path(int make) {
+    char here[sizeof g_exedir], *moved, *folder, *path;
+    size_t n = strlen(g_exedir);
+    snprintf(here, sizeof here, "%.*s", (int)(n ? n - 1 : 0), g_exedir); /* without its separator */
+    moved = snx_user_path(here[0] ? here : ".", SNX_USER_STATE);
+    folder = moved && strcmp(moved, here[0] ? here : ".") ? snx_menu_dir(here[0] ? here : ".", SNX_USER_STATE)
+             : g_statedir[0]                              ? snx_strdup(g_statedir)
+             : here[0]                                    ? snx_strdup(here)
+                                                          : NULL; /* nothing known yet: stderr has it */
+    free(moved);
+    if (!folder) folder = snx_user_dir(SNX_USER_STATE); /* no game folder: the user's state folder */
+    if (!folder) return NULL;
+    if (make && snx_mkdirs(folder)) {
+        free(folder);
+        return NULL;
     }
+    path = snx_path_join(folder, SNX_ERROR_LOG);
+    free(folder);
+    return path;
+}
+
+/* The add-on the program at exedir named exename is (snx_addon_name: <folder>/<folder>_<the add-on's entry>, the folder
+   the base game's name): SNX_ADDON_UPDATE or SNX_ADDON_DLC, its ID in *id, the base game's name in base; SNX_ADDON_NONE
+   for the game's own program, base "". addon_init and the CLI's settings get and set both read a program so */
+int snx_game_addon(const char* exedir, const char* exename, char* base, size_t base_size, u64* id) {
+    char* dir = snx_absolute(exedir[0] ? exedir : ".");
+    size_t len = dir ? strlen(dir) : 0, cut;
+    u64 addon = 0, game = 0;
+    int kind = SNX_ADDON_NONE;
+    if (base_size) base[0] = 0;
+    while (len > 1 && is_separator(dir[len - 1])) dir[--len] = 0;
+    for (cut = len; cut && !is_separator(dir[cut - 1]); cut--) continue;
+    if (dir && snx_addon_name(dir + cut, exename, &addon) && snx_title_parse(dir + cut, &game)) {
+        kind = snx_addon_kind(game, addon);
+        if (base_size) snprintf(base, base_size, "%s", dir + cut);
+    }
+    if (id) *id = addon;
     free(dir);
+    return kind;
+}
+
+/* An update of the game whose folder it is in (snx_game_addon) runs as that game: with its settings, ini set to the
+   game's .ini, and its data folder, its saves the game's (g_datadir, set by the caller from base). Its own .ini names
+   only the add-on's dump, source=, and its own data folder lies over the game's, both read by fs.c. base: the game's
+   name, "" for no add-on */
+static void addon_init(char* ini, size_t ini_size, char* base, size_t base_size) {
+    int kind = snx_game_addon(g_exedir, g_exename, base, base_size, &g_addon);
+    if (kind == SNX_ADDON_NONE) return;
+    if (kind != SNX_ADDON_UPDATE)
+        fatal("%s is a DLC's program, which an older version made: a DLC plays with its game, checked in the "
+              "game's list of updates and DLCs (addons= in its .ini). Play the DLC's dump again",
+              g_exename);
+    snprintf(g_addondir, sizeof g_addondir, "%s%s_data/", g_exedir, g_exename);
+    snprintf(ini, ini_size, "%s%s.ini", g_confdir, base);
 }
 
 /* what the game plays with, for its window's title: its update by its version ("Update 1.2.0") and the DLCs found,
@@ -600,19 +572,12 @@ static void frontend_loop(void) {
         if (tick % 900 == 0) write_threads(tick / VI_REFRESH_HZ);
         now = plat_ns();
         shown = __atomic_load_n(&g_frames, __ATOMIC_RELAXED);
-        /* the pace the game is shown at, in the log every five seconds: a phone has no overlay to read it from */
+        /* the pace the game is shown at, in the log every five seconds */
         if (now - rate_at >= 5000000000u) {
             LOG("perf: %.1f frames a second over %.1f s (%d shown in all)\n",
                 (double)(shown - rate_frames) * 1e9 / (double)(now - rate_at), (double)(now - rate_at) / 1e9, shown);
             rate_at = now;
             rate_frames = shown;
-#ifdef MODULE_PACK
-            {
-                char line[320];
-                gui_apple_stats(line, sizeof line);
-                LOG("%s\n", line);
-            }
-#endif
         }
         /* a paused game shows nothing new, and isn't stalled; nor is one that waits for the keyboard's box */
         if (shown != frames || paused || overlay_keyboard_shown()) {
@@ -638,7 +603,8 @@ static void frontend_loop(void) {
     snx_save_before_exit();
     LOG("Exit.\n");
     snx_tracy_shutdown();
-    plat_exit_now(0);
+    snx_progress_done(SNX_PROGRESS_STAGE_RUN);
+    plat_exit_now(SNX_EXIT_OK);
 }
 
 /* The shaders and pipelines the renderer makes before the game's first thread runs (prepare_shaders 2, the
@@ -701,9 +667,11 @@ static void prepare_wait(const char* title) {
     int shown = 0, themed = 0, n = 0, stalls = 0;
     char ended[96] = "", how[96];
     if (g_settings.prepare_shaders != 2 || !g_renderer->prepare) return;
+    snx_progress_stage(SNX_PROGRESS_STAGE_PREPARE);
     g_renderer->prepare(&p);
     if (p.done) { /* nothing to make (shaders are recorded, or the renderer makes none) */
         unattended_start();
+        snx_progress_done(SNX_PROGRESS_STAGE_PREPARE);
         return;
     }
     for (;;) {
@@ -748,13 +716,8 @@ static void prepare_wait(const char* title) {
             }
             free(dir);
             themed = 1;
-#if defined(__ANDROID__) /* no Esc there: back opens the menu, whose Exit quits */
-            prepare_draw(look, title, st, n, &p,
-                         "Any button or tap: start now. The rest is prepared while you play. Back: menu.");
-#else
             prepare_draw(look, title, st, n, &p,
                          "Any key, button or tap: start now. The rest is prepared while you play. Esc: quit.");
-#endif
             shown = 1;
         }
         plat_sleep_ns(16000000);
@@ -785,6 +748,7 @@ static void prepare_wait(const char* title) {
         (unsigned long long)((plat_ns() - t0) / 1000000u), g_quit ? "would have started" : "started", p.shipped,
         p.pipes_made, p.pipes, how, ended);
     unattended_start(); /* scripted presses and the timed exit count from the game's start */
+    snx_progress_done(SNX_PROGRESS_STAGE_PREPARE);
 }
 
 /* ---- startup ---- */
@@ -808,45 +772,46 @@ int snx_main(int argc, char** argv) {
     if (status) goto done;
     if (argc == 2 && !strcmp(argv[1], "--settings")) {
         ini_list(g_ini_sections, g_ini_sections_count);
-        status = 0;
+        status = SNX_EXIT_OK;
         goto done;
     }
     if (argc == 2 && !strcmp(argv[1], "--settings=recompile")) {
         ini_list(g_launch_sections, g_launch_sections_count);
-        status = 0;
+        status = SNX_EXIT_OK;
         goto done;
     }
     if (g_opt_gdb && snx_gdb_start(g_opt_gdb_stop, SNX_GDB_PORT)) {
-        status = 2;
+        status = SNX_EXIT_START;
         goto done; /* before any other thread */
     }
     if (argc == 2 && !strncmp(argv[1], "--settings=", 11)) {
         fprintf(stderr, "scarletnx: %s: not --settings (the game's) or --settings=recompile\n", argv[1]);
-        status = 2;
+        status = SNX_EXIT_USAGE;
         goto done;
     }
     game = game_option(argc, argv);
     refuse_dumps(argc, argv, game);
-    name_game(game ? game : program_path(argv[0]));
+    snx_game_locate(game ? game : program_path(argv[0]));
     snprintf(module, sizeof module, "%s%s%s", g_exedir, g_exename, MODULE_SUFFIX);
     if (argc == 1 && !snx_module_static && snx_menu && snx_launcher_name(g_exename) && !snx_is_file(module)) {
         status = open_menu(argv[0]);
         goto done;
     }
-    /* the game's errors in its log, where a fatal's "the line before" is: a game's process on Android has no stderr */
+    /* the game's errors in its log, where a fatal's "the line before" is */
     snx_error_sink(log_error_line);
-    /* the guest's address space before the game's code, which would take a share of a small one: a pack's arena with its
-       write alias leaves an iOS app's 13 GiB or so no run of the 5 GiB the guest needs */
+    /* the guest's address space before the game's code, which would take a share of a small one */
     mem_reserve();
+    /* the start stage opens before the code loads: a fatal before the window still writes its error line */
+    snx_progress_stage(SNX_PROGRESS_STAGE_START);
     /* the code before anything is written: a mistyped --game leaves no .ini and no log behind */
     mod = load_module(module);
     if (mod->abi != SNX_ABI) {
         WARN("game: its code is %s\n", module);
-        fatal("The recompiled code is from another ScarletNX version (ABI %u, where this one runs %u): recompile the "
-              "game with this one",
-              (unsigned)mod->abi, (unsigned)SNX_ABI);
+        fatal_game_files("The recompiled code is from another ScarletNX version (ABI %u, where this one runs %u): "
+                         "recompile the game with this one",
+                         (unsigned)mod->abi, (unsigned)SNX_ABI);
     }
-    game_dirs();
+    snx_game_folders();
     if (g_arm_mod) mem_layout32(g_arm_mod->aspace); /* before anything sizes or reads guest memory */
     if (mod->title_id) g_hle.kernel.title_id = mod->title_id;
     /* this run's settings: each --key=value before a "--" (-v is log=2); -f and --fullscreen=0|1 through startup.c's
@@ -856,7 +821,7 @@ int snx_main(int argc, char** argv) {
         char key[64];
         if (!strcmp(arg, "-v")) ini_override("log", "2");
         if (strncmp(arg, "--", 2) || !eq || (size_t)(eq - arg - 2) >= sizeof key || !strncmp(arg, "--game=", 7) ||
-            !strncmp(arg, "--fullscreen=", 13))
+            !strncmp(arg, "--fullscreen=", 13) || !strncmp(arg, "--progress=", 11))
             continue;
         memcpy(key, arg + 2, (size_t)(eq - arg - 2));
         key[eq - arg - 2] = 0;
@@ -1094,9 +1059,6 @@ int snx_main(int argc, char** argv) {
 
     fs_init(); /* the npdm is read through it, and mem_init's layout comes before */
     npdm_layout(); /* the address space type's layout, before mem_init sizes its blocks in it */
-#ifdef MODULE_PACK
-    g_settings.log_level = 2; /* a phone's log is the only way to see what a run did: everything, until it is steadier */
-#endif
     mem_init();
     if (g_settings.memory_fit) { /* before the game allocates: what the process holds is the runtime's alone */
         SnxU64 available = 0, footprint = snx_footprint();
@@ -1106,7 +1068,12 @@ int snx_main(int argc, char** argv) {
     dispatch_init();
     if (g_arm_mod) arm_dispatch_init();
     load_hints();
-    if (loader_load()) fatal("Could not load the game executables. See the .log for details.");
+    {
+        int loaded = loader_load();
+        if (loaded == SNX_LOADER_NOMEM)
+            fatal("Out of host memory for the game's executables. See the .log for details.");
+        if (loaded) fatal_game_files("Could not load the game executables. See the .log for details.");
+    }
     kernel_load_symbols();
     nvn_native_init(); /* before the trace, which wraps the slots that the native layer fills */
     nvn_trace_init();
@@ -1135,6 +1102,7 @@ int snx_main(int argc, char** argv) {
         addons_line(addons, sizeof addons);
         if (addons[0]) LOG("game: played with %s\n", addons);
         video_init(title, addons);
+        snx_progress_done(SNX_PROGRESS_STAGE_START);
     }
     if (g_settings.profiler) {
 #if defined(_WIN32)
@@ -1145,11 +1113,13 @@ int snx_main(int argc, char** argv) {
 #endif
     }
     prepare_wait(title);
-    if (!g_quit)
+    if (!g_quit) {
+        snx_progress_stage(SNX_PROGRESS_STAGE_RUN);
         kernel_run_main(mod->mods[0].base + mod->mods[0].text_off, mod->main_stack, (int)mod->main_prio,
                         (int)mod->main_core);
+    }
     frontend_loop();
-    status = 0;
+    status = SNX_EXIT_OK;
 done:
     return status;
 }
