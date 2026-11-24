@@ -1034,6 +1034,41 @@ setting State checks
     help Save state round trips, a comma between: at saves the game at that many ms of the scripted input's clock into
     help the check slot, loads it back at once, and logs whether guest memory and guest time came back the same
 
+table g_arceus_graphics_ini
+setting Arceus upscaling
+    key arceus_upscaling
+    label Anti-aliasing and upscaling
+    int 0 4
+    default 0
+    once
+    startup
+    words Off|TAA (experimental)|FSR (experimental)|DLSS (experimental)|XeSS (experimental)
+    help For Pokemon Legends: Arceus only, which other games leave out. Off = the game's own picture. TAA = temporal
+    help anti-aliasing over several frames. FSR, DLSS and XeSS = an upscaler, which also smooths edges and can draw the
+    help scene smaller (Scene scale). A choice the PC cannot run falls back to Off at start, with a line in the log.
+    help The page is not used for a run whose environment sets SNX_ARCEUS_UPSCALER, _SCENE_SCALE, _FIXED_RESOLUTION,
+    help _TEMPORAL, _TEMPORAL_VECTORS, _TEMPORAL_LINKS or _TEMPORAL_RECT, or SNX_ARCEUS_MENU=0
+setting Arceus scene scale
+    key arceus_scene_scale
+    label Scene scale
+    int 0 3
+    default 0
+    once
+    startup
+    words Native|3/4 (experimental)|2/3 (experimental)|1/2 (experimental)
+    help For Pokemon Legends: Arceus only. The size the game draws its 3D scene at, before the upscaler brings it to
+    help the render resolution. Used only with FSR, DLSS or XeSS
+setting Arceus fixed resolution
+    key arceus_fixed_resolution
+    label Fixed resolution
+    int 0 1
+    default 1
+    once
+    startup
+    words Off|On
+    help For Pokemon Legends: Arceus only. On = the game keeps its 3D resolution, where it would lower it after slow
+    help frames. Always on with TAA, FSR, DLSS or XeSS
+
 section Game: g_game_ini
 section Display: g_display_ini
 section Graphics: g_graphics_ini
@@ -1045,6 +1080,7 @@ section Controllers: g_gamepad_ini, g_gamepad_map_ini/Button map, g_gamepad_play
 section Network: g_network_ini
 section User: g_user_ini
 section Debug: g_debug_ini
+section Arceus graphics: g_arceus_graphics_ini
 
 # ---- the launcher's own, and the recompiler's ----
 

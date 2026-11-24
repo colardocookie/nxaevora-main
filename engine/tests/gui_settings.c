@@ -34,6 +34,14 @@ static const char list[] =
     "Debug\tslp_vectorizer\t0\tint\t0\t1\tLLVM's SLP vectorizer\tSLP vectorizer\t0=Off|1=On\n"
     "Debug\tlog\t1\tint\t0\t2\tLog detail\t\t0=0|1=1|2=2";
 
+/* name set to value, or removed for NULL */
+static void set_env(const char* name, const char* value) {
+#ifdef _WIN32
+    assert(!_putenv_s(name, value ? value : ""));
+#else
+    assert(value ? !setenv(name, value, 1) : !unsetenv(name));
+#endif
+}
 /* a row by its .ini key, or by the name it shows */
 /* a row by its key or name: the runtime's first, then the launcher's (both have an All, the LLVM Internals page's) */
 static int at(const GuiSettings* s, const char* name) {
@@ -546,6 +554,36 @@ int main(int argc, char** argv) {
         assert(!snx_remove_tree(dir));
         free(ini);
         free(dir);
+    }
+    { /* Pokemon Legends: Arceus's page: while the launcher's environment, which its runs get, sets a switch its rows
+         stand for, each of its rows' help says so, and no other row's */
+        static const char arceus[] =
+            "Arceus graphics\tarceus_upscaling\t\tint\t0\t4\tThe row's help\tAnti-aliasing and upscaling\t0=Off|1=TAA\n"
+            "Graphics\tanisotropy\t0\tint\t0\t16\tTexture filtering\t\t0=0|1=1\n";
+        GuiSettings g = {0};
+        int row, other;
+        set_env("SNX_ARCEUS_UPSCALER", NULL);
+        set_env("SNX_ARCEUS_MENU", NULL);
+        assert(!gui_settings_read(&g, arceus));
+        gui_settings_arceus_note(&g);
+        row = at(&g, "arceus_upscaling");
+        other = at(&g, "anisotropy");
+        assert(row >= 0 && other >= 0 && !strcmp(g.keys[row].section, GUI_SETTINGS_ARCEUS));
+        assert(!strcmp(g.keys[row].about, "The row's help") && !strcmp(g.keys[other].about, "Texture filtering"));
+        set_env("SNX_ARCEUS_UPSCALER", "dlss");
+        assert(!gui_settings_read(&g, arceus));
+        gui_settings_arceus_note(&g);
+        row = at(&g, "arceus_upscaling");
+        other = at(&g, "anisotropy");
+        assert(strstr(g.keys[row].about, "SNX_ARCEUS_UPSCALER is set"));
+        assert(!strcmp(g.keys[other].about, "Texture filtering"));
+        set_env("SNX_ARCEUS_UPSCALER", NULL);
+        set_env("SNX_ARCEUS_MENU", "0");
+        assert(!gui_settings_read(&g, arceus));
+        gui_settings_arceus_note(&g);
+        assert(strstr(g.keys[at(&g, "arceus_upscaling")].about, "SNX_ARCEUS_MENU=0"));
+        set_env("SNX_ARCEUS_MENU", NULL);
+        gui_settings_free(&g);
     }
     puts("GUI settings: the runtime's list, picks and a run's options passed");
     return 0;

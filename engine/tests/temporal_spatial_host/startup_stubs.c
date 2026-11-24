@@ -2,6 +2,7 @@
    Copyright 2026 the NXAevora contributors */
 /* Device and adapter endpoints for the actual startup functions. No adapter library or GPU is loaded. */
 #include "nx/gpu/vk/upscaler_needs.h"
+#include "nx/runtime/arceus_graphics.c" /* the one reader the startup functions call, as the run has it */
 static unsigned adapter_lookups, instance_questions, device_questions, name_checks;
 static int missing_adapter;
 static PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr;

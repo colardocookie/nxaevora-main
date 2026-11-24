@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the NXAevora contributors */
 /* The Arceus graphics page's map and its reader: every combination of the three rows against the sets the design
-   names (coord research 2026-11-24 19:36 and 19:38), and the reader's precedence of the environment over the rows. */
+   names (coord research 2026-11-24 19:36 and 19:38), the reader's precedence of the environment over the rows, the
+   title gate, reads before the decision, and the start line. */
 #include "nx/runtime/arceus_graphics.c"
 #include "nx/runtime/arceus_scene_scale.h"
 #include <assert.h>
@@ -22,7 +23,7 @@ static void clear(const char* name) {
 #endif
 }
 static void clear_all(void) {
-    for (int i = 0; i < ARCEUS_GFX_NAMES; i++) clear(g_arceus_graphics_names[i]);
+    for (int i = 0; i < ARCEUS_GFX_NAMES; i++) clear(arceus_graphics_name(i));
     clear("SNX_ARCEUS_MENU");
     clear("SNX_ARCEUS_TEMPORAL_SHARPEN");
 }
@@ -64,14 +65,14 @@ static void check_rows_used(const ArceusGraphicsRows* rows) {
     const char* out[ARCEUS_GFX_NAMES];
     arceus_graphics_map(rows, out);
     assert(!arceus_graphics_overridden());
-    for (int i = 0; i < ARCEUS_GFX_NAMES; i++) assert(arceus_graphics(g_arceus_graphics_names[i]) == out[i]);
+    for (int i = 0; i < ARCEUS_GFX_NAMES; i++) assert(arceus_graphics(arceus_graphics_name(i)) == out[i]);
 }
 /* the environment's value for every one of the seven, the very pointer getenv gives, and none of the rows' */
 static void check_env_used(const char* why) {
     const char* by = arceus_graphics_overridden();
     assert(by && !strcmp(by, why));
     for (int i = 0; i < ARCEUS_GFX_NAMES; i++)
-        assert(arceus_graphics(g_arceus_graphics_names[i]) == getenv(g_arceus_graphics_names[i]));
+        assert(arceus_graphics(arceus_graphics_name(i)) == getenv(arceus_graphics_name(i)));
 }
 
 int main(void) {
@@ -95,40 +96,78 @@ int main(void) {
     assert(!strcmp(out[ARCEUS_GFX_UPSCALER], "dlss") && !out[ARCEUS_GFX_SCENE_SCALE] &&
            !out[ARCEUS_GFX_FIXED_RESOLUTION]);
 
-    /* the reader before any rows are set: the defaults, so nothing */
+    /* reads before the decision: the environment's value, the very pointer, each one counted */
     clear_all();
-    for (int i = 0; i < ARCEUS_GFX_NAMES; i++) assert(!arceus_graphics(g_arceus_graphics_names[i]));
-    check_rows_used(&defaults);
-    /* rows set, nothing in the environment: the rows' values. A name of the TEMPORAL family that is not one of
-       the seven is getenv's, and being set takes nothing from the rows */
+    put("SNX_ARCEUS_UPSCALER", "fsr");
+    assert(arceus_graphics("SNX_ARCEUS_UPSCALER") == getenv("SNX_ARCEUS_UPSCALER"));
+    assert(!arceus_graphics("SNX_ARCEUS_SCENE_SCALE"));
+    assert(!arceus_graphics("SNX_ARCEUS_TEMPORAL_SHARPEN")); /* not one of the seven: not counted */
+    clear("SNX_ARCEUS_UPSCALER");
+    char line[320];
+    static const char early[] = "arceus-graphics: 2 reads of the graphics page's switches came before the settings "
+                                "were decided and took the environment's values";
+    assert(arceus_graphics_line(line, sizeof line) && !strcmp(line, early));
+    /* the title: the game's program and its update's, no other */
+    assert(arceus_graphics_title(ARCEUS_GRAPHICS_TITLE) && arceus_graphics_title(ARCEUS_GRAPHICS_TITLE + 0x800));
+    assert(!arceus_graphics_title(0) && !arceus_graphics_title(UINT64_C(0x0100000000010000)) &&
+           !arceus_graphics_title(ARCEUS_GRAPHICS_TITLE + 0x1001) &&
+           !arceus_graphics_title(ARCEUS_GRAPHICS_TITLE ^ UINT64_C(0x1000)));
+    /* another game: its rows are the defaults, so nothing, and the line has only the early reads */
+    const ArceusGraphicsRows defaults_too = ARCEUS_GRAPHICS_ROWS_DEFAULT;
     const ArceusGraphicsRows dlss_half = {ARCEUS_AA_DLSS, ARCEUS_SCALE_1_2, 0};
-    arceus_graphics_set_rows(&dlss_half);
+    arceus_graphics_decide(UINT64_C(0x0100000000010000), &dlss_half);
+    check_rows_used(&defaults_too);
+    assert(arceus_graphics_line(line, sizeof line) && !strcmp(line, early));
+    /* the game: the rows' values, and the update's program the same. A name of the TEMPORAL family that is not one
+       of the seven is getenv's, and being set takes nothing from the rows */
+    arceus_graphics_decide(ARCEUS_GRAPHICS_TITLE + 0x800, &dlss_half);
+    check_rows_used(&dlss_half);
+    arceus_graphics_decide(ARCEUS_GRAPHICS_TITLE, &dlss_half);
     check_rows_used(&dlss_half);
     assert(!strcmp(arceus_graphics("SNX_ARCEUS_SCENE_SCALE"), "1/2"));
+    static const char second[] = "\narceus-graphics: anti-aliasing DLSS, scene scale 1/2, fixed resolution on from the "
+                                 "settings";
+    assert(arceus_graphics_line(line, sizeof line) && !strncmp(line, early, sizeof early - 1) &&
+           !strcmp(line + sizeof early - 1, second));
+    char small[24]; /* cut, never past its end */
+    assert(arceus_graphics_line(small, sizeof small) && strlen(small) == sizeof small - 1);
     put("SNX_ARCEUS_TEMPORAL_SHARPEN", "0.5");
     check_rows_used(&dlss_half);
     assert(arceus_graphics("SNX_ARCEUS_TEMPORAL_SHARPEN") == getenv("SNX_ARCEUS_TEMPORAL_SHARPEN"));
     clear("SNX_ARCEUS_TEMPORAL_SHARPEN");
     assert(!arceus_graphics("SNX_ARCEUS_TEMPORAL_SHARPEN"));
     const ArceusGraphicsRows off_free = {ARCEUS_AA_OFF, ARCEUS_SCALE_2_3, 0};
-    arceus_graphics_set_rows(&off_free);
+    arceus_graphics_decide(ARCEUS_GRAPHICS_TITLE, &off_free);
     assert(!strcmp(arceus_graphics("SNX_ARCEUS_FIXED_RESOLUTION"), "0") && !arceus_graphics("SNX_ARCEUS_SCENE_SCALE"));
+    assert(arceus_graphics_line(line, sizeof line) &&
+           !strcmp(strchr(line, '\n') + 1,
+                   "arceus-graphics: anti-aliasing off, scene scale native, fixed resolution off from the settings"));
+    /* rows that hand the code nothing: no line of their own (Off with a scale, or the defaults) */
+    const ArceusGraphicsRows off_scaled = {ARCEUS_AA_OFF, ARCEUS_SCALE_1_2, 1};
+    arceus_graphics_decide(ARCEUS_GRAPHICS_TITLE, &off_scaled);
+    assert(arceus_graphics_line(line, sizeof line) && !strcmp(line, early));
+    arceus_graphics_decide(ARCEUS_GRAPHICS_TITLE, &defaults_too);
+    assert(arceus_graphics_line(line, sizeof line) && !strcmp(line, early));
     /* one of the seven in the environment: all seven from the environment, never a mix */
-    arceus_graphics_set_rows(&dlss_half);
+    arceus_graphics_decide(ARCEUS_GRAPHICS_TITLE, &dlss_half);
     for (int i = 0; i < ARCEUS_GFX_NAMES; i++) {
-        put(g_arceus_graphics_names[i], "x");
-        check_env_used(g_arceus_graphics_names[i]);
-        assert(!strcmp(arceus_graphics(g_arceus_graphics_names[i]), "x"));
-        clear(g_arceus_graphics_names[i]);
+        put(arceus_graphics_name(i), "x");
+        check_env_used(arceus_graphics_name(i));
+        assert(!strcmp(arceus_graphics(arceus_graphics_name(i)), "x"));
+        char want[200];
+        snprintf(want, sizeof want, "arceus-graphics: the environment sets %s: the settings' rows are not used",
+                 arceus_graphics_name(i));
+        assert(arceus_graphics_line(line, sizeof line) && !strcmp(strchr(line, '\n') + 1, want));
+        clear(arceus_graphics_name(i));
         check_rows_used(&dlss_half);
     }
 #ifndef _WIN32
     /* set but empty is set: an empty SNX_ARCEUS_FIXED_RESOLUTION= reads as off today, an empty UPSCALER= as none */
     for (int i = 0; i < ARCEUS_GFX_NAMES; i++) {
-        put(g_arceus_graphics_names[i], "");
-        check_env_used(g_arceus_graphics_names[i]);
-        assert(!strcmp(arceus_graphics(g_arceus_graphics_names[i]), ""));
-        clear(g_arceus_graphics_names[i]);
+        put(arceus_graphics_name(i), "");
+        check_env_used(arceus_graphics_name(i));
+        assert(!strcmp(arceus_graphics(arceus_graphics_name(i)), ""));
+        clear(arceus_graphics_name(i));
     }
     put("SNX_ARCEUS_MENU", "");
     check_rows_used(&dlss_half);
@@ -137,7 +176,9 @@ int main(void) {
     /* SNX_ARCEUS_MENU=0 alone: the environment, which sets none of the seven, so nothing. Another value is the rows */
     put("SNX_ARCEUS_MENU", "0");
     check_env_used("SNX_ARCEUS_MENU");
-    for (int i = 0; i < ARCEUS_GFX_NAMES; i++) assert(!arceus_graphics(g_arceus_graphics_names[i]));
+    for (int i = 0; i < ARCEUS_GFX_NAMES; i++) assert(!arceus_graphics(arceus_graphics_name(i)));
+    assert(arceus_graphics_line(line, sizeof line) &&
+           !strcmp(strchr(line, '\n') + 1, "arceus-graphics: SNX_ARCEUS_MENU=0: the settings' rows are not used"));
     const char* not_off[] = {"1", "00", "0 ", "off"};
     for (unsigned k = 0; k < sizeof not_off / sizeof *not_off; k++) {
         put("SNX_ARCEUS_MENU", not_off[k]);
@@ -149,6 +190,7 @@ int main(void) {
     check_env_used("SNX_ARCEUS_UPSCALER");
     clear_all();
     check_rows_used(&dlss_half);
-    printf("arceus_graphics: %d combinations and the reader's precedence passed\n", combinations);
+    printf("arceus_graphics: %d combinations, the precedence, the title gate and the start line passed\n",
+           combinations);
     return 0;
 }

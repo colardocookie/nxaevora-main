@@ -6003,6 +6003,7 @@ static GuiSettings* settings_of(App* app) {
         list = driver ? capture(app, argv) : NULL;
     }
     gui_settings_read(&app->settings, list ? list : "");
+    gui_settings_arceus_note(&app->settings);
     free(list);
     free(driver);
     /* the launcher's own choices win over the game's .ini, as its items did */

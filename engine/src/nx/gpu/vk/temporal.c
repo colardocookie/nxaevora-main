@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "nx/gpu/gpu.h"
+#include "nx/runtime/arceus_graphics.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/post_spv.h"
 #include "nx/gpu/vk/temporal_spv.h"
@@ -332,13 +333,13 @@ static int upscaler_decide(u32 frame, int accepted);
 static void upscaler_outcome(u32 frame, int jittered, int outcome, const char* what);
 /* SNX_ARCEUS_FIXED_RESOLUTION as arceus_clock.c reads it: on unless set to something other than 1 */
 static int fixed_resolution_on(void) {
-    const char* fixed = getenv("SNX_ARCEUS_FIXED_RESOLUTION");
+    const char* fixed = arceus_graphics("SNX_ARCEUS_FIXED_RESOLUTION");
     return !fixed || !strcmp(fixed, "1");
 }
 
 static int temporal_on(void) {
     if (g_t.mode < 0) {
-        const char* mode = getenv("SNX_ARCEUS_TEMPORAL");
+        const char* mode = arceus_graphics("SNX_ARCEUS_TEMPORAL");
         const char* view = getenv("SNX_ARCEUS_TEMPORAL_VIEW");
         g_t.mode = !mode ? 0 : !strcmp(mode, "probe") ? MODE_PROBE : !strcmp(mode, "taa") ? MODE_TAA : 0;
         g_t.view = view && view[0] >= '1' && view[0] <= '4' && !view[1] ? view[0] - '0' : 0;
@@ -364,13 +365,13 @@ static int temporal_on(void) {
                            isfinite(g_t.mip_bias);
         if (!(g_t.mip_bias < 0.0f)) g_t.mip_bias = 0.0f;
         if (g_t.mip_bias < -2.0f) g_t.mip_bias = -2.0f;
-        const char* vectors = getenv("SNX_ARCEUS_TEMPORAL_VECTORS");
+        const char* vectors = arceus_graphics("SNX_ARCEUS_TEMPORAL_VECTORS");
         g_t.objects = g_t.mode && vectors && !strcmp(vectors, "object");
-        const char* links = getenv("SNX_ARCEUS_TEMPORAL_LINKS");
+        const char* links = arceus_graphics("SNX_ARCEUS_TEMPORAL_LINKS");
         g_t.links = g_t.objects && links && !strcmp(links, "1");
         const char* reject = getenv("SNX_ARCEUS_TEMPORAL_REJECT");
         g_t.reject = g_t.objects && reject && !strcmp(reject, "1");
-        const char* rect = getenv("SNX_ARCEUS_TEMPORAL_RECT");
+        const char* rect = arceus_graphics("SNX_ARCEUS_TEMPORAL_RECT");
         g_t.rect = g_t.mode && rect && !strcmp(rect, "1");
         g_t.offsets = JITTERS;
         /* Every option's state, on or off, in each run's log. A value other than the one named leaves an option
@@ -3851,7 +3852,7 @@ int vk_temporal_spatial_decide(const GpuChannel* ch, const VkSh* vs, const VkSh*
    device are not all in the record of what the game's device was made with (upscaler_host.c), is not available:
    one line, and the run goes on as without the switch. */
 static void upscaler_start(void) {
-    const char* name = getenv("SNX_ARCEUS_UPSCALER");
+    const char* name = arceus_graphics("SNX_ARCEUS_UPSCALER");
     const char* target = getenv("SNX_ARCEUS_TARGET_FPS");
     g_u.asked = 0;
     if (!name || !name[0] || !strcmp(name, "0") || !strcmp(name, "off")) return;

@@ -42,6 +42,11 @@ typedef struct {
    section's others, one page a section. 0, else nonzero when out of memory */
 int gui_settings_read(GuiSettings* settings, const char* runtime);
 void gui_settings_free(GuiSettings* settings);
+/* Pokemon Legends: Arceus's graphics page (settings.txt), every game's in the launcher: while the launcher's own
+   environment, which its runs get, sets a switch the page's rows stand for, each row's help says so in place of its
+   own */
+#define GUI_SETTINGS_ARCEUS "Arceus graphics"
+void gui_settings_arceus_note(GuiSettings* settings);
 /* the row of key set to value, a word or a text as the row takes: 1 when it did */
 int gui_settings_set(GuiSettings* settings, const char* key, const char* value);
 /* the rows as they are, the launcher's own choices among them, as the values to start from */

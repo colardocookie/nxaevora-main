@@ -4,6 +4,7 @@
 #include "common/utilities/common.h"
 #include "common/utilities/ini_lines.h"
 #include "gui/i18n.h"
+#include "nx/runtime/arceus_graphics.h"
 #include "snx_settings.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -413,4 +414,18 @@ size_t gui_settings_options(GuiSettings* s, int launch, const char** argv) {
     }
     if (launch && own_on(s, "tracy_capture")) argv[n++] = "--tracy-capture";
     return n;
+}
+
+void gui_settings_arceus_note(GuiSettings* s) {
+    static char note[160];
+    const char* by = arceus_graphics_overridden();
+    if (!by) return;
+    if (!strcmp(by, "SNX_ARCEUS_MENU"))
+        snprintf(note, sizeof note, "Not used: SNX_ARCEUS_MENU=0 is set for the runs started from here");
+    else
+        snprintf(note, sizeof note, "Not used: %s is set for the runs started from here, and the page's rows give way "
+                 "to it", by);
+    for (int i = 0; i < s->count; ++i)
+        if (!s->values[i].kind && s->keys[i].section && !strcmp(s->keys[i].section, GUI_SETTINGS_ARCEUS))
+            s->keys[i].about = note;
 }

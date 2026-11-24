@@ -9,6 +9,7 @@
 #include <string.h>
 #include "nx/gpu/vk/scale.h"
 #include "nx/runtime/ini.h"
+#include "nx/runtime/arceus_graphics.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/backend.h"
 
@@ -61,14 +62,40 @@ static const IniOpt PERFORMANCE[] = {
      "0=O0|1=O1|2=O2|3=O3|s=Os|z=Oz", 0, 0, sizeof g_jit_text},
     {NULL, NULL, NULL, 0, 0, NULL, 0, 0, NULL, NULL, NULL, 0, 0, 0}};
 
+static int g_arceus_upscaling;
+static const IniOpt ARCEUS[] = {
+    {"arceus_upscaling", NULL, "the page's first row", INI_INT, INI_STARTUP, &g_arceus_upscaling, 0, 4, NO_SET,
+     "Anti-aliasing and upscaling", "Off|TAA|FSR|DLSS|XeSS", 0, 0, 0},
+    {NULL, NULL, NULL, 0, 0, NULL, 0, 0, NULL, NULL, NULL, 0, 0, 0}};
+
 const IniSection g_ini_sections[] = {{"Mouse", 0, {NULL}, {NULL}},
                                      {"Keyboard", 0, {NULL}, {NULL}},
                                      {"Controllers", 0, {NULL}, {NULL}},
                                      {"Display", 0, {DISPLAY}, {NULL}},
                                      {"Graphics", 0, {GRAPHICS}, {NULL}},
-                                     {"Performance", 0, {PERFORMANCE}, {NULL}}};
+                                     {"Performance", 0, {PERFORMANCE}, {NULL}},
+                                     {"Arceus graphics", 0, {ARCEUS}, {NULL}}};
 const int g_ini_sections_count = sizeof g_ini_sections / sizeof *g_ini_sections;
 
+static void check_env(int ok) {
+    if (ok) return;
+    fprintf(stderr, "imgui_settings: FAILED: an environment variable could not be set\n");
+    exit(1);
+}
+static void set_env(const char* name, const char* value) {
+#ifdef _WIN32
+    check_env(!_putenv_s(name, value));
+#else
+    check_env(!setenv(name, value, 1));
+#endif
+}
+static void unset_env(const char* name) {
+#ifdef _WIN32
+    check_env(!_putenv_s(name, ""));
+#else
+    check_env(!unsetenv(name));
+#endif
+}
 static void check(int ok, const char* what) {
     if (ok) return;
     fprintf(stderr, "imgui_settings: FAILED: %s\n", what);
@@ -218,6 +245,34 @@ int main(void) {
     check(row_of("Performance", "heap_max_mb", &r) && r.ivalue == 2048 && (r.flags & IMGUI_SETTING_RESTART),
           "a saved number in a text");
     g_saved_key = NULL;
+
+    /* Pokemon Legends: Arceus's page: none before a title is given or for another game. For the game's program and its
+       update's, the last page of the Display window, locked while the environment sets one of the seven switches */
+    check(page_of("Arceus graphics") < 0, "no Arceus page without a title");
+    imgui_settings_title(UINT64_C(0x0100000000010000));
+    check(imgui_settings_pages() == 6 && page_of("Arceus graphics") < 0 && imgui_settings_page_window(6) == -1,
+          "no Arceus page for another game");
+    imgui_settings_title(UINT64_C(0x01001F5010DFA800));
+    check(imgui_settings_pages() == 7 && page_of("Arceus graphics") == 6 &&
+              imgui_settings_page_window(6) == IMGUI_WINDOW_DISPLAY,
+          "the Arceus page for its update's program");
+    imgui_settings_title(ARCEUS_GRAPHICS_TITLE);
+    check(row_of("Arceus graphics", "arceus_upscaling", &r) && (r.flags & IMGUI_SETTING_STARTUP) &&
+              !(r.flags & IMGUI_SETTING_LOCKED),
+          "the Arceus page's row");
+    set_env("SNX_ARCEUS_SCENE_SCALE", "1/2");
+    check(row_of("Arceus graphics", "arceus_upscaling", &r) && (r.flags & IMGUI_SETTING_LOCKED),
+          "the Arceus row locked by the environment");
+    check(row_of("Display", "fullscreen", &r) && !(r.flags & IMGUI_SETTING_LOCKED), "other rows never locked by it");
+    unset_env("SNX_ARCEUS_SCENE_SCALE");
+    set_env("SNX_ARCEUS_MENU", "0");
+    check(row_of("Arceus graphics", "arceus_upscaling", &r) && (r.flags & IMGUI_SETTING_LOCKED),
+          "the Arceus row locked by SNX_ARCEUS_MENU=0");
+    unset_env("SNX_ARCEUS_MENU");
+    check(row_of("Arceus graphics", "arceus_upscaling", &r) && !(r.flags & IMGUI_SETTING_LOCKED),
+          "the Arceus row free again");
+    imgui_settings_title(0);
+    check(imgui_settings_pages() == 6, "the page gone with another title");
 
     puts("imgui_settings: ok");
     return 0;

@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "nx/gpu/gpu.h"
+#include "nx/runtime/arceus_graphics.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/runtime/arceus_scene_scale.h"
 #include "nx/runtime/platform/log.h"
@@ -40,7 +41,7 @@ static int line_left(void) {
 
 /* Every draw with three colour targets or more and a depth target is shown here: a G-buffer draw by its looks. */
 void vk_scene_scale_note(const GpuChannel* ch, const Surf* zt, u32 colours) {
-    if (g_s.on < 0) g_s.on = arceus_scene_scale_parse(getenv("SNX_ARCEUS_SCENE_SCALE"), &g_s.asked) ==
+    if (g_s.on < 0) g_s.on = arceus_scene_scale_parse(arceus_graphics("SNX_ARCEUS_SCENE_SCALE"), &g_s.asked) ==
                              ARCEUS_SCENE_SCALE_USED;
     if (!g_s.on || colours < 3 || !zt) return;
     /* the used fraction, from the fragment stage's scene block or else the vertex stage's */

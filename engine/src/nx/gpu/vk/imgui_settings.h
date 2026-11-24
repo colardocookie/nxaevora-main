@@ -5,6 +5,7 @@
 #ifndef SNX_IMGUI_SETTINGS_H
 #define SNX_IMGUI_SETTINGS_H
 #include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -35,6 +36,8 @@ typedef struct {
 /* the windows that show pages: Controller&Keyboard and Display */
 enum { IMGUI_WINDOW_INPUT, IMGUI_WINDOW_DISPLAY };
 
+/* the running game's title ID, before the window opens: Pokemon Legends: Arceus's adds its graphics page */
+void imgui_settings_title(uint64_t title_id);
 int imgui_settings_pages(void);
 const char* imgui_settings_page_name(int page);
 /* the window (IMGUI_WINDOW_) that shows the page, -1 for an index outside the pages */

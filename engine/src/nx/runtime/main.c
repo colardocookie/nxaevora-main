@@ -5,6 +5,7 @@
    then the frontend's loop at the display's rate until the run ends, saving what outlives it */
 #include "nx/runtime/main.h"
 #include "nx/runtime/arceus_clock.h"
+#include "nx/runtime/arceus_graphics.h"
 #include "common/cpu/recompiler/llvm/gdb_jit.h"
 #include "common/cpu/recompiler/llvm/ir.h"
 #include "common/utilities/build_info.h"
@@ -22,6 +23,7 @@
 #include "nx/gpu/nvn/diag/nvn_trace.h"
 #include "nx/gpu/renderer.h"
 #include "nx/gpu/vk/upscaler_selftest.h"
+#include "nx/gpu/vk/imgui_settings.h"
 #include "nx/hle/filesystem/fs.h"
 #include "nx/hle/hle.h"
 #include "nx/hle/kernel/kernel.h"
@@ -874,6 +876,15 @@ int snx_main(int argc, char** argv) {
         const char* wsi_lock = getenv("SNX_ARCEUS_WSI_LOCK");
         g_vk_wsi_lock = !wsi_lock || !strcmp(wsi_lock, "1");
         if (g_vk_wsi_lock) LOG("wsi-lock: serializing swapchain acquire and present\n");
+    }
+    { /* the Arceus graphics page's rows (arceus_graphics.h): decided once, before the graphics read any of its seven
+         switches, and for that game's title only */
+        const ArceusGraphicsRows rows = {g_settings.arceus_upscaling, g_settings.arceus_scene_scale,
+                                         g_settings.arceus_fixed_resolution};
+        char line[320];
+        arceus_graphics_decide(g_hle.kernel.title_id, &rows);
+        imgui_settings_title(g_hle.kernel.title_id); /* the in-game window's page for the same title */
+        if (arceus_graphics_line(line, sizeof line)) LOG("%s\n", line);
     }
     /* SNX_ARCEUS_PROFILE=1 and SNX_ARCEUS_GPU_PROFILE=1 are the profile and vk_gpu_profile options for a launcher that
        passes only SNX_ARCEUS_* variables. Before any thread starts, since each one is sampled from its start */

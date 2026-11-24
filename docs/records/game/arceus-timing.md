@@ -15,7 +15,8 @@ words it replaces, and it logs a refusal and changes nothing when they differ.
 
 Unset timing switches use the defaults below. `SNX_ARCEUS_TIMING_FIXES=0` turns off the entire timing layer. For every individual fix, setting its switch to `0` turns off that fix; probes and graphics settings remain opt-in.
 
-The `SNX_ARCEUS_*` switches are environment variables, read with `getenv`. No `.ini` setting holds them.
+The `SNX_ARCEUS_*` switches are environment variables, read with `getenv`. Seven of them can also come from the
+game's graphics page in the Settings (see "Graphics page"), and the environment wins over the page.
 
 | Switch | Default | What `=0` does |
 | --- | --- | --- |
@@ -88,6 +89,7 @@ The `SNX_ARCEUS_*` switches are environment variables, read with `getenv`. No `.
 | `SNX_ARCEUS_TEXT_PROBE` | off | `=0` keeps the read-only text reveal probe off. |
 | `SNX_ARCEUS_SCENE_SCALE` | off | Not a boolean: a number from 0.5 to below 1.0, or `p/q` such as `2/3` (also written `2of3`), the game's own 3D buffer scale. Unset, or 1.0 and above, changes nothing. Needs the fixed resolution, which is on unless `SNX_ARCEUS_FIXED_RESOLUTION` is set to a value other than `1`. See "Scene scale". |
 | `SNX_ARCEUS_WSI_LOCK` | on | Not a timing fix. It is on unless set to a value other than `1`, and then the acquire and the present run without it, as upstream. On, the renderer holds one lock across each swapchain present and each image acquire, which upstream runs on two threads at once. Its start line is `wsi-lock: serializing swapchain acquire and present`. |
+| `SNX_ARCEUS_MENU` | the page is used | Not a fix. `0` makes every run take the seven switches of the graphics page from the environment alone, with the page's rows left out. Any other value, or unset, leaves the page in use. See "Graphics page". |
 
 The default movement mask selects bits 2 through 8, the seven player movement sites, and bit 10, the player's horizontal position step. Bits 0 and 1 remain off. An explicit mask such as `7fc` adds bit 9's capped-fall selection while preserving the same sites. `1fc` leaves bit 10 out.
 
@@ -570,3 +572,31 @@ sample neighbours (bloom, reflections, ambient occlusion, depth of field) are wh
 `SNX_ARCEUS_TEMPORAL` on, the temporal passes are as they were: their viewport gate refuses a frame whose scene
 viewport is not the whole target, so there is no jitter and no resolve under a scale below 1, and their lines
 count those frames.
+
+## Graphics page
+
+The Settings have a page for this game, Arceus graphics, with three rows: anti-aliasing and upscaling (Off, TAA,
+FSR, DLSS, XeSS), scene scale (Native, 3/4, 2/3, 1/2) and fixed resolution (On, Off). The launcher shows it for every
+game, since its Settings have no game of their own, and each row's help says it is for this game alone. The in-game
+window shows it only while this game runs. All three are startup rows and are written to the `.ini` only once set.
+
+`runtime/arceus_graphics.c` maps the rows to seven switches: `SNX_ARCEUS_TEMPORAL`, `_TEMPORAL_VECTORS`,
+`_TEMPORAL_LINKS`, `_TEMPORAL_RECT`, `_UPSCALER`, `_SCENE_SCALE` and `_FIXED_RESOLUTION`. The rows hand out only the
+sets that were played. Off sets nothing but `SNX_ARCEUS_FIXED_RESOLUTION=0` when its row is Off. TAA sets `taa`,
+`object`, `1` and `1`. FSR, DLSS and XeSS set the same four and their upscaler, and the scene scale's text when it is
+not Native. The fixed resolution stays at its default, on, with TAA and with every upscaler. At their defaults the
+rows set nothing, so a run with the page untouched is the run without it.
+
+The readers of the seven call `arceus_graphics()` in place of `getenv`. It gives the environment's value for all
+seven when the environment sets any of them, an empty value included, or when `SNX_ARCEUS_MENU=0`. A run never takes
+part of a set from each. The rows count only when the running title is this game's (its program or its update's), and
+for any other game the reader gives what the environment gives. main.c makes that decision once, before the graphics
+start. A read before it gets the environment's value and is counted.
+
+Start lines. `arceus-graphics: anti-aliasing X, scene scale Y, fixed resolution Z from the settings` says what the
+rows set. `arceus-graphics: the environment sets SNX_ARCEUS_X: the settings' rows are not used` and
+`arceus-graphics: SNX_ARCEUS_MENU=0: ...` say that rows which set something were left out. Neither is written when the
+rows set nothing. A count of reads before the decision has a line of its own. A refusal line that names a switch's
+value, such as the temporal code's lines about `SNX_ARCEUS_FIXED_RESOLUTION=0`, can come from the page's rows: the
+start line says which. While the environment sets one of the seven, the launcher's help for each row and the in-game
+window's lock say so.

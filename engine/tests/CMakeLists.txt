@@ -596,7 +596,7 @@ snx_test_target(snx-test-arceus-timing 11)
 target_link_libraries(snx-test-arceus-timing PRIVATE m)
 add_test(NAME arceus_timing COMMAND snx-test-arceus-timing)
 
-add_executable(snx-test-arceus-clock arceus_clock.c)
+add_executable(snx-test-arceus-clock arceus_clock.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/arceus_graphics.c")
 snx_test_target(snx-test-arceus-clock 11)
 target_link_libraries(snx-test-arceus-clock PRIVATE m)
 add_test(NAME arceus_clock COMMAND snx-test-arceus-clock)

@@ -10,6 +10,7 @@
 #include <string.h>
 #include "common/utilities/pad_map.h"
 #include "nx/gpu/vk/scale.h"
+#include "nx/runtime/arceus_graphics.h"
 #include "nx/runtime/ini.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/backend.h"
@@ -25,8 +26,17 @@ typedef struct {
 } Page;
 static const Page PAGES[] = {{"Mouse", IMGUI_WINDOW_INPUT},       {"Keyboard", IMGUI_WINDOW_INPUT},
                              {"Controllers", IMGUI_WINDOW_INPUT}, {"Display", IMGUI_WINDOW_DISPLAY},
-                             {"Graphics", IMGUI_WINDOW_DISPLAY}, {"Performance", IMGUI_WINDOW_DISPLAY}};
+                             {"Graphics", IMGUI_WINDOW_DISPLAY}, {"Performance", IMGUI_WINDOW_DISPLAY},
+                             {"Arceus graphics", IMGUI_WINDOW_DISPLAY}};
 enum { PAGE_COUNT = sizeof PAGES / sizeof PAGES[0] };
+/* the last page is Pokemon Legends: Arceus's, shown only while that game runs (imgui_settings_title) */
+static int g_arceus_title;
+static int page_count(void) { return PAGE_COUNT - !g_arceus_title; }
+void imgui_settings_title(uint64_t title_id) { g_arceus_title = arceus_graphics_title(title_id); }
+/* the Arceus page's rows while the environment sets the switches they stand for: no change is taken */
+static int arceus_row_locked(const IniOpt* o) {
+    return !strncmp(o->key, "arceus_", 7) && arceus_graphics_overridden() != NULL;
+}
 
 /* Settings that the window shows as a choice from a list, not a slider: the anisotropic filtering and the FPS limit. A
    value in the .ini that is not in the list shows as custom. */
@@ -73,7 +83,7 @@ _Static_assert(IMGUI_KEYBIND_COUNT == BACKEND_KEYBIND_COUNT, "the window lists t
 _Static_assert(sizeof(((ImguiKeybind*)0)->keys) == sizeof(((BackendKeybind*)0)->keys), "the keys' line");
 
 static const IniSection* section_of(int page) {
-    if (page < 0 || page >= PAGE_COUNT) return NULL;
+    if (page < 0 || page >= page_count()) return NULL;
     for (int s = 0; s < g_ini_sections_count; s++)
         if (!strcmp(g_ini_sections[s].name, PAGES[page].name)) return &g_ini_sections[s];
     return NULL;
@@ -97,7 +107,7 @@ static const IniOpt* row_of(const IniSection* sec, int i) {
 }
 
 static const IniOpt* find(const char* key) {
-    for (int p = 0; p < PAGE_COUNT; p++) {
+    for (int p = 0; p < page_count(); p++) {
         const IniSection* sec = section_of(p);
         for (int i = 0; sec && row_of(sec, i); i++)
             if (!strcmp(row_of(sec, i)->key, key)) return row_of(sec, i);
@@ -131,11 +141,11 @@ int imgui_settings_preset(const char* key, int i, char* value, size_t vn, char* 
     return 0;
 }
 
-int imgui_settings_pages(void) { return PAGE_COUNT; }
+int imgui_settings_pages(void) { return page_count(); }
 
-const char* imgui_settings_page_name(int page) { return page >= 0 && page < PAGE_COUNT ? PAGES[page].name : ""; }
+const char* imgui_settings_page_name(int page) { return page >= 0 && page < page_count() ? PAGES[page].name : ""; }
 
-int imgui_settings_page_window(int page) { return page >= 0 && page < PAGE_COUNT ? PAGES[page].window : -1; }
+int imgui_settings_page_window(int page) { return page >= 0 && page < page_count() ? PAGES[page].window : -1; }
 
 int imgui_settings_rows(int page) {
     const IniSection* sec = section_of(page);
@@ -198,7 +208,7 @@ int imgui_settings_row(int page, int i, ImguiSettingRow* r) {
                            .help = o->help ? o->help : "",
                            .type = o->type == INI_INT ? IMGUI_SETTING_INT : o->type == INI_FLOAT ? IMGUI_SETTING_FLOAT : IMGUI_SETTING_TEXT,
                            .flags = (o->flags & INI_STARTUP ? IMGUI_SETTING_STARTUP : 0) |
-                                    (options_overridden(o->key) ? IMGUI_SETTING_LOCKED : 0),
+                                    (options_overridden(o->key) || arceus_row_locked(o) ? IMGUI_SETTING_LOCKED : 0),
                            .lo = o->lo,
                            .hi = o->hi,
                            .step = o->step > 0 ? o->step : 1,

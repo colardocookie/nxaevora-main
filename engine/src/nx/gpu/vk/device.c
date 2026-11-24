@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "nx/runtime/options.h"
+#include "nx/runtime/arceus_graphics.h"
 #include "nx/runtime/platform/backend.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
@@ -119,7 +120,7 @@ static int create_instance(void) {
     const char* const* be = g_opt_headless ? NULL : backend_vk_extensions(&nbe);
     /* With SNX_ARCEUS_UPSCALER naming an adapter: its instance extensions behind the backend's, on a copy, each
        only when the instance lists it (DL2). Without the switch the backend's list is used as it is. */
-    const char* upscaler = getenv("SNX_ARCEUS_UPSCALER");
+    const char* upscaler = arceus_graphics("SNX_ARCEUS_UPSCALER");
     const char* with[64];
     u32 nwith = 0;
     const int named = upscaler && upscaler[0] && strcmp(upscaler, "0") && strcmp(upscaler, "off") &&
@@ -617,7 +618,7 @@ static int create_device(void) {
     /* Only with SNX_ARCEUS_UPSCALER naming an adapter: what that adapter needs of the device, checked and copied
        by the host (upscaler_host.c). The additions stand behind the game's own count and in front of its own
        chain head, on copies: neither is changed in place, and without the switch nothing here runs. */
-    const char* upscaler = getenv("SNX_ARCEUS_UPSCALER");
+    const char* upscaler = arceus_graphics("SNX_ARCEUS_UPSCALER");
     VkUpscalerDeviceAsk ask;
     const u32 room = (u32)(sizeof g_vk.dev_ext / sizeof g_vk.dev_ext[0]);
     u32 with_count = next;

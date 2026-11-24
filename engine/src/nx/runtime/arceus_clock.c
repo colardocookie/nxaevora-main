@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the NXAevora contributors */
 #include "nx/runtime/arceus_clock.h"
+#include "nx/runtime/arceus_graphics.h"
 #include "nx/runtime/loader.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/arceus_step.h"
@@ -1597,7 +1598,8 @@ static void timing_research_init(void) {
    clocks, so it finds the main module itself and runs at every rate, the game's own 30 FPS included */
 static int fixed_resolution_active; /* the governor's patch went in */
 static void fixed_resolution_init(void) {
-    if (!arceus_switch_enabled("SNX_ARCEUS_FIXED_RESOLUTION", 1)) return;
+    const char* fixed = arceus_graphics("SNX_ARCEUS_FIXED_RESOLUTION"); /* arceus_switch_enabled's rule, on by default */
+    if (fixed && strcmp(fixed, "1")) return;
     const SnxModInfo* mod = NULL;
     for (u32 i = 0; g_mod && i < g_mod->nmods; i++)
         if (!strcmp(g_mod->mods[i].name, "main")) mod = &g_mod->mods[i];
@@ -1631,7 +1633,7 @@ static void fixed_resolution_init(void) {
    same. Run before any guest code, so before the setter's first use. Rules and refusals: arceus_scene_scale.h. */
 static void scene_scale_init(void) {
     float scale;
-    const char* text = getenv("SNX_ARCEUS_SCENE_SCALE");
+    const char* text = arceus_graphics("SNX_ARCEUS_SCENE_SCALE");
     const int asked = arceus_scene_scale_parse(text, &scale);
     if (!main_base || asked == ARCEUS_SCENE_SCALE_OFF) return;
     if (asked == ARCEUS_SCENE_SCALE_BAD) {
