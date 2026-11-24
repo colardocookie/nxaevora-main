@@ -28,14 +28,16 @@ static void clear_all(void) {
     clear("SNX_ARCEUS_TEMPORAL_SHARPEN");
 }
 static int same(const char* a, const char* b) { return a == b || (a && b && !strcmp(a, b)); }
-/* the stand-in for vk_upscaler_present: dlss is missing, every other upscaler is there. Each question counted */
+/* the stand-in for vk_upscaler_present: present_missing is not there (dlss unless a case says another), every other
+   upscaler is. Each question counted */
 static unsigned present_calls;
 static const char* present_name;
+static const char* present_missing = "dlss";
 static int present_stub(const char* upscaler, char* why, size_t size) {
     present_calls++;
     present_name = upscaler;
-    if (strcmp(upscaler, "dlss")) return 1;
-    snprintf(why, size, "snx_upscaler_dlss.dll is not beside the program");
+    if (strcmp(upscaler, present_missing)) return 1;
+    snprintf(why, size, "%s's library is not beside the program", upscaler);
     return 0;
 }
 
@@ -204,7 +206,7 @@ int main(void) {
            !arceus_graphics("SNX_ARCEUS_SCENE_SCALE") && !arceus_graphics("SNX_ARCEUS_FIXED_RESOLUTION"));
     assert(arceus_graphics_line(line, sizeof line));
     {
-        static const char missing[] = "arceus-graphics: DLSS is not available (snx_upscaler_dlss.dll is not beside the "
+        static const char missing[] = "arceus-graphics: DLSS is not available (dlss's library is not beside the "
                                       "program): TAA at native size is used\n";
         const char* second_line = strchr(line, '\n') + 1;
         assert(!strncmp(second_line, missing, sizeof missing - 1));
@@ -230,6 +232,26 @@ int main(void) {
     clear("SNX_ARCEUS_MENU");
     arceus_graphics_decide(ARCEUS_GRAPHICS_TITLE, &dlss_half, NULL);
     check_rows_used(&dlss_half);
+    /* FSR and XeSS missing, each by its own row: the same TAA set and its own name in the line */
+    static const struct {
+        int aa;
+        const char *name, *word;
+    } others[] = {{ARCEUS_AA_FSR, "fsr", "FSR"}, {ARCEUS_AA_XESS, "xess", "XeSS"}};
+    for (unsigned k = 0; k < sizeof others / sizeof *others; k++) {
+        const ArceusGraphicsRows asked = {others[k].aa, ARCEUS_SCALE_2_3, 0};
+        char want[200];
+        present_missing = others[k].name;
+        present_calls = 0;
+        arceus_graphics_decide(ARCEUS_GRAPHICS_TITLE, &asked, present_stub);
+        assert(present_calls == 1 && !strcmp(present_name, others[k].name));
+        assert(!strcmp(arceus_graphics("SNX_ARCEUS_TEMPORAL"), "taa") && !arceus_graphics("SNX_ARCEUS_UPSCALER") &&
+               !arceus_graphics("SNX_ARCEUS_SCENE_SCALE") && !arceus_graphics("SNX_ARCEUS_FIXED_RESOLUTION"));
+        snprintf(want, sizeof want, "arceus-graphics: %s is not available (%s's library is not beside the program): "
+                 "TAA at native size is used", others[k].word, others[k].name);
+        assert(arceus_graphics_line(line, sizeof line) && strstr(line, want));
+    }
+    present_missing = "dlss";
+    arceus_graphics_decide(ARCEUS_GRAPHICS_TITLE, &dlss_half, NULL);
     /* MENU=0 and one of the seven: that name is the one the start line gives */
     put("SNX_ARCEUS_MENU", "0");
     put("SNX_ARCEUS_UPSCALER", "off");
