@@ -6,7 +6,7 @@
 Pokémon Legends: Arceus 1.1.1 runs its world at 30 updates per second. Most of its clocks add a fixed 1/30 second
 on each rendered frame, so above 30 FPS the game runs fast. `src/nx/runtime/arceus_clock.c` in the vendored
 ScarletNX changes those clocks to the real elapsed time. The timing fixes are on by default and can be disabled with the master or individual switches below. Setting
-the master to `0` also suppresses the opt-in traces, research probes and fixed-resolution hook. The layer does
+the master to `0` also suppresses the opt-in traces and research probes (the fixed resolution stays on). The layer does
 nothing for another game or another build. Each change first checks the build id of `main` and the instruction
 words it replaces, and it logs a refusal and changes nothing when they differ.
 
@@ -18,7 +18,7 @@ The `SNX_ARCEUS_*` switches are environment variables, read with `getenv`. No `.
 
 | Switch | Default | What `=0` does |
 | --- | --- | --- |
-| `SNX_ARCEUS_TIMING_FIXES` | on | Installs nothing and suppresses the traces, research probes and fixed-resolution hook too. The throw owner guard is not part of the timing layer and stays on. |
+| `SNX_ARCEUS_TIMING_FIXES` | on | Installs nothing and suppresses the traces and research probes too. The throw owner guard and the fixed resolution (`SNX_ARCEUS_FIXED_RESOLUTION`) are not part of the timing layer and stay on. |
 | `SNX_ARCEUS_TARGET_FPS` | runtime setting | Not a boolean: unset or empty keeps the runtime's `fps_limit` and does not write `g_opt_fps` (unless legacy `FPS60=1` is set). At game pace or 30 FPS and below, nothing installs and one reason line is logged. Above 30 FPS or at 0 (unlimited), clocks and defaults install. `game` is a test value that installs at the current runtime pace without changing the limit. This choice is made at startup. `60`, `120`, `unlocked` or `0` set the limit; other values are refused. |
 | `SNX_ARCEUS_FPS60` | off | Legacy alias; `=1` selects 60 FPS. |
 | `SNX_ARCEUS_WHOLE_STEP` | on | Reports a measured step near 1/30 second as measured, not as the game's own step. |
@@ -65,12 +65,13 @@ The `SNX_ARCEUS_*` switches are environment variables, read with `getenv`. No `.
 | `SNX_ARCEUS_TIMING_RESEARCH` | off | `=0` keeps read-only timing counters off. |
 | `SNX_ARCEUS_CADENCE_CENSUS` | off | `=0` keeps the read-only census off. |
 | `SNX_ARCEUS_GRAVITY_PROBE` | off | `=0` keeps the read-only probe off. |
+| `SNX_ARCEUS_FIXED_RESOLUTION` | on | `=0` keeps the game's automatic 3D resolution governor, which lowers the scene size after a slow frame. It applies at every frame rate, the game's own 30 FPS and `SNX_ARCEUS_TIMING_FIXES=0` included, since it needs nothing of the timing layer. The game's own scripted size changes stay either way. |
 | `SNX_ARCEUS_DISCORD` | on | `=0` turns it off. With the player's `SNX_ARCEUS_DISCORD_APP` it shows Discord status (D2, `arceus-discord:`): the title screen, the region from the pack the game reads, the battle's kind from the files its start reads (D3: a trainer, "Battling <name>" once the battle's line "<name> sent out <species>!" gives it (D5, English only, in another language "Battling a trainer"), "Fighting noble <species>", an alpha or a wild opponent's species, "Fighting" for a legendary, else "In battle"), a noble's whole fight from its sound bank to its win scene or its loss (D3c, D3d), in a battle the player's Pokémon as the second line (D3d), and the party in the image's hover text. Discord's replies are logged on change, a refusal with its code and its message, every digit masked. Species and levels come from copies of the game's records deciphered by our own code. A battle ends 3 s after its effect sequences stop, which needs `SNX_ARCEUS_BATTLE_SEQUENCE_FIX`, and the title screen ends at the camera's first input, which needs `SNX_ARCEUS_CAMERA_INPUT_FIX`. Without the first a battle ends only at an area name, without the second the title screen stays until the first battle. A warning names each that is off. |
 | `SNX_ARCEUS_DISCORD_APP` | none | The user's Discord application id, digits only. Never in the repository; only its last four digits are logged. |
 | `SNX_ARCEUS_EVENT_PROBE` | off | `=0` keeps the read-only event script probe off. |
 | `SNX_ARCEUS_DEMO_PROBE` | off | `=0` keeps the read-only demo clock probe off. |
 | `SNX_ARCEUS_TEXT_PROBE` | off | `=0` keeps the read-only text reveal probe off. |
-| `SNX_ARCEUS_FIXED_RESOLUTION` | off | `=0` leaves the game's automatic 3D resolution governor enabled. |
+| `SNX_ARCEUS_SCENE_SCALE` | off | Not a boolean: a number from 0.5 to below 1.0, or `p/q` such as `2/3` (also written `2of3`), the game's own 3D buffer scale. Unset, or 1.0 and above, changes nothing. Needs the fixed resolution, which is on unless `SNX_ARCEUS_FIXED_RESOLUTION=0`. See "Scene scale". |
 
 The default movement mask selects bits 2 through 8, the seven player movement sites, and bit 10, the player's horizontal position step. Bits 0 and 1 remain off. An explicit mask such as `7fc` adds bit 9's capped-fall selection while preserving the same sites. `1fc` leaves bit 10 out.
 
@@ -514,3 +515,42 @@ compiled function stale, and a stale function sends its entry through dispatch t
 one function of 0xA70 bytes starts there and three instruction words match. It logs its install, the first call
 that reaches it, and up to 16 guarded calls. In a native run at 30 FPS it guarded three calls, all with an empty
 reference, and the game did not crash.
+
+## Scene scale
+
+The game can draw its 3D passes into the top left part of its full-size targets. Two scales, width and height,
+say how much, and they change viewports and scissors only. Its mode setter (`main+CC3888`) takes the pair for the
+default mode from a table in the game's data, where it is 1.0 and 1.0 at `main+3978758`. Its automatic governor
+(`main+CC35A4`) lowers the pair under load.
+
+`SNX_ARCEUS_SCENE_SCALE` writes one number over that default pair, both ways the same, before any of the game's
+code runs. The game then applies it as its own scale. It is an experiment for an upscaler to come, and off unless
+set. On its own it gives a softer picture, since the game stretches the part it drew over the screen.
+
+Rules. The value is one finite number. From 0.5 to below 1.0 it is used as written. It may also be written as
+`p/q`, two whole numbers with 1 <= p < q <= 64 and nothing else, which is divided once (`pofq` is the same
+thing for a launcher that cannot pass a slash): two thirds has no short
+decimal, and the game draws a viewport of the target's size times the scale as it is, so `0.6667` ends inside
+a pixel where `2/3` does not. Unset, or 1.0 and above, is
+off: nothing is touched and no line is written. Anything else (below 0.5, text, text after the number, not finite)
+is refused with a line and nothing is touched: a value is never moved into the range. It needs
+the fixed resolution (on unless `SNX_ARCEUS_FIXED_RESOLUTION=0`) to have turned the governor off, and refuses otherwise. The pair is written only
+when both of its words are exactly 1.0 and the pair after it is exactly 0.5 and 0.5, which is the evidence that
+this is the table. A refusal by this guard logs the table's ten words.
+
+The table is in the game's read-only data. That is the guest's permission. The host commits every mapped guest
+page readable and writable, which the patches to the game's code rely on as well, so a table that lies wholly in
+mapped memory can be written, and one that does not is refused before anything is written. After the write both
+words are read back. If they are not what was written, 1.0 and 1.0 are put back and the switch refuses.
+
+What the game makes of it is logged by the renderer, read only (`arceus-scene-scale` lines): the used fraction
+the game puts into its scene block (constant bank 3, at +628 and +62C), and the viewport of draws with three
+colour targets or more and a depth target, per depth target. One line per change, 96 lines at most. The line of
+the write says what was asked. These lines say what the game uses. A written table alone does not show that the
+game's mode took the default pair.
+
+Limits. Not played. Whether every pass stays inside the part that is drawn is not known: borders and effects that
+sample neighbours (bloom, reflections, ambient occlusion, depth of field) are what to look at. With
+`SNX_ARCEUS_TEMPORAL` on, the temporal passes are as they were: their viewport gate refuses a frame whose scene
+viewport is not the whole target, so there is no jitter and no resolve under a scale below 1, and their lines
+count those frames.

@@ -546,6 +546,7 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game) {
         memcpy(was, is, sizeof was);
         last_present_ns = now_ns;
         g_vk_present++;
+        vk_temporal_gputime_present(); /* SNX_ARCEUS_TEMPORAL_GPUTIME: its window is counted in presents, here */
         stats_frame(now_ns);
         debug_stats_frame(now_ns, now_ns - show_start_ns, is[3], is[6]);
         nvn_measure_present(now_ns);
@@ -699,6 +700,7 @@ static void vkr_present_buffer(u64 cpu_addr, u32 w, u32 h, u32 pitch, u32 layout
         g_last_h = (u32)((u64)src->sh * y1 / src->h) - g_last_y;
     }
     show(src, x1 - x0, y1 - y0, transform, 1);
+    vk_pass_census_present(src);
     __atomic_store_n(&g_shown_ns, plat_ns(), __ATOMIC_RELAXED);
     vk_unlock();
 }

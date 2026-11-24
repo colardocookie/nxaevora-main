@@ -1,0 +1,2922 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+   Copyright 2026 the NXAevora contributors */
+/* SNX_ARCEUS_UPSCALER_SELFTEST=<adapter>: the runtime makes an instance and a device of its own, without a window,
+   drives one upscaler adapter (upscaler.h) with a generated scene whose true picture is known, writes its lines
+   and ends. No game is loaded. The scene, the reference and the verdicts are upscaler_selftest.h, which shares
+   nothing with the conversion (temporal_math.h) and the adapter that are under test here. */
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "nx/gpu/renderer.h"
+#include "nx/gpu/vk/vk.h"
+#include "common/gpu/vk/vk_common.h"
+#include "nx/gpu/vk/upscaler.h"
+#include "nx/gpu/vk/upscaler_selftest.h"
+#include "nx/gpu/vk/temporal_math.h"
+#include "nx/gpu/vk/upscaler_protocol.h"
+#include "nx/runtime/platform/log.h"
+u64 plat_ns(void); /* plat.h's, declared alone: plat.h brings windows.h, whose far and INFINITE are macros */
+
+#define ST "arceus-upscaler-selftest: "
+/* The output picture: four 32 bit floats, as the library's shader declares the image it writes (a run under the
+   validation layer named it against the 16 bit one this was) */
+#define OUTPUT_FORMAT VK_FORMAT_R32G32B32A32_SFLOAT
+#define RENDER_W 320
+#define RENDER_H 180
+#define OUT_W 480
+#define OUT_H 270
+#define OFFSETS 18              /* ceil(8 x 1.5 x 1.5): the jitter's offsets for these sizes */
+#define FRAMES (2 * OFFSETS)    /* evaluated frames of a run at these sizes: twice the offsets */
+#define SAMPLES 8               /* the reference averages 8 x 8 points of a pixel */
+#define NEAR_PLANE 0.1          /* of every scene's projection: the game's field camera has it */
+#define FOV_Y 0.8726646259971648 /* 50 degrees */
+#define FRAME_SECONDS (1.0 / 60.0)
+#define BAND_LEAST 500          /* pixels of a band under which it judges nothing */
+
+typedef struct {
+    VkImage image;
+    VkDeviceMemory memory;
+    VkImageView view;
+    VkFormat format;
+    u32 w, h;
+} Picture;
+
+static struct {
+    VkInstance instance;
+    VkPhysicalDevice physical;
+    VkDevice device;
+    VkQueue queue;
+    u32 family;
+    VkCommandPool pool;
+    VkCommandBuffer cb;
+    VkDebugUtilsMessengerEXT messenger;
+    VkBuffer staging;
+    VkDeviceMemory staging_memory;
+    u8* staging_bytes;
+    u64 staging_size;
+    const SnxUpscalerApi* api;
+    VkFormat motion_format; /* the vectors' images: two halves for dlss, four for the others */
+    VkFormat output_format; /* the adapter's own since ABI 5: four 32 bit floats, or B10G11R11 */
+    int dlss; /* DLSS's matrix (DL1b revision 2, research's rulings for N4, D3-4): integration only, not quality */
+    int matrix; /* that matrix, for DLSS and for XeSS (XESS-DESIGN.md: DLSS's DL1 matrix and bars) */
+    const char* name; /* the adapter's, for the lines */
+    int at13;         /* the instance and the device at Vulkan 1.3, for XeSS (its least, XS2-a) */
+    u32 contexts; /* contexts the adapter handed out and the self-test has not destroyed */
+    SelftestLive live; /* which they are: each ends exactly once */
+    int ended_wrong;   /* a context destroyed that was not live, or while a command buffer was recorded */
+    int recording;     /* a command buffer is begun and neither submitted nor reset */
+    int halted;        /* an evaluate answered UNKNOWN and its buffer was reset: no more is recorded or run */
+    int known;         /* reset lines of the known library deviation (research 22:50), failed apart from the rest */
+    /* the case being run, the one the run stopped in, and whether the one line of what was not run was said */
+    char step[160], halted_in[160];
+    int skip_said;
+    int layers; /* how the loader's list of layers was read (selftest_layers) */
+    int listed; /* the loader listed the validation layer, whatever came of setting it up */
+    int messenger_result; /* what making its message callback gave, when that failed */
+    int validation;
+    int limit_asked; /* the layer's limit of repeated messages was asked off at the instance's creation */
+    /* The synchronisation checks: 1 when they were asked for with the layer's extension for them enabled. Else
+       which way not (SNX_VK_LAYER_*, 6 for no room in our own list) and the last call's result. */
+    int checks_asked, checks_why, checks_result;
+    unsigned messages;
+    u64 generation; /* of the configuration: raised for every context made with other flags or formats */
+    /* A submission's end is not known, or a command buffer could not be reset. From then on nothing is recorded,
+       reset, submitted or freed on this device: the command buffer, the buffer and the queue are shared by all
+       cases. The cases left are not run and the mode fails. */
+    int unknown;
+    u64 edge_sums[2][3]; /* the edge case's images by orientation: colour, depth, vectors (edges_announce) */
+    SelftestProof proof;    /* of the session closed last (session_close) */
+    SelftestHanded* record; /* when set: what each frame of the inputs handed the adapter, by the frame's number */
+    int record_n;
+} g;
+
+/* one run's inputs, made once and never changed: a sign variant changes only the numbers handed to the adapter */
+typedef struct {
+    int w, h;            /* the images' size */
+    int rw, rh, ow, oh;  /* the scene's rectangle in them, and the output's size */
+    int offsets;         /* of the jitter: ceil(8 x output's pixels / rectangle's pixels) */
+    SelftestViewport vp; /* the scene's viewport inside them */
+    int frames;          /* twice the offsets, and the first, which the gate does not let through */
+    SelftestFrame* scene;
+    u32 *colour, *depth;
+    u16* motion;
+    int cut_at;          /* the frame whose pattern is new, -1 for none */
+    int ungated;         /* a shape the game does not make: not put through the game's gate (frame_run) */
+    int whole;           /* D3-4: the images handed whole, the rectangle at their origin the render size, as the game */
+    SelftestProjection form; /* the projection the depth was made with: the camera's numbers and the far-plane flag */
+} Inputs;
+
+/* What a variant makes of the numbers handed on: the factor on the reported jitter of each axis (1 as configured,
+   -1 the sign turned, 0 told nothing), the vectors' signs, the depth convention it claims, whether every frame's
+   inputs and dispatch are logged, and a create flag left out. */
+typedef struct {
+    double jitter_x, jitter_y;
+    int vector_x, vector_y, depth_reversed, trace;
+    int ldr; /* 1: the context is made without the flag for linear colours over 1 (a real create property) */
+} Variant;
+static const Variant CONFIGURED = {1, 1, 1, 1, 1};
+static const Variant STANDARD_DEPTH = {1, 1, 1, 1, 0}; /* depth near 0 and far 1, for inputs made so */
+
+/* a run's state across frames, as the runtime will keep it */
+typedef struct {
+    TemporalRectGate gate;
+    TemporalUpscalerContexts contexts;
+    SnxUpscaler *live, *pending;
+    unsigned frame, failures, skipped, evaluated, published; /* published: contexts that came into use */
+    unsigned wrote; /* the last frame an ungated run evaluated, 0 for none */
+    SelftestProof proof; /* the contexts that came into use and what they were handed, for printed assertions */
+    unsigned evaluated_with; /* how many contexts had come into use at the last evaluate */
+    Picture colour, depth, motion, output; /* what the adapter is handed */
+    Picture wide_colour, wide_depth, wide_motion; /* for inputs that sit inside larger images */
+} Session;
+
+/* Every callback of the validation layer at warning or above is counted, and printed whole: its number, its
+   message id's name and number, and its text, in pieces of a log line's length. Two caps, each said when it is
+   reached: VALIDATION_KEPT callbacks are printed, and VALIDATION_TEXT characters of a text. Every callback is
+   counted by its message id (up to VALIDATION_IDS ids), for the lines at the end. */
+#define VALIDATION_KEPT 256
+#define VALIDATION_TEXT 4096
+#define VALIDATION_PIECE 1500
+#define VALIDATION_IDS 64
+#define VALIDATION_SCAN (1u << 20) /* bytes of a text looked through for variables' names */
+/* Callbacks may come from a thread of the library's. The lock is no part of what it guards: the counts are
+   copied whole under it, and a callback that waits writes the lock meanwhile. */
+static int g_said_lock;
+static struct {
+    u32 ids, unlisted; /* message ids kept, and callbacks whose id found no room in the table */
+    u32 omitted, truncated, nameless; /* callbacks not printed, printed with a cut text, without an id's name */
+    u32 overlong; /* callbacks whose id's name is too long to keep whole: counted apart, never taken as one id */
+    u32 stops;    /* callbacks whose text holds the layer's own sentence of stopping an id (selftest_stop_notice) */
+    u32 ngx_own;  /* callbacks that are NGX's own 09600 (selftest_ngx_own, research 22:20): counted, not silenced */
+    SelftestVariables variables; /* the variables' names the texts hold, by the layer's pattern */
+    struct {
+        char name[128];
+        i32 number;
+        u32 count;
+    } id[VALIDATION_IDS];
+} g_said;
+/* Only printable ASCII goes into a log line as it is. A line break would end the line early, and a piece's cut
+   could fall inside a character of several bytes. Every other byte is written out as a mark (a backslash with
+   n, r or t, or with x and two hexadecimal digits) and a backslash of the text is doubled: nothing is dropped
+   and a line reads back to exactly one text. One byte into out, at most four bytes: how many. */
+static u32 validation_mark(unsigned char c, char* out) {
+    static const char digits[] = "0123456789abcdef";
+    if (c >= 0x20 && c < 0x7f && c != '\\') {
+        out[0] = (char)c;
+        return 1;
+    }
+    out[0] = '\\';
+    if (c == '\\') { /* a backslash of the text itself is doubled, so that a mark is never mistaken for text */
+        out[1] = '\\';
+        return 2;
+    }
+    out[1] = c == '\n' ? 'n' : c == '\r' ? 'r' : c == '\t' ? 't' : 'x';
+    if (out[1] != 'x') return 2;
+    out[2] = digits[c >> 4];
+    out[3] = digits[c & 15];
+    return 4;
+}
+/* a message id's name for a log line: its first 127 characters with the marks. out holds 4 x 127 + 1 bytes. The
+   name itself is kept and compared as it came. */
+static void validation_name(char* out, const char* name, size_t length) {
+    size_t at = 0;
+    for (size_t i = 0; i < length && i < 127; i++) at += validation_mark((unsigned char)name[i], out + at);
+    out[at] = 0;
+}
+/* n characters of text in pieces of at most VALIDATION_PIECE bytes, no mark split between two. With print 0 the
+   pieces are only counted. Each piece is one log line with the prefix and the callback's number. */
+static u32 validation_pieces(const char* text, size_t n, u32 number, u32 pieces, int print) {
+    char line[VALIDATION_PIECE + 1], mark[4];
+    size_t at = 0;
+    u32 made = 0;
+    for (size_t i = 0; i <= n; i++) {
+        const u32 width = i < n ? validation_mark((unsigned char)text[i], mark) : 0;
+        if ((i == n && at) || at + width > VALIDATION_PIECE) {
+            line[at] = 0;
+            made++;
+            if (print) LOG(ST "validation %u, part %u of %u: %s\n", number, made, pieces, line);
+            at = 0;
+        }
+        memcpy(line + at, mark, width);
+        at += width;
+    }
+    return made;
+}
+static VKAPI_ATTR VkBool32 VKAPI_CALL validation_says(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
+                                                      VkDebugUtilsMessageTypeFlagsEXT type,
+                                                      const VkDebugUtilsMessengerCallbackDataEXT* data, void* user) {
+    (void)type;
+    (void)user;
+    if (severity < VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) return VK_FALSE;
+    const char* name = data && data->pMessageIdName ? data->pMessageIdName : "(no name)";
+    const char* text = data && data->pMessage ? data->pMessage : "";
+    const i32 number = data ? data->messageIdNumber : 0;
+    const size_t length = strlen(text), kept = length > VALIDATION_TEXT ? VALIDATION_TEXT : length;
+    while (__atomic_exchange_n(&g_said_lock, 1, __ATOMIC_ACQUIRE)) {}
+    const u32 index = g.messages++;
+    /* An id is its whole name and its number. A name that does not fit the table whole is not classified: a
+       prefix is no identity. */
+    const size_t name_length = strlen(name);
+    const int fits = name_length < sizeof g_said.id[0].name;
+    u32 k = 0;
+    while (fits && k < g_said.ids && (g_said.id[k].number != number || strcmp(g_said.id[k].name, name))) k++;
+    if (fits && k == g_said.ids && k < VALIDATION_IDS) {
+        memcpy(g_said.id[k].name, name, name_length + 1);
+        g_said.id[k].number = number;
+        g_said.ids++;
+    }
+    if (!fits) g_said.overlong++;
+    else if (k < VALIDATION_IDS) g_said.id[k].count++;
+    else g_said.unlisted++;
+    g_said.nameless += !(data && data->pMessageIdName);
+    /* NGX's own: up to 16 labels and 16 objects are looked at, a callback with more is never taken as NGX's */
+    const char* labels[16];
+    const char* names[16];
+    int images[16];
+    const u32 nlabels = data ? data->cmdBufLabelCount : 0, nobjects = data ? data->objectCount : 0;
+    int own = 0;
+    if (data && nlabels <= 16 && nobjects <= 16) {
+        for (u32 k = 0; k < nlabels; k++) labels[k] = data->pCmdBufLabels[k].pLabelName;
+        for (u32 k = 0; k < nobjects; k++) {
+            images[k] = data->pObjects[k].objectType == VK_OBJECT_TYPE_IMAGE;
+            names[k] = data->pObjects[k].pObjectName;
+        }
+        own = selftest_ngx_own(data->pMessageIdName, text, labels, nlabels, images, names, nobjects);
+    }
+    g_said.ngx_own += (u32)own;
+    /* the raw text of every callback, before any cap on what is printed */
+    selftest_variables(&g_said.variables, text, length, VALIDATION_SCAN);
+    g_said.stops += selftest_stop_notice(text);
+    g_said.omitted += index >= VALIDATION_KEPT;
+    g_said.truncated += index < VALIDATION_KEPT && length > kept;
+    if (index < VALIDATION_KEPT) {
+        char shown[4 * 127 + 1];
+        u32 breaks = 0, name_breaks = 0;
+        for (size_t i = 0; i < kept; i++) breaks += (unsigned char)text[i] < 0x20 || (unsigned char)text[i] >= 0x7f;
+        for (size_t i = 0; i < name_length; i++)
+            name_breaks += (unsigned char)name[i] < 0x20 || (unsigned char)name[i] >= 0x7f;
+        validation_name(shown, name, name_length);
+        /* the name is printed whole when it fits the table, else its first 127 characters, said as cut */
+        LOG(ST "validation %u: message id %s%s (%d), %zu characters%s. Bytes that are not printable ASCII, each "
+               "written out as a mark: %u in the text printed, %u in the whole name\n", index + 1, shown,
+            fits ? "" : " [the name is cut here: it is longer]", (int)number, length,
+            length > kept ? ", of which the first 4096 are printed" : "", breaks, name_breaks);
+        if (own)
+            LOG(ST "validation %u: NGX's own (%s in %s on %s only), counted apart by research's ruling of 22:20\n",
+                index + 1, SELFTEST_NGX_ID, SELFTEST_NGX_REGION, SELFTEST_NGX_IMAGE);
+        if (!fits) LOG(ST "validation %u: its message id's name has %zu characters\n", index + 1, name_length);
+        validation_pieces(text, kept, index + 1, validation_pieces(text, kept, index + 1, 0, 0), 1);
+    } else if (index == VALIDATION_KEPT)
+        LOG(ST "more than %d validation callbacks: the ones from here on are counted by their message id and not "
+               "printed\n", VALIDATION_KEPT);
+    __atomic_store_n(&g_said_lock, 0, __ATOMIC_RELEASE);
+    return VK_FALSE;
+}
+/* At the end: how many callbacks each message id had, the layer's own limit on repeats said beside them. All of
+   it from one copy taken under the callbacks' lock. It answers how many callbacks that copy holds, which is
+   the count case 7 and the RESULT go by. */
+static unsigned validation_counts(unsigned* own) {
+    u32 listed = 0;
+    /* a callback may still arrive from a thread of the library's: the counts are taken under the callbacks' lock,
+       all at one moment, and printed from that copy */
+    while (__atomic_exchange_n(&g_said_lock, 1, __ATOMIC_ACQUIRE)) {}
+    const __typeof__(g_said) said = g_said;
+    const u32 received = g.messages;
+    __atomic_store_n(&g_said_lock, 0, __ATOMIC_RELEASE);
+    *own = said.ngx_own;
+    if (!received) return 0;
+    LOG(ST "validation: %u of the callbacks are NGX's own (%s in %s on %s only), %u are not\n", said.ngx_own,
+        SELFTEST_NGX_ID, SELFTEST_NGX_REGION, SELFTEST_NGX_IMAGE, received - said.ngx_own);
+    for (u32 k = 0; k < said.ids; k++) listed += said.id[k].count;
+    LOG(ST "validation: %u callbacks at warning or above. Printed %u, of which %u with a text cut at %d characters. "
+           "Not printed %u (past the first %d). Without a message id's name %u. The layer itself stops reporting "
+           "a message id after its own limit of repeats (it says so in a callback), so a count is what it "
+           "reported and not how often the fault occurred\n",
+        received, received - said.omitted, said.truncated, VALIDATION_TEXT, said.omitted, VALIDATION_KEPT,
+        said.nameless);
+    for (u32 k = 0; k < said.ids; k++) {
+        char shown[4 * 127 + 1];
+        validation_name(shown, said.id[k].name, strlen(said.id[k].name));
+        LOG(ST "validation message id %s (%d): %u callbacks\n", shown, (int)said.id[k].number, said.id[k].count);
+    }
+    if (said.unlisted)
+        LOG(ST "validation: the table of %d message ids is full. %u callbacks of further message ids are counted "
+               "here together and are not listed by id\n", VALIDATION_IDS, said.unlisted);
+    if (said.overlong)
+        LOG(ST "validation: %u callbacks have a message id whose name is too long to classify (%zu characters or "
+               "more). They are counted here together, as one line and not as one id\n", said.overlong,
+            sizeof said.id[0].name);
+    /* Three facts of the layer's limit of repeats, kept apart: what was asked, the most callbacks one message id
+       had, and whether the layer's own notice of stopping an id arrived. The setting cannot be read back. */
+    u32 most = 0;
+    for (u32 k = 0; k < said.ids; k++) most = said.id[k].count > most ? said.id[k].count : most;
+    LOG(ST "validation: the layer's limit of repeated messages was %s. The most callbacks one listed message id had "
+           "is %u. Callbacks that hold the layer's sentence of stopping a message id (\"This VUID has now been "
+           "reported ... this will be the last time reporting it\"): %u\n",
+        g.limit_asked ? "asked off (enable_message_limit = false), which cannot be read back" : "not asked off", most,
+        said.stops);
+    /* the variables' names, taken from the texts by a pattern: no identity of a resource */
+    const SelftestVariables* v = &said.variables;
+    LOG(ST "validation: names found in the raw texts by the pattern variable \"name\", in %u callbacks: %u names. "
+           "Callbacks with no match of this exact pattern %u, with a text not looked through to its end %u. "
+           "Quoted names that do not close %u, too long to keep (over %d characters) %u, with no room in the "
+           "table of %d names %u. %s\n",
+        v->callbacks, v->names, v->unmatched, v->unscanned, v->unclosed, SELFTEST_VARIABLE_NAME, v->overlong,
+        SELFTEST_VARIABLES, v->full,
+        selftest_variables_whole(v) ? "No limit was met" : "A LIMIT WAS MET: a name may be missing from the table");
+    for (u32 k = 0; k < v->names; k++) {
+        char shown[4 * SELFTEST_VARIABLE_NAME + 1];
+        size_t at = 0;
+        for (size_t i = 0; v->name[k].name[i]; i++)
+            at += validation_mark((unsigned char)v->name[k].name[i], shown + at);
+        shown[at] = 0;
+        LOG(ST "validation variable name %s: in %u callbacks\n", shown, v->name[k].count);
+    }
+    const u32 all = listed + said.unlisted + said.overlong;
+    LOG(ST "validation: %u callbacks listed by message id, %u past the table and %u with a name too long make %u, "
+           "and %u were received: %s\n", listed, said.unlisted, said.overlong, all, received,
+        all == received ? "the counts add up" : "THE COUNTS DO NOT ADD UP");
+    return received;
+}
+
+static int memory_type(u32 bits, VkMemoryPropertyFlags want) {
+    VkPhysicalDeviceMemoryProperties mp;
+    vkGetPhysicalDeviceMemoryProperties(g.physical, &mp);
+    for (u32 i = 0; i < mp.memoryTypeCount; i++)
+        if ((bits >> i & 1) && (mp.memoryTypes[i].propertyFlags & want) == want) return (int)i;
+    return -1;
+}
+
+/* The instance and the device, through the steps the runtime will take with an adapter (upscaler_host.c). The
+   validation layer with its synchronisation checks is asked for when it is installed. */
+/* Why the synchronisation checks were not asked for, with the layer on: which way the layer's own list of
+   extensions did not give its extension for them, or that our list had no room. A result is said only for a
+   call that was made. */
+static const char* checks_missing(void) {
+    static const char* const why[] = {"",
+                                      "the layer's list of extensions, read whole, does not hold it",
+                                      "the layer's list of extensions stayed incomplete after three tries, so "
+                                      "whether it holds it is not known",
+                                      "the call for the count of the layer's extensions failed",
+                                      "the call for the list of the layer's extensions failed",
+                                      "there was no memory for the list of the layer's extensions, so the call "
+                                      "for it was not made",
+                                      "the layer lists it, and the self-test's list of instance extensions has "
+                                      "no room for one more"};
+    static char text[320];
+    const int k = g.checks_why >= 1 && g.checks_why <= 6 ? g.checks_why : 0;
+    if (!k) snprintf(text, sizeof text, "not asked for, and the reason was not kept (%d)", g.checks_why);
+    else if (k == SNX_VK_LAYER_NO_MEMORY || k == 6)
+        snprintf(text, sizeof text, "not asked for (%s): %s", VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME, why[k]);
+    else
+        snprintf(text, sizeof text, "not asked for (%s): %s (the last call's result %d)",
+                 VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME, why[k], g.checks_result);
+    return text;
+}
+/* Why no validation message can be seen. Two facts kept apart: how the layer's presence was read (the list's
+   three states), and, when it was listed and asked for, that its message callback could not be made. */
+static const char* validation_missing(void) {
+    if (g.listed) {
+        static char text[160];
+        snprintf(text, sizeof text, "LISTED BY THE LOADER and asked for, but its message callback could not be made "
+                                    "(result %d): no validation message can be seen", g.messenger_result);
+        return text;
+    }
+    return g.layers == SELFTEST_LAYERS_WHOLE  ? "NOT IN THE LOADER'S LIST, which was read whole: no validation message "
+                                                "can be seen"
+           : g.layers == SELFTEST_LAYERS_PART ? "NOT FOUND, and the loader's list was read only in part, so whether "
+                                                "it is installed is not known: no validation message can be seen"
+                                              : "NOT KNOWN, the loader's list could not be read: no validation message "
+                                                "can be seen";
+}
+static int device_make(void) {
+    const char *instance_names[32], *device_names[64], *layers[1] = {"VK_LAYER_KHRONOS_validation"};
+    u32 instance_count = 0, device_count = 0, n = 0;
+    const void* features = NULL;
+    if (!VK_OK(volkInitialize())) {
+        LOG(ST "FAIL: no Vulkan loader\n");
+        return 0;
+    }
+    /* The loader's list of instance layers. The count can change between the two calls, and the list's call
+       then answers "incomplete": it is asked again, three times at most. */
+    VkLayerProperties* have = NULL;
+    VkResult counted = VK_SUCCESS, listed = VK_INCOMPLETE;
+    u32 wanted = 0;
+    int asked = 1; /* the list's call was made. 0: not, the count failed. -1: not, no memory of ours for the list */
+    for (int tries = 0; tries < 3 && asked == 1 && listed == VK_INCOMPLETE; tries++) {
+        free(have);
+        n = 0;
+        counted = vkEnumerateInstanceLayerProperties(&n, NULL);
+        wanted = n;
+        have = counted < 0 ? NULL : calloc(n ? n : 1, sizeof *have);
+        asked = counted < 0 ? 0 : have ? 1 : -1;
+        /* for a call that was not made the state is "not read": the code below is ours, no call's result */
+        listed = asked == 1 ? vkEnumerateInstanceLayerProperties(&n, have) : VK_ERROR_UNKNOWN;
+    }
+    g.layers = selftest_layers((int)counted, (int)listed, (int)VK_INCOMPLETE);
+    for (u32 i = 0; g.layers != SELFTEST_LAYERS_UNREAD && i < n; i++)
+        g.validation |= !strcmp(have[i].layerName, layers[0]);
+    g.listed = g.validation;
+    if (!g.validation) {
+        /* Log only, once: how the list was read, each layer it holds on a line of its own, and where this
+           process is told to look for layers. The self-test sees the loader's list and nothing else. */
+        static const char* const variables[3] = {"VK_LAYER_PATH", "VK_ADD_LAYER_PATH", "VULKAN_SDK"};
+        const u32 shown = g.layers == SELFTEST_LAYERS_UNREAD ? 0 : n > 64 ? 64 : n;
+        if (g.layers == SELFTEST_LAYERS_UNREAD && asked == 1)
+            LOG(ST "the loader's list of instance layers could not be read (the count's call gave %d, the list's "
+                   "%d): whether %s is installed is not known\n", (int)counted, (int)listed, layers[0]);
+        else if (g.layers == SELFTEST_LAYERS_UNREAD && asked == 0)
+            LOG(ST "the loader's list of instance layers could not be read: the count's call failed with %d, so the "
+                   "list was not asked for. Whether %s is installed is not known\n", (int)counted, layers[0]);
+        else if (g.layers == SELFTEST_LAYERS_UNREAD)
+            LOG(ST "the loader's list of instance layers could not be read: the count's call gave %d for %u layers "
+                   "and there was no memory of ours for the list, so it was not asked for. Whether %s is installed "
+                   "is not known\n", (int)counted, wanted, layers[0]);
+        else
+            LOG(ST "the loader's list of instance layers was read %s: %u layers, and %s is not among them%s\n",
+                g.layers == SELFTEST_LAYERS_WHOLE ? "whole" : "IN PART (still incomplete after three tries)", n,
+                layers[0], g.layers == SELFTEST_LAYERS_WHOLE ? "" : ", so whether it is installed is not known");
+        for (u32 i = 0; i < shown; i++) LOG(ST "instance layer %u of %u: %s\n", i + 1, n, have[i].layerName);
+        if (shown < n && g.layers != SELFTEST_LAYERS_UNREAD)
+            LOG(ST "%u more instance layers are not printed\n", n - shown);
+        for (int k = 0; k < 3; k++) {
+            const char* value = getenv(variables[k]);
+            LOG(ST "as this process sees it, %s is %s\n", variables[k], value && value[0] ? value : "not set");
+        }
+    }
+    free(have);
+    if (g.validation) instance_names[instance_count++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
+    /* The synchronisation checks are asked for through an extension the layer itself lists, and only with it
+       enabled. A name found in a list is found, also in a part of one. One not found in a list that stays
+       incomplete is not resolved, and that, a list that cannot be read and a whole list without it ask nothing. */
+    if (g.validation) {
+        VkResult result = VK_SUCCESS;
+        g.checks_why = snx_vk_layer_extension(layers[0], VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME, &result);
+        g.checks_result = (int)result;
+        if (g.checks_why == SNX_VK_LAYER_HAS && instance_count < 32) {
+            instance_names[instance_count++] = VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME;
+            g.checks_asked = 1;
+        } else if (g.checks_why == SNX_VK_LAYER_HAS)
+            g.checks_why = 6;
+    }
+    if (!vk_upscaler_instance_extensions(g.api, instance_names, &instance_count, 32)) {
+        LOG(ST "FAIL: the adapter's instance extensions could not be taken\n");
+        return 0;
+    }
+    const VkValidationFeatureEnableEXT enables[1] = {VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT};
+    VkValidationFeaturesEXT checks = {.sType = VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT,
+                                      .enabledValidationFeatureCount = 1,
+                                      .pEnabledValidationFeatures = enables};
+    const void* instance_chain = g.checks_asked ? &checks : NULL;
+    /* Log only: by its default the layer stops reporting a message id after ten repeats. It is asked not to,
+       through its settings at the instance's creation, where the layer offers that extension. What was asked
+       cannot be read back: the lines at the end say what the run shows. */
+#ifdef VK_EXT_layer_settings
+    const VkBool32 limit = VK_FALSE;
+    const VkLayerSettingEXT setting = {layers[0], "enable_message_limit", VK_LAYER_SETTING_TYPE_BOOL32_EXT, 1, &limit};
+    const VkLayerSettingsCreateInfoEXT settings = {
+        .sType = VK_STRUCTURE_TYPE_LAYER_SETTINGS_CREATE_INFO_EXT, .settingCount = 1, .pSettings = &setting};
+    if (g.validation) {
+        /* each way of not asking has its own words: the layer's list of its extensions, and our own room */
+        static const char* const why[] = {"",
+                                          "the layer's list of extensions, read whole, does not hold its settings",
+                                          "the layer's list of extensions stayed incomplete after three tries, so "
+                                          "whether it holds its settings is not known",
+                                          "the call for the count of the layer's extensions failed",
+                                          "the call for the list of the layer's extensions failed",
+                                          "there was no memory for the list of the layer's extensions, so the "
+                                          "call for it was not made"};
+        VkResult result = VK_SUCCESS;
+        const int has = snx_vk_layer_extension(layers[0], VK_EXT_LAYER_SETTINGS_EXTENSION_NAME, &result);
+        if (has == SNX_VK_LAYER_HAS && instance_count < 32) {
+            instance_names[instance_count++] = VK_EXT_LAYER_SETTINGS_EXTENSION_NAME;
+            /* behind the checks' structure when that is in the chain, else the chain's only node */
+            if (g.checks_asked) checks.pNext = &settings;
+            else instance_chain = &settings;
+            g.limit_asked = 1;
+            LOG(ST "the layer's limit of repeated messages: asked off (enable_message_limit = false)\n");
+        } else if (has == SNX_VK_LAYER_HAS)
+            LOG(ST "the layer's limit of repeated messages: not asked off. The layer lists its settings, and the "
+                   "self-test's list of instance extensions has no room for one more\n");
+        else if (has == SNX_VK_LAYER_NO_MEMORY)
+            LOG(ST "the layer's limit of repeated messages: not asked off: %s\n", why[has]);
+        else
+            LOG(ST "the layer's limit of repeated messages: not asked off: %s (the last call's result %d)\n",
+                why[has], (int)result);
+    }
+#else
+    if (g.validation)
+        LOG(ST "the layer's limit of repeated messages: not asked off, the headers of this build have no layer "
+               "settings\n");
+#endif
+    /* XeSS names Vulkan 1.3 as its least (XS2-a), as the game's device is: for it the self-test is made at 1.3 */
+    const VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
+                                   .pApplicationName = "scarletnx upscaler self-test",
+                                   .apiVersion = g.at13 ? VK_API_VERSION_1_3 : VK_API_VERSION_1_2};
+    const VkInstanceCreateInfo ici = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+                                      .pNext = instance_chain,
+                                      .pApplicationInfo = &app,
+                                      .enabledLayerCount = g.validation ? 1 : 0,
+                                      .ppEnabledLayerNames = layers,
+                                      .enabledExtensionCount = instance_count,
+                                      .ppEnabledExtensionNames = instance_names};
+    if (!VK_OK(vkCreateInstance(&ici, NULL, &g.instance))) {
+        LOG(ST "FAIL: the instance could not be made with %u extensions\n", instance_count);
+        return 0;
+    }
+    volkLoadInstance(g.instance);
+    if (g.validation) {
+        const VkDebugUtilsMessengerCreateInfoEXT mi = {
+            .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
+            .messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
+                               VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,
+            .messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+                           VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT,
+            .pfnUserCallback = validation_says};
+        /* the layer is there and loaded, but without its messenger no message of it can be seen */
+        const VkResult made = vkCreateDebugUtilsMessengerEXT(g.instance, &mi, NULL, &g.messenger);
+        if (!VK_OK(made)) {
+            g.validation = 0;
+            g.messenger_result = (int)made;
+        }
+    }
+    /* the first device with a queue family for graphics and compute */
+    VkPhysicalDevice devices[8];
+    n = 8;
+    vkEnumeratePhysicalDevices(g.instance, &n, devices);
+    for (u32 d = 0; d < n && !g.physical; d++) {
+        VkQueueFamilyProperties families[16];
+        u32 count = 16;
+        vkGetPhysicalDeviceQueueFamilyProperties(devices[d], &count, families);
+        for (u32 f = 0; f < count && !g.physical; f++)
+            if ((families[f].queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) ==
+                (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) {
+                g.physical = devices[d];
+                g.family = f;
+            }
+    }
+    if (!g.physical) {
+        LOG(ST "FAIL: no device with a graphics and compute queue\n");
+        return 0;
+    }
+    VkPhysicalDeviceProperties props;
+    vkGetPhysicalDeviceProperties(g.physical, &props);
+    /* the device is asked for 1.2 features and made at 1.2 (1.3 for XeSS): the physical device must be that */
+    if (props.apiVersion < (g.at13 ? VK_API_VERSION_1_3 : VK_API_VERSION_1_2)) {
+        LOG(ST "FAIL: the physical device %s is Vulkan %u.%u, below %s\n", props.deviceName,
+            VK_API_VERSION_MAJOR(props.apiVersion), VK_API_VERSION_MINOR(props.apiVersion), g.at13 ? "1.3" : "1.2");
+        return 0;
+    }
+    u32 core = 0;
+    if (!vk_upscaler_device_needs(g.api, g.instance, g.physical, vkGetInstanceProcAddr, device_names, &device_count,
+                                  64, &features, &core)) {
+        LOG(ST "FAIL: the adapter is not available on this device, or its needs of it could not be taken\n");
+        return 0;
+    }
+    /* Every feature the device has is turned on, 16 bit floats in shaders among them where it has them: that
+       is a bit of the 1.2 structure here, and no structure of its own in the chain. The adapter's chain, if it
+       has one, goes behind and lives in the adapter. */
+    /* At 1.3 (XeSS) the 1.3 structure follows the 1.2 one, every feature on too, and the adapter's goes behind it */
+    VkPhysicalDeviceVulkan13Features f13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+    VkPhysicalDeviceVulkan12Features f12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
+                                            .pNext = g.at13 ? (void*)&f13 : NULL};
+    VkPhysicalDeviceVulkan11Features f11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
+                                            .pNext = &f12};
+    VkPhysicalDeviceFeatures2 f2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &f11};
+    vkGetPhysicalDeviceFeatures2(g.physical, &f2);
+    if (g.at13) f13.pNext = (void*)features;
+    else f12.pNext = (void*)features;
+    /* A core bit the adapter needs is a bit of this 1.2 structure, which has every bit the physical device has:
+       it is on by that, and here it is held against the need. A physical device without it has no adapter. */
+    const int separate = (core & SNX_UPSCALER_CORE_SEPARATE_DEPTH_STENCIL) != 0;
+    const int address = (core & SNX_UPSCALER_CORE_BUFFER_DEVICE_ADDRESS) != 0;
+    if (separate && !f12.separateDepthStencilLayouts) {
+        LOG(ST "FAIL: the adapter is not available on this device: it needs separate depth and stencil layouts, "
+               "which the physical device does not have\n");
+        return 0;
+    }
+    if (address && !f12.bufferDeviceAddress) {
+        LOG(ST "FAIL: the adapter is not available on this device: it needs buffer device addresses, which the "
+               "physical device does not have\n");
+        return 0;
+    }
+    /* since ABI 5: storage writes without a format (1.0), 8 bit integers and scalar block layouts (1.2) and, on a
+       device at 1.3, integer dot products are on as every feature the physical device has, and held against the
+       need. A device at 1.2 does not take integer dot products: an adapter that needs them is not available. */
+    if ((core & SNX_UPSCALER_CORE_STORAGE_WRITE_WITHOUT_FORMAT) && !f2.features.shaderStorageImageWriteWithoutFormat) {
+        LOG(ST "FAIL: the adapter is not available on this device: it needs storage image writes without a format, "
+               "which the physical device does not have\n");
+        return 0;
+    }
+    if ((core & SNX_UPSCALER_CORE_SHADER_INT8) && !f12.shaderInt8) {
+        LOG(ST "FAIL: the adapter is not available on this device: it needs 8 bit integers in shaders, which the "
+               "physical device does not have\n");
+        return 0;
+    }
+    if ((core & SNX_UPSCALER_CORE_SCALAR_BLOCK_LAYOUT) && !f12.scalarBlockLayout) {
+        LOG(ST "FAIL: the adapter is not available on this device: it needs scalar block layouts, which the "
+               "physical device does not have\n");
+        return 0;
+    }
+    if ((core & SNX_UPSCALER_CORE_INTEGER_DOT_PRODUCT) && (!g.at13 || !f13.shaderIntegerDotProduct)) {
+        LOG(ST "FAIL: the adapter is not available on this device: it needs integer dot products, a feature of "
+               "Vulkan 1.3, and %s\n", g.at13 ? "the physical device does not have them" : "the self-test's device "
+               "is made at 1.2");
+        return 0;
+    }
+    LOG(ST "the device is made at Vulkan %s with %u extensions of the adapter%s%s, with separate depth and stencil "
+           "layouts %s, "
+           "%s, and with 16 bit floats in shaders %s\n",
+        g.at13 ? "1.3" : "1.2", device_count, device_count ? ": " : "", device_count ? device_names[0] : "",
+        separate ? "on for the adapter, which needs them"
+                 : f12.separateDepthStencilLayouts ? "on as every feature the physical device has, not asked for by "
+                                                     "the adapter"
+                                                   : "off, as the physical device has none",
+        address ? "with buffer device addresses on for the adapter, which needs them"
+                : f12.bufferDeviceAddress ? "with buffer device addresses on as every feature the physical device has"
+                                          : "with no buffer device addresses, as the physical device has none",
+        f12.shaderFloat16 ? "on, as the physical device has them" : "off, as the physical device has none");
+    const float priority = 1.0f;
+    const VkDeviceQueueCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+                                        .queueFamilyIndex = g.family,
+                                        .queueCount = 1,
+                                        .pQueuePriorities = &priority};
+    const VkDeviceCreateInfo dci = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+                                    .pNext = &f2,
+                                    .queueCreateInfoCount = 1,
+                                    .pQueueCreateInfos = &qi,
+                                    .enabledExtensionCount = device_count,
+                                    .ppEnabledExtensionNames = device_names};
+    if (!VK_OK(vkCreateDevice(g.physical, &dci, NULL, &g.device))) {
+        LOG(ST "FAIL: the device could not be made with %u extensions of the adapter\n", device_count);
+        return 0;
+    }
+    volkLoadDevice(g.device);
+    vkGetDeviceQueue(g.device, g.family, 0, &g.queue);
+    const VkCommandPoolCreateInfo pi = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+                                        .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+                                        .queueFamilyIndex = g.family};
+    const VkCommandBufferAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                                            .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+                                            .commandBufferCount = 1};
+    VkCommandBufferAllocateInfo alloc = ai;
+    if (!VK_OK(vkCreateCommandPool(g.device, &pi, NULL, &g.pool))) return 0;
+    alloc.commandPool = g.pool;
+    if (!VK_OK(vkAllocateCommandBuffers(g.device, &alloc, &g.cb))) return 0;
+    /* one buffer the host can write and read, for the uploads and for reading the output back */
+    g.staging_size = 8ull << 20;
+    const VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                                   .size = g.staging_size,
+                                   .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT};
+    VkMemoryRequirements need;
+    if (!VK_OK(vkCreateBuffer(g.device, &bi, NULL, &g.staging))) return 0;
+    vkGetBufferMemoryRequirements(g.device, g.staging, &need);
+    const int type = memory_type(need.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                                          VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    const VkMemoryAllocateInfo mi = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                                     .allocationSize = need.size,
+                                     .memoryTypeIndex = (u32)(type < 0 ? 0 : type)};
+    void* mapped = NULL;
+    if (type < 0 || !VK_OK(vkAllocateMemory(g.device, &mi, NULL, &g.staging_memory)) ||
+        !VK_OK(vkBindBufferMemory(g.device, g.staging, g.staging_memory, 0)) ||
+        !VK_OK(vkMapMemory(g.device, g.staging_memory, 0, VK_WHOLE_SIZE, 0, &mapped)))
+        return 0;
+    g.staging_bytes = mapped;
+    LOG(ST "device %s, adapter %s, validation layer %s\n", props.deviceName, g.api->name,
+        !g.validation     ? validation_missing()
+        : g.checks_asked  ? "on, its synchronisation checks asked for with the layer's extension for them enabled"
+                          : "on, WITHOUT its synchronisation checks: they were not asked for");
+    if (g.validation && !g.checks_asked) LOG(ST "the synchronisation checks: %s\n", checks_missing());
+    return 1;
+}
+
+static int picture_make(Picture* p, VkFormat format, u32 w, u32 h, VkImageUsageFlags usage) {
+    const int is_depth = format == VK_FORMAT_D24_UNORM_S8_UINT;
+    const VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                                  .imageType = VK_IMAGE_TYPE_2D,
+                                  .format = format,
+                                  .extent = {w, h, 1},
+                                  .mipLevels = 1,
+                                  .arrayLayers = 1,
+                                  .samples = VK_SAMPLE_COUNT_1_BIT,
+                                  .usage = usage | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT};
+    VkMemoryRequirements need;
+    memset(p, 0, sizeof *p);
+    if (!VK_OK(vkCreateImage(g.device, &ii, NULL, &p->image))) return 0;
+    vkGetImageMemoryRequirements(g.device, p->image, &need);
+    const int type = memory_type(need.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    const VkMemoryAllocateInfo mi = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                                     .allocationSize = need.size,
+                                     .memoryTypeIndex = (u32)(type < 0 ? 0 : type)};
+    if (type < 0 || !VK_OK(vkAllocateMemory(g.device, &mi, NULL, &p->memory)) ||
+        !VK_OK(vkBindImageMemory(g.device, p->image, p->memory, 0)))
+        return 0;
+    p->format = format;
+    p->w = w;
+    p->h = h;
+    /* a picture that is only copied to and from has no usage a view may be made for, and needs none */
+    if (!usage) return 1;
+    const VkImageViewCreateInfo vi = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+        .image = p->image,
+        .viewType = VK_IMAGE_VIEW_TYPE_2D,
+        .format = format,
+        .subresourceRange = {is_depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+    return VK_OK(vkCreateImageView(g.device, &vi, NULL, &p->view));
+}
+
+static void picture_free(Picture* p) {
+    if (p->view) vkDestroyImageView(g.device, p->view, NULL);
+    if (p->image) vkDestroyImage(g.device, p->image, NULL);
+    if (p->memory) vkFreeMemory(g.device, p->memory, NULL);
+    memset(p, 0, sizeof *p);
+}
+
+static VkImageAspectFlags aspects(const Picture* p) {
+    return p->format == VK_FORMAT_D24_UNORM_S8_UINT ? VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT
+                                                    : VK_IMAGE_ASPECT_COLOR_BIT;
+}
+
+/* a layout change with every command before it finished and every command after it waiting: nothing of what an
+   adapter did last is relied on */
+static void layout(const Picture* p, VkImageLayout from, VkImageLayout to) {
+    const VkImageMemoryBarrier b = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                                    .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT,
+                                    .dstAccessMask = VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT,
+                                    .oldLayout = from,
+                                    .newLayout = to,
+                                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                    .image = p->image,
+                                    .subresourceRange = {aspects(p), 0, 1, 0, 1}};
+    vkCmdPipelineBarrier(g.cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, NULL, 0,
+                         NULL, 1, &b);
+}
+
+/* everything recorded so far is done before anything recorded after this starts */
+static void settle(void) {
+    const VkMemoryBarrier b = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+                               .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT,
+                               .dstAccessMask = VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT};
+    vkCmdPipelineBarrier(g.cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &b, 0,
+                         NULL, 0, NULL);
+}
+
+/* Whether nothing new may start: the device's state is not known, or an evaluate answered UNKNOWN and the run halted.
+   Only completion, destroys, the shutdown and the last lines go on (research's ruling of 10:20). */
+static int stopped(void) { return g.unknown || g.halted; }
+/* the case being run from here, for the line of what a stop leaves not run */
+static void step(const char* name) {
+    if (!stopped()) snprintf(g.step, sizeof g.step, "%s", name);
+}
+static void stop_noted(void) {
+    if (!g.halted_in[0]) snprintf(g.halted_in, sizeof g.halted_in, "%s", g.step[0] ? g.step : "the start");
+}
+/* Research's ruling of 11:35: after a halt or an unknown state nothing more of the run is run, said or counted,
+   neither the rest of the case it came in nor any later one. One line names the case. 1 once stopped. */
+static int skip_rest(void) {
+    if (!stopped()) return 0;
+    if (!g.skip_said) {
+        g.skip_said = 1;
+        LOG(ST "not run: halted after %s. The rest of it and every later base, case, sub-case and transition are not "
+               "run, and nothing of them enters the verdict, which fails for the stop itself\n", g.halted_in);
+    }
+    return 1;
+}
+/* a case's line: none once the run stopped */
+#define SAY(...)                     \
+    do {                                  \
+        if (!skip_rest()) LOG(__VA_ARGS__); \
+    } while (0)
+
+static void unknown(const char* what) {
+    stop_noted();
+    if (!g.unknown)
+        LOG(ST "FAIL: %s. What the device still uses is not known, so nothing more is recorded, reset, submitted "
+               "or freed, and the cases left are not run\n", what);
+    g.unknown = 1;
+}
+
+/* the command buffer's contents are discarded: 1 only when the reset itself succeeded */
+static int discard(void) {
+    if (g.unknown) return 0;
+    if (VK_OK(vkResetCommandBuffer(g.cb, 0))) {
+        g.recording = 0;
+        return 1;
+    }
+    unknown("the command buffer could not be reset");
+    return 0;
+}
+
+static int begin(void) {
+    const VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                                         .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+    if (stopped()) return 0; /* after an UNKNOWN evaluate nothing more is recorded */
+    const int begun = discard() && VK_OK(vkBeginCommandBuffer(g.cb, &bi));
+    g.recording = begun;
+    return begun;
+}
+
+/* the device has finished everything: 1, or its state is unknown from now on */
+static int idle(void) {
+    if (g.unknown) return 0;
+    if (VK_OK(vkDeviceWaitIdle(g.device))) return 1;
+    unknown("waiting for the device failed");
+    return 0;
+}
+
+/* The command buffer is submitted. 1: it has completed. 0: it was not submitted and its contents were discarded
+   by a reset that succeeded. -1: its end is not known (submitted and the wait failed, or the reset failed), and
+   the whole mode stops using the device. */
+static int submit(void) {
+    const VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &g.cb};
+    if (g.unknown) return -1;
+    if (!VK_OK(vkEndCommandBuffer(g.cb)) || !VK_OK(vkQueueSubmit(g.queue, 1, &si, VK_NULL_HANDLE)))
+        return discard() ? 0 : -1;
+    g.recording = 0; /* submitted: what it records is the queue's now */
+    if (VK_OK(vkQueueWaitIdle(g.queue))) return 1;
+    unknown("a submission was made and waiting for it failed");
+    return -1;
+}
+
+/* bytes from the staging buffer at offset into a picture, which is then readable by shaders or by a copy */
+static void upload(const Picture* p, u64 offset, VkImageLayout then) {
+    const VkBufferImageCopy region = {
+        .bufferOffset = offset,
+        .imageSubresource = {p->format == VK_FORMAT_D24_UNORM_S8_UINT ? VK_IMAGE_ASPECT_DEPTH_BIT
+                                                                        : VK_IMAGE_ASPECT_COLOR_BIT,
+                             0, 0, 1},
+        .imageExtent = {p->w, p->h, 1}};
+    layout(p, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    vkCmdCopyBufferToImage(g.cb, g.staging, p->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+    layout(p, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, then);
+}
+
+/* the rectangle at x, y of a larger picture into a picture of its own size: the copy the runtime makes for an
+   adapter that reads from the first texel only */
+static void crop(const Picture* from, const Picture* to, int x, int y) {
+    const VkImageAspectFlags aspect =
+        to->format == VK_FORMAT_D24_UNORM_S8_UINT ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+    const VkImageCopy region = {.srcSubresource = {aspect, 0, 0, 1},
+                                .srcOffset = {x, y, 0},
+                                .dstSubresource = {aspect, 0, 0, 1},
+                                .extent = {to->w, to->h, 1}};
+    layout(to, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    vkCmdCopyImage(g.cb, from->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, to->image,
+                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+    layout(to, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+}
+
+/* The jitter's offset k in pixels, within half a pixel each way: Halton bases 2 and 3. The test's own, so that the
+   perturbations are inputs it made itself. */
+static void offset(unsigned k, unsigned n, double out[2]) {
+    static const unsigned bases[2] = {2, 3};
+    for (int axis = 0; axis < 2; axis++) {
+        double f = 1.0, value = 0.0;
+        for (unsigned i = k % n + 1; i; i /= bases[axis]) {
+            f /= bases[axis];
+            value += f * (i % bases[axis]);
+        }
+        out[axis] = value - 0.5;
+    }
+}
+
+/* A run's inputs: the scene's rectangle of size[0] by size[1] at x, y in images of w by h, padded with what is
+   none of the scene's, for an output of size[2] by size[3]. move: the background's move a frame in render pixels.
+   patch: a nearer patch moving another way. cut: the last cut frames have the other pattern. up: a negative viewport
+   height. edges: the edge picture. ahead: images one offset ahead of the reported jitter. turned: clip y negated. */
+static const int SIZES[4] = {RENDER_W, RENDER_H, OUT_W, OUT_H};
+static const SelftestProjection INFINITE = {NEAR_PLANE, INFINITY}; /* a form: what the depth is made with */
+static int inputs_project(Inputs* in, const SelftestProjection* form, const int size[4], int w, int h, int x, int y,
+                          int up, const double move[2], int patch, int cut, int edges, int ahead, int turned) {
+    const int RW = size[0], RH = size[1];
+    memset(in, 0, sizeof *in);
+    in->form = *form;
+    in->w = w;
+    in->h = h;
+    in->rw = RW;
+    in->rh = RH;
+    in->ow = size[2];
+    in->oh = size[3];
+    in->offsets = (int)((8LL * in->ow * in->oh + (long long)RW * RH - 1) / ((long long)RW * RH));
+    in->vp = (SelftestViewport){x, up ? y + RH : y, RW, up ? -RH : RH};
+    in->frames = 2 * in->offsets + 1;
+    const int cut_at = cut > 0 ? in->frames - cut : -1;
+    in->cut_at = cut_at;
+    in->scene = calloc((size_t)in->frames, sizeof *in->scene);
+    in->colour = malloc((size_t)in->frames * w * h * 4);
+    in->depth = malloc((size_t)in->frames * w * h * 4);
+    in->motion = malloc((size_t)in->frames * w * h * 8);
+    if (!in->scene || !in->colour || !in->depth || !in->motion) return 0;
+    const double step[2] = {2.0 * move[0] / RW, 2.0 * move[1] / RH};
+    const double patch_step[2] = {2.0 * -0.9 / RW, 2.0 * 1.1 / RH};
+    const double padding[3] = {0.9, 0.0, 0.9};
+    for (int i = 0; i < in->frames; i++) {
+        SelftestFrame* f = &in->scene[i];
+        double px[2];
+        /* ahead: 1, the control, draws the images a step ahead of the jitter the frame reports; -1, the sign
+           protocol's phase, shifts both the images and the reported jitter a step back, so that its first evaluated
+           frame is phase 0 and every frame's drawn offset is the one it reports (recon 06:41, research 21:35) */
+        offset((unsigned)((((long long)i + ahead) % in->offsets + in->offsets) % in->offsets), (unsigned)in->offsets,
+               px);
+        f->pattern = edges ? SELFTEST_PATTERN_EDGES : cut_at >= 0 && i >= cut_at;
+        f->out = (SelftestViewport){0, up ? in->oh : 0, in->ow, up ? -in->oh : in->oh};
+        f->jitter[0] = 2.0 * px[0] / RW;
+        f->jitter[1] = (turned ? -2.0 : 2.0) * px[1] / RH;
+        for (int a = 0; a < 2; a++) {
+            f->shift[a] = step[a] * i;
+            f->shift_before[a] = step[a] * (i - 1);
+        }
+        f->has_patch = patch;
+        f->depth[0] = selftest_depth(form, SELFTEST_FAR_DISTANCE);
+        f->depth[1] = selftest_depth(form, SELFTEST_NEAR_DISTANCE);
+        f->patch[0] = 0.15 + patch_step[0] * i;
+        f->patch[1] = -0.55 + patch_step[1] * i;
+        f->patch[2] = f->patch[0] + 0.5;
+        f->patch[3] = f->patch[1] + 0.6;
+        for (int a = 0; a < 4; a++) f->patch_before[a] = f->patch[a] - patch_step[a & 1];
+        u32* colour = in->colour + (size_t)i * w * h;
+        u32* depth = in->depth + (size_t)i * w * h;
+        u16* motion = in->motion + (size_t)i * w * h * 4;
+        for (int py = 0; py < h; py++)
+            for (int qx = 0; qx < w; qx++) {
+                double rgb[3], z, texel[2];
+                const size_t at = (size_t)py * w + qx;
+                if (qx >= x && qx < x + RW && py >= y && py < y + RH) {
+                    selftest_input(f, &in->vp, w, h, qx, py, rgb, &z, texel);
+                } else {
+                    memcpy(rgb, padding, sizeof rgb);
+                    z = 1.0;
+                    texel[0] = texel[1] = 0.5;
+                }
+                colour[at] = selftest_b10g11r11(rgb);
+                depth[at] = selftest_d24(z);
+                motion[4 * at] = selftest_half(texel[0]);
+                motion[4 * at + 1] = selftest_half(texel[1]);
+                motion[4 * at + 2] = 0;
+                motion[4 * at + 3] = selftest_half(patch && z == f->depth[1] ? 1.0 : 0.0);
+            }
+        if (ahead > 0) { /* the control's images are made: from here the frame says it had its own offset */
+            offset((unsigned)i, (unsigned)in->offsets, px);
+            f->jitter[0] = 2.0 * px[0] / RW;
+            f->jitter[1] = (turned ? -2.0 : 2.0) * px[1] / RH;
+        }
+    }
+    return 1;
+}
+/* the same with the far plane at infinity, as every case but the native suite's finite form has it */
+static int inputs_build(Inputs* in, const int size[4], int w, int h, int x, int y, int up, const double move[2],
+                        int patch, int cut, int edges, int ahead, int turned) {
+    return inputs_project(in, &INFINITE, size, w, h, x, y, up, move, patch, cut, edges, ahead, turned);
+}
+static int inputs_make(Inputs* in, const int size[4], int w, int h, int x, int y, int up, const double move[2],
+                       int patch, int cut) {
+    return inputs_build(in, size, w, h, x, y, up, move, patch, cut, 0, 0, 0);
+}
+
+static void inputs_free(Inputs* in) {
+    free(in->scene);
+    free(in->colour);
+    free(in->depth);
+    free(in->motion);
+    memset(in, 0, sizeof *in);
+}
+
+static void pictures_free(Session* s) {
+    picture_free(&s->colour);
+    picture_free(&s->depth);
+    picture_free(&s->motion);
+    picture_free(&s->output);
+    picture_free(&s->wide_colour);
+    picture_free(&s->wide_depth);
+    picture_free(&s->wide_motion);
+}
+
+/* The output's format, asked of the physical device for the uses the picture really has together: the adapter's
+   (storage, sampled) and the copies picture_make adds for the read-back, at the picture's size. Without it the
+   adapter is not available here. The staging buffer must hold the frame's uploads and the read-back. */
+static int output_supported(const Inputs* in, VkImageUsageFlags usage) {
+    const VkImageUsageFlags all = usage | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    VkImageFormatProperties has;
+    const VkResult r = vkGetPhysicalDeviceImageFormatProperties(g.physical, g.output_format, VK_IMAGE_TYPE_2D,
+                                                                VK_IMAGE_TILING_OPTIMAL, all, 0, &has);
+    if (r != VK_SUCCESS || has.maxExtent.width < (u32)in->ow || has.maxExtent.height < (u32)in->oh) {
+        LOG(ST "the adapter is not available on this device: the output's format, Vulkan format %d, is not there "
+               "for the uses %x together at %dx%d (result %d)\n", (int)g.output_format, (unsigned)all, in->ow, in->oh,
+            (int)r);
+        return 0;
+    }
+    if (!selftest_staging_fits(g.staging_size, in->w, in->h, in->ow, in->oh)) {
+        LOG(ST "the staging buffer of %llu bytes does not hold a frame of %dx%d and an output of %dx%d\n",
+            (unsigned long long)g.staging_size, in->w, in->h, in->ow, in->oh);
+        return 0;
+    }
+    return 1;
+}
+
+/* the session's pictures for these inputs' sizes, in place of the ones it had */
+static int pictures_make(Session* s, const Inputs* in, const SnxUpscalerTraits* traits) {
+    const u32 rw = (u32)(in->whole ? in->w : in->rw), rh = (u32)(in->whole ? in->h : in->rh);
+    if (stopped() || !idle()) return 0; /* no pictures are made after the run stopped */
+    pictures_free(s);
+    if (!picture_make(&s->colour, VK_FORMAT_B10G11R11_UFLOAT_PACK32, rw, rh, traits->colour_usage) ||
+        !picture_make(&s->depth, VK_FORMAT_D24_UNORM_S8_UINT, rw, rh, traits->depth_usage) ||
+        !picture_make(&s->motion, g.motion_format, rw, rh, traits->motion_usage) ||
+        !output_supported(in, traits->output_usage) ||
+        !picture_make(&s->output, g.output_format, (u32)in->ow, (u32)in->oh, traits->output_usage))
+        return 0;
+    if (in->whole || (in->w == in->rw && in->h == in->rh)) return 1;
+    return picture_make(&s->wide_colour, VK_FORMAT_B10G11R11_UFLOAT_PACK32, (u32)in->w, (u32)in->h, 0) &&
+           picture_make(&s->wide_depth, VK_FORMAT_D24_UNORM_S8_UINT, (u32)in->w, (u32)in->h, 0) &&
+           picture_make(&s->wide_motion, g.motion_format, (u32)in->w, (u32)in->h, 0);
+}
+
+static int session_open(Session* s, const Inputs* in, const SnxUpscalerTraits* traits) {
+    memset(s, 0, sizeof *s);
+    return pictures_make(s, in, traits);
+}
+
+/* Once the device's state is not known a session frees nothing: the device may still be using it all. What the
+   session showed of its contexts is kept for the case that ran it. */
+/* A context ends here, once, only while no command buffer is being recorded: its work has completed or was
+   discarded. Anything else is a FAIL, and nothing of it is called. */
+static void context_destroy(SnxUpscaler* context) {
+    if (g.recording) {
+        LOG(ST "FAIL: a context was to be destroyed while a command buffer is recorded: it is kept\n");
+        g.ended_wrong = 1;
+        return;
+    }
+    if (!selftest_live_take(&g.live, context)) {
+        LOG(ST "FAIL: a context was to be destroyed that is not live (ended already, or never handed out)\n");
+        g.ended_wrong = 1;
+        return;
+    }
+    g.api->destroy(context);
+    g.contexts--;
+}
+static void session_close(Session* s) {
+    g.proof = s->proof;
+    if (!idle()) return;
+    if (s->live) context_destroy(s->live);
+    if (s->pending) context_destroy(s->pending);
+    pictures_free(s);
+    memset(s, 0, sizeof *s);
+}
+
+/* R1 in the self-test: the adapter's prepare between two waits for the device (idle(), which marks the device's
+   state unknown when it fails), outside any command buffer of ours: the library submits on its own */
+static u32 messages_now(void);
+static int selftest_idle(void* user) {
+    (void)user;
+    return idle();
+}
+static int selftest_init(void* user) { return g.api->prepare((SnxUpscaler*)user, VK_NULL_HANDLE) == SNX_UPSCALER_OK; }
+
+/* The context for a configuration, by the states the runtime will keep (temporal_upscaler_*): created, prepared into
+   a command buffer that is submitted and has completed, and only then published. 1 when the frame may be
+   evaluated on s->live. A context is freed only when its command buffer was discarded or has completed. When
+   that is not known (g.unknown) nothing is freed and nothing more is done on the device. */
+static int context_ready(Session* s, const Inputs* in, const TemporalUpscalerConfig* config, u32 flags,
+                         SnxUpscalerTraits* traits) {
+    if (stopped()) return 0;
+    if (temporal_upscaler_ready(&s->contexts, config)) return 1;
+    if (!temporal_upscaler_must_create(&s->contexts, config)) return 0;
+    const u32 iw = (u32)(in->whole ? in->w : in->rw), ih = (u32)(in->whole ? in->h : in->rh);
+    const SnxUpscalerCreate make = {.sizes = {(u32)in->rw, (u32)in->rh, iw, ih, (u32)in->ow, (u32)in->oh},
+                                    .instance = g.instance,
+                                    .physical_device = g.physical,
+                                    .device = g.device,
+                                    .instance_lookup = vkGetInstanceProcAddr,
+                                    .device_lookup = vkGetDeviceProcAddr,
+                                    .queue = g.queue,
+                                    .queue_family = g.family,
+                                    .flags = flags,
+                                    .colour_format = VK_FORMAT_B10G11R11_UFLOAT_PACK32,
+                                    .depth_format = VK_FORMAT_D24_UNORM_S8_UINT,
+                                    .motion_format = g.motion_format,
+                                    .output_format = g.output_format,
+                                    .folder = "."};
+    /* An adapter that submits on its own is refused, and so is one that needs a usage the pictures were not made
+       with: inputs sampled, the output sampled and storage, all of them copy sources and destinations. */
+    const VkImageUsageFlags copies = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    const VkImageUsageFlags inputs = VK_IMAGE_USAGE_SAMPLED_BIT | copies, output = inputs | VK_IMAGE_USAGE_STORAGE_BIT;
+    const u64 asked = plat_ns(); /* D3-4, log only (research 22:40): what a context costs to make */
+    int made = g.api->create(&make, traits, &s->pending) == SNX_UPSCALER_OK && s->pending && !traits->submits_itself;
+    const u64 created = plat_ns();
+    u64 recorded = created;
+    if (s->pending) { /* destroyed below whenever it is not taken */
+        g.contexts++;
+        if (!selftest_live_add(&g.live, s->pending)) {
+            LOG(ST "FAIL: a context handed out could not be kept on the list of live ones (full, or handed out "
+                   "twice)\n");
+            g.ended_wrong = 1;
+        }
+    }
+    if (made && ((traits->colour_usage | traits->depth_usage | traits->motion_usage) & ~inputs ||
+                 traits->output_usage & ~output)) {
+        LOG(ST "the adapter needs image usages the self-test's pictures do not have (%x %x %x %x)\n",
+            traits->colour_usage, traits->depth_usage, traits->motion_usage, traits->output_usage);
+        made = 0;
+    }
+    /* Three ends. Nothing was submitted and the command buffer's reset succeeded: what it held is discarded. It
+       was submitted and has completed. Or its end is not known: then the context is held and nothing is freed. */
+    int prepared = 0, submitted = 0;
+    if (made && traits->submits_at_init) { /* R1: nothing of ours is recorded or submitted for it */
+        const u32 before = messages_now();
+        const SnxInitSteps steps = {selftest_idle, selftest_init, s->pending};
+        const int outcome = snx_init_protocol(&steps);
+        recorded = plat_ns();
+        prepared = submitted = outcome == SNX_INIT_READY;
+        LOG(ST "the adapter's prepare, which submits work of its own, between two waits for the device: %s, %u "
+               "validation messages during it\n", snx_init_text(outcome), messages_now() - before);
+    } else if (made && begin()) {
+        prepared = g.api->prepare(s->pending, g.cb) == SNX_UPSCALER_OK;
+        recorded = plat_ns();
+        if (prepared) submitted = submit();
+        else discard();
+    }
+    if (prepared && submitted == 1)
+        LOG(ST "a context for %dx%d to %dx%d made, logged only: its create %.3f ms, its preparation recorded %.3f ms, "
+               "submitted and completed %.3f ms, %.3f ms in all\n", in->rw, in->rh, in->ow, in->oh,
+            (double)(created - asked) / 1e6, (double)(recorded - created) / 1e6, (double)(plat_ns() - recorded) / 1e6,
+            (double)(plat_ns() - asked) / 1e6);
+    if (stopped()) return 0;
+    temporal_upscaler_created(&s->contexts, config, prepared && submitted == 1);
+    switch (temporal_upscaler_completed(&s->contexts, config)) {
+    case TEMPORAL_UPSCALER_RETIRE:
+        if (!idle()) return 0;
+        context_destroy(s->live);
+        /* fall through */
+    case TEMPORAL_UPSCALER_PUBLISHED:
+        s->live = s->pending;
+        s->pending = NULL;
+        selftest_proof_made(&s->proof, flags);
+        s->published++;
+        break;
+    default: /* a failed or stale one: its command buffer was discarded or has completed, so it may go */
+        if (s->pending) context_destroy(s->pending);
+        s->pending = NULL;
+        break;
+    }
+    return temporal_upscaler_ready(&s->contexts, config);
+}
+
+/* One frame of a run through the gate, the conversion, the check and the adapter. out gets the output picture as
+   three doubles a pixel when the frame was evaluated. 1: evaluated. 0: skipped, as a gated frame or one whose
+   context was not ready is. -1: a failure. */
+static int frame_run(Session* s, const Inputs* in, int i, const Variant* v, int cut, double* out) {
+    const size_t pixels = (size_t)in->w * in->h;
+    const int wide = !in->whole && (in->w != in->rw || in->h != in->rh);
+    const int x = (int)in->vp.x, y = (int)(in->vp.h < 0 ? in->vp.y + in->vp.h : in->vp.y);
+    SnxUpscalerTraits traits = {0};
+    TemporalRectState state = {0};
+    TemporalUpscalerFrame numbers;
+    float camera[4];
+    if (stopped()) return -1;
+    s->frame++;
+    /* what the renderer would know of the frame: its viewport, the images' size, the fraction of them in use */
+    state.viewport = (TemporalViewport){(float)in->vp.x, (float)in->vp.y, (float)in->vp.w, (float)in->vp.h};
+    state.target_w = in->w;
+    state.target_h = in->h;
+    state.fx = (float)in->rw / (float)in->w;
+    state.fy = (float)in->rh / (float)in->h;
+    if (!temporal_rect_from_viewport(&state.viewport, in->w, in->h, &state.rect)) return -1;
+    /* What a context is made with beside the sizes, as one number: the suite's generation, whether the inputs' far
+       plane is finite and the variant's create properties. It is the configuration's generation, and part of what
+       a history was made from: a context of another making has no history, so its first frame has the reset. */
+    const int far_infinite = isinf(in->form.far_plane) != 0;
+    const u64 making = g.generation * 8 + (u64)(far_infinite ? 0 : 4) + (u64)(v->depth_reversed ? 2 : 0) +
+                       (u64)(v->ldr ? 1 : 0);
+    const TemporalRectStamp stamp = {1, making, in->w, in->h, in->ow, in->oh, state.rect, state.fx, state.fy};
+    /* the scene block as the first scene draw's fragment program would read it */
+    const TemporalSceneBlock block = {1, 1, state.fx, state.fy};
+    const double jitter[2] = {in->scene[i].jitter[0], in->scene[i].jitter[1]};
+    int given;
+    if (in->ungated) {
+        /* The game's gate takes only shapes the game makes. A rectangle elsewhere in images of other proportions
+           is for the conversion and the adapter alone, so it goes straight to them. The first frame is left out
+           and a frame after one that was not evaluated has the reset, as in a run through the gate. */
+        given = s->frame > 1 && temporal_upscaler_numbers(&stamp, &state.viewport, jitter,
+                                                          cut || s->wrote + 1 != s->frame, &numbers);
+    } else {
+        temporal_rect_decide(&s->gate, s->frame, &state, 0);
+        temporal_rect_confirm(&s->gate, s->frame, NULL, &block);
+        temporal_rect_hooked(&s->gate, s->frame); /* the passes are reached in every frame of a run */
+        given = temporal_upscaler_frame(&s->gate, s->frame, &stamp, &state.viewport, jitter, cut, &numbers);
+    }
+    if (!given || !temporal_upscaler_camera(in->form.near_plane, in->form.far_plane, FOV_Y, FRAME_SECONDS,
+                                            far_infinite, camera)) {
+        s->skipped++;
+        return 0;
+    }
+    const u32 flags = (v->ldr ? 0 : SNX_UPSCALER_COLOUR_LINEAR_HDR) | SNX_UPSCALER_VECTORS_UNJITTERED |
+                      SNX_UPSCALER_EXPOSURE_AUTOMATIC | (far_infinite ? SNX_UPSCALER_FAR_PLANE_INFINITE : 0) |
+                      (v->depth_reversed ? SNX_UPSCALER_DEPTH_REVERSED : 0);
+    const TemporalUpscalerConfig config = {in->w, in->h, in->rw, in->rh, in->ow, in->oh, making};
+    if (!context_ready(s, in, &config, flags, &traits)) {
+        s->skipped++;
+        return s->contexts.pending || s->live ? 0 : -1;
+    }
+    /* The one place for it, for a run through the gate and for one without: a context that has come into use
+       since the last evaluate has the reset on its first, whatever the frame's own history says. */
+    numbers.reset = temporal_upscaler_reset(numbers.reset, s->published, &s->evaluated_with);
+    /* the frame's three images, frozen, into the pictures the adapter reads */
+    memcpy(g.staging_bytes, in->colour + (size_t)i * pixels, pixels * 4);
+    memcpy(g.staging_bytes + pixels * 4, in->depth + (size_t)i * pixels, pixels * 4);
+    /* the vectors as the image's format takes them: four halves a texel, or two for a two-channel image */
+    selftest_motion_pack((u16*)(void*)(g.staging_bytes + pixels * 8), in->motion + (size_t)i * pixels * 4, pixels,
+                         g.motion_format == VK_FORMAT_R16G16_SFLOAT);
+    if (!begin()) return -1;
+    if (wide) {
+        upload(&s->wide_colour, 0, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+        upload(&s->wide_depth, pixels * 4, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+        upload(&s->wide_motion, pixels * 8, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+        crop(&s->wide_colour, &s->colour, x, y);
+        crop(&s->wide_depth, &s->depth, x, y);
+        crop(&s->wide_motion, &s->motion, x, y);
+    } else {
+        upload(&s->colour, 0, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        upload(&s->depth, pixels * 4, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        upload(&s->motion, pixels * 8, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    }
+    layout(&s->output, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+    const SnxUpscalerFrame frame = {
+        .cb = g.cb,
+        .colour = {s->colour.image, s->colour.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, s->colour.format,
+                   s->colour.w, s->colour.h},
+        .depth = {s->depth.image, s->depth.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, s->depth.format,
+                  s->depth.w, s->depth.h},
+        .motion = {s->motion.image, s->motion.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, s->motion.format,
+                   s->motion.w, s->motion.h},
+        .output = {s->output.image, s->output.view, VK_IMAGE_LAYOUT_GENERAL, s->output.format, s->output.w,
+                   s->output.h},
+        .render_x = 0,
+        .render_y = 0,
+        .render_w = (u32)in->rw,
+        .render_h = (u32)in->rh,
+        /* the conversion's numbers, with the variant's signs: the configured variant hands them on as they are */
+        .jitter = {(float)(numbers.jitter[0] * v->jitter_x), (float)(numbers.jitter[1] * v->jitter_y)},
+        .vector_scale = {(float)(numbers.vector_scale[0] * v->vector_x),
+                         (float)(numbers.vector_scale[1] * v->vector_y)},
+        .reset = (u32)numbers.reset,
+        /* the camera's numbers exactly as the check passed them */
+        .frame_seconds = camera[3],
+        .near_plane = camera[0],
+        .far_plane = camera[1],
+        .fov_y = camera[2],
+        .trace = (u32)v->trace};
+    /* what this frame hands over, kept for the matched pair: marked as done only when the frame has succeeded */
+    SelftestHanded handed = {{frame.jitter[0], frame.jitter[1], frame.vector_scale[0], frame.vector_scale[1],
+                              frame.frame_seconds, frame.near_plane, frame.far_plane, frame.fov_y},
+                             {(u32)frame.render_x, (u32)frame.render_y, frame.render_w, frame.render_h, frame.reset,
+                              flags, (u32)config.target_w, (u32)config.target_h, (u32)config.render_w,
+                              (u32)config.render_h, (u32)config.out_w, (u32)config.out_h,
+                              frame.colour.w, frame.colour.h, (u32)frame.colour.format, (u32)frame.colour.layout,
+                              frame.depth.w, frame.depth.h, (u32)frame.depth.format, (u32)frame.depth.layout,
+                              frame.motion.w, frame.motion.h, (u32)frame.motion.format, (u32)frame.motion.layout,
+                              frame.output.w, frame.output.h, (u32)frame.output.format, (u32)frame.output.layout},
+                             0};
+    /* log only: this frame's inputs as they are handed over, beside the adapter's own line of its dispatch */
+    if (v->trace)
+        LOG(ST "handed over, frame %d of the inputs: clip offset %.9g %.9g, jitter %.9g %.9g px (the variant's "
+               "factors %g %g), vector scale %.9g %.9g, rectangle %ux%u at %d,%d, reset %u, frame %.9g s, near "
+               "%.9g, far %.9g, fov %.9g, context flags 0x%x. Images as width x height, format, layout: colour "
+               "%ux%u %d %d, depth %ux%u %d %d, vectors %ux%u %d %d, output %ux%u %d %d\n",
+            i, in->scene[i].jitter[0], in->scene[i].jitter[1], (double)frame.jitter[0], (double)frame.jitter[1],
+            v->jitter_x, v->jitter_y, (double)frame.vector_scale[0], (double)frame.vector_scale[1], frame.render_w,
+            frame.render_h, frame.render_x, frame.render_y, frame.reset, (double)frame.frame_seconds,
+            (double)frame.near_plane, (double)frame.far_plane, (double)frame.fov_y, flags, frame.colour.w,
+            frame.colour.h, (int)frame.colour.format, (int)frame.colour.layout, frame.depth.w, frame.depth.h,
+            (int)frame.depth.format, (int)frame.depth.layout, frame.motion.w, frame.motion.h,
+            (int)frame.motion.format, (int)frame.motion.layout, frame.output.w, frame.output.h,
+            (int)frame.output.format, (int)frame.output.layout);
+    const int answer = g.api->evaluate(s->live, &frame), evaluated = answer == SNX_UPSCALER_OK;
+    /* nothing of a command buffer in an unknown state is submitted, and nothing more is done on the device */
+    /* Revision 4: the buffer is never submitted, and is reset by a checked call before anything it refers to is
+       released. The reset done: no more is recorded and no case runs, and the teardown goes on. Not done: unknown. */
+    if (answer == SNX_UPSCALER_UNKNOWN) {
+        if (discard()) {
+            stop_noted();
+            g.halted = 1;
+            LOG(ST "FAIL: the adapter's evaluate answered UNKNOWN: its command buffer was not submitted and was reset "
+                   "(the reset succeeded), nothing more is recorded and the cases left are not run\n");
+        }
+        return -1;
+    }
+    /* whatever the adapter left bound or pending: the output is taken over for the copy with a full barrier */
+    const VkBufferImageCopy region = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                                      .imageExtent = {(u32)in->ow, (u32)in->oh, 1}};
+    layout(&s->output, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    settle(); /* the staging buffer was read by the uploads and is written now */
+    vkCmdCopyImageToBuffer(g.cb, s->output.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, g.staging, 1, &region);
+    /* the copy's writes are made available to the host, which reads the buffer when the submission has completed */
+    const VkBufferMemoryBarrier read = {.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+                                        .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                                        .dstAccessMask = VK_ACCESS_HOST_READ_BIT,
+                                        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                        .buffer = g.staging,
+                                        .size = VK_WHOLE_SIZE};
+    vkCmdPipelineBarrier(g.cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, NULL, 1, &read, 0,
+                         NULL);
+    const int done = submit();
+    if (temporal_upscaler_failed(&s->failures, evaluated && done == 1))
+        LOG(ST "the adapter failed eight times in a row\n");
+    if (!evaluated || done != 1) return -1;
+    if (g.record && i < g.record_n) {
+        handed.done = 1;
+        g.record[i] = handed;
+    }
+    if (in->ungated)
+        s->wrote = s->frame;
+    else
+        temporal_rect_wrote(&s->gate, s->frame, &stamp);
+    s->evaluated++;
+    selftest_proof_frame(&s->proof, frame.reset, frame.far_plane,
+                         selftest_checksum(in->depth + (size_t)i * pixels, pixels * 4, SELFTEST_CHECKSUM_START));
+    /* red, green and blue of the output's format (16 bytes a pixel, or 4 packed), one not finite ends the run */
+    for (size_t p = 0; p < (size_t)in->ow * in->oh; p++) {
+        double rgb[3];
+        selftest_output_pixel(g.staging_bytes, p, g.output_format == VK_FORMAT_B10G11R11_UFLOAT_PACK32, rgb);
+        for (int c = 0; c < 3; c++) {
+            if (!isfinite(rgb[c])) return -1;
+            out[3 * p + c] = rgb[c];
+        }
+    }
+    return 1;
+}
+
+/* the mean absolute difference of two pictures over the pixels of one region, per channel of a range of 1. -1 when
+   the region has no pixel. */
+static double difference(const Inputs* in, const double* a, const double* b, const u8* regions, int region) {
+    double sum = 0.0;
+    size_t n = 0;
+    for (size_t p = 0; p < (size_t)in->ow * in->oh; p++) {
+        if (regions[p] != region) continue;
+        for (int c = 0; c < 3; c++) sum += fabs(a[3 * p + c] - b[3 * p + c]);
+        n += 3;
+    }
+    return n ? sum / (double)n : -1.0;
+}
+
+/* For the log alone: a picture's error against the true one by region (the background, inside the patch, the
+   band the patch left) and in each by channel. A region without pixels is left out. */
+static void errors_log(const char* name, const Inputs* in, const double* picture, const double* reference,
+                       const u8* regions) {
+    static const char* const names[3] = {"background", "patch", "band the patch left"};
+    static const int which[3] = {SELFTEST_BACKGROUND, SELFTEST_INSIDE, SELFTEST_UNCOVERED};
+    char line[320];
+    size_t at = 0;
+    line[0] = 0;
+    for (int r = 0; r < 3; r++) {
+        double sum[3] = {0.0, 0.0, 0.0};
+        size_t n = 0;
+        for (size_t p = 0; p < (size_t)in->ow * in->oh; p++) {
+            if (regions[p] != which[r]) continue;
+            for (int c = 0; c < 3; c++) sum[c] += fabs(picture[3 * p + c] - reference[3 * p + c]);
+            n++;
+        }
+        if (n && at < sizeof line)
+            at += (size_t)snprintf(line + at, sizeof line - at, "%s%s (%zu pixels) r %.6f g %.6f b %.6f",
+                                   at ? ", " : "", names[r], n, sum[0] / (double)n, sum[1] / (double)n,
+                                   sum[2] / (double)n);
+    }
+    SAY(ST "%s, logged only, error by region and channel: %s\n", name, line);
+}
+
+/* the true picture of the run's last frame at the output's size, and each pixel's region */
+static void truth(const Inputs* in, int up, double* reference, u8* regions) {
+    const int W = in->ow, H = in->oh;
+    const SelftestViewport out = {0, up ? H : 0, W, up ? -H : H};
+    const SelftestFrame* f = &in->scene[in->frames - 1];
+    for (int y = 0; y < H; y++)
+        for (int x = 0; x < W; x++) {
+            selftest_reference(f, &out, x, y, SAMPLES, &reference[3 * ((size_t)y * W + x)]);
+            regions[(size_t)y * W + x] = (u8)selftest_region(f, &out, W, H, x, y);
+        }
+}
+
+/* The band a patch left in frame i of a run, in an output picture: the error against the true picture summed over
+   its pixels and channels, and the pixels counted. */
+typedef struct {
+    int up;
+    double sum;
+    size_t pixels;
+} Band;
+static void band_add(Band* band, const Inputs* in, int i, const double* output) {
+    const int W = in->ow, H = in->oh;
+    const SelftestViewport out = {0, band->up ? H : 0, W, band->up ? -H : H};
+    for (int y = 0; y < H; y++)
+        for (int x = 0; x < W; x++) {
+            double reference[3];
+            if (selftest_region(&in->scene[i], &out, W, H, x, y) != SELFTEST_UNCOVERED) continue;
+            selftest_reference(&in->scene[i], &out, x, y, SAMPLES, reference);
+            for (int c = 0; c < 3; c++) band->sum += fabs(output[3 * ((size_t)y * W + x) + c] - reference[c]);
+            band->pixels++;
+        }
+}
+
+/* One run of every frame with one variant, on a session of its own. last gets the last output. first_change and
+   last_change, when asked for, get the mean change between consecutive outputs over the first and the last cycle
+   of offsets. band, when given, takes every evaluated frame after the first cycle. 1 when every frame after the
+   gate's first was evaluated. */
+static int run(const Inputs* in, const Variant* v, int use_cut, double* last, double* first_change,
+               double* last_change, const u8* regions, Band* band) {
+    Session s;
+    SnxUpscalerTraits traits = {.colour_usage = VK_IMAGE_USAGE_SAMPLED_BIT,
+                                .depth_usage = VK_IMAGE_USAGE_SAMPLED_BIT,
+                                .motion_usage = VK_IMAGE_USAGE_SAMPLED_BIT,
+                                .output_usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                                                VK_IMAGE_USAGE_TRANSFER_DST_BIT};
+    const size_t size = sizeof(double) * 3 * (size_t)in->ow * in->oh;
+    double* previous = malloc(size);
+    SelftestSettling settling = {{0.0, 0.0}, {0, 0}};
+    memset(&s, 0, sizeof s);
+    int ok = !stopped() && previous && session_open(&s, in, &traits), evaluated = 0;
+    for (int i = 0; ok && i < in->frames; i++) {
+        const int r = frame_run(&s, in, i, v, use_cut && i == in->cut_at, last);
+        if (r < 0) ok = 0;
+        if (r <= 0) continue;
+        if (evaluated && regions) {
+            const double change = difference(in, last, previous, regions, SELFTEST_BACKGROUND);
+            selftest_change(&settling, evaluated, in->offsets, change);
+        }
+        memcpy(previous, last, size);
+        evaluated++;
+        if (band && evaluated > in->offsets) band_add(band, in, i, last);
+    }
+    if (ok && evaluated != in->frames - 1) {
+        SAY(ST "a run evaluated %d of %d frames (%u skipped)\n", evaluated, in->frames - 1, s.skipped);
+        ok = 0;
+    }
+    if (first_change) *first_change = selftest_cycle(&settling, 0);
+    if (last_change) *last_change = selftest_cycle(&settling, 1);
+    session_close(&s);
+    free(previous);
+    return ok;
+}
+
+/* one frame of the inputs scaled up plainly, with two-by-two linear filtering and no knowledge of the jitter: what
+   an upscaler has to beat */
+static void plain(const Inputs* in, int i, int up, double* out) {
+    const int W = in->ow, H = in->oh;
+    const SelftestViewport to = {0, up ? H : 0, W, up ? -H : H};
+    const u32* colour = in->colour + (size_t)i * in->w * in->h;
+    for (int y = 0; y < H; y++)
+        for (int x = 0; x < W; x++) {
+            double n[2], at[2], sum[3] = {0, 0, 0};
+            selftest_ndc(&to, x + 0.5, y + 0.5, n);
+            selftest_place(&in->vp, n, at);
+            const double fx = at[0] - 0.5, fy = at[1] - 0.5;
+            const int x0 = (int)floor(fx), y0 = (int)floor(fy);
+            for (int j = 0; j < 2; j++)
+                for (int k = 0; k < 2; k++) {
+                    const int sx = x0 + k < 0 ? 0 : x0 + k >= in->w ? in->w - 1 : x0 + k;
+                    const int sy = y0 + j < 0 ? 0 : y0 + j >= in->h ? in->h - 1 : y0 + j;
+                    const double weight = (k ? fx - x0 : 1.0 - (fx - x0)) * (j ? fy - y0 : 1.0 - (fy - y0));
+                    double rgb[3];
+                    selftest_b10g11r11_value(colour[(size_t)sy * in->w + sx], rgb);
+                    for (int c = 0; c < 3; c++) sum[c] += weight * rgb[c];
+                }
+            memcpy(&out[3 * ((size_t)y * W + x)], sum, sizeof sum);
+        }
+}
+
+static const char* verdict_name(int verdict) {
+    return verdict == SELFTEST_PASS ? "PASS" : verdict == SELFTEST_BLIND ? "FAIL (the case cannot tell its variants "
+                                                                           "apart)"
+                                                                         : "FAIL";
+}
+
+/* A sign case: the same frozen inputs run once per combination of the signs in mask (bit 0 jitter x, 1 jitter y,
+   2 vector x, 3 vector y), judged in one region against the reference. 1 for a pass. */
+static int signs(const char* name, const Inputs* in, unsigned mask, int region, const double* reference,
+                 const u8* regions, double* output, int judge) {
+    double errors[16];
+    int needs[16];
+    int n = 0, own = -1, ran = 1;
+    if (skip_rest()) return 1;
+    step(name);
+    for (unsigned combo = 0; combo < 16 && ran; combo++) {
+        if (combo & ~mask) continue;
+        const Variant v = {combo & 1 ? -1 : 1, combo & 2 ? -1 : 1, combo & 4 ? -1 : 1, combo & 8 ? -1 : 1, 1};
+        ran = run(in, &v, 0, output, NULL, NULL, NULL, NULL);
+        errors[n] = ran ? difference(in, output, reference, regions, region) : NAN;
+        SAY(ST "%s: jitter %c%c vector %c%c error %.6f%s\n", name, v.jitter_x < 0 ? '-' : '+',
+            v.jitter_y < 0 ? '-' : '+', v.vector_x < 0 ? '-' : '+', v.vector_y < 0 ? '-' : '+', errors[n],
+            combo ? "" : " (configured)");
+        if (ran) {
+            char variant[96];
+            snprintf(variant, sizeof variant, "%s: jitter %c%c vector %c%c", name, v.jitter_x < 0 ? '-' : '+',
+                     v.jitter_y < 0 ? '-' : '+', v.vector_x < 0 ? '-' : '+', v.vector_y < 0 ? '-' : '+');
+            errors_log(variant, in, output, reference, regions);
+        }
+        if (!combo) own = n;
+        needs[n] = combo && !(combo & 3); /* turns vector signs and leaves the jitter's as configured */
+        n++;
+    }
+    /* A case that turns the jitter's signs asks only that the configured ones are strictly the lowest, and the
+       margin of the variants that turn vector signs alone: the jitter's margin is the edge case's. A case of
+       vector signs alone asks the margin of every variant, as it did. */
+    const int jitter_too = (mask & 3) != 0;
+    if (!judge) { /* logged, nothing chosen (DLSS in DL1: the jitter's sign against NGX's is not documented) */
+        SAY(ST "%s: %d variants logged, no verdict and nothing chosen%s\n", name, n,
+            ran ? "" : ": a run could not be made");
+        return ran;
+    }
+    const int verdict = !ran         ? SELFTEST_FAIL
+                        : jitter_too ? selftest_signs(errors, needs, n, own, SELFTEST_MARGIN)
+                                     : selftest_verdict(errors, n, own, SELFTEST_MARGIN);
+    if (jitter_too)
+        SAY(ST "%s: %d variants, the configured one strictly the lowest, and %.2f times it at least for those "
+               "that turn vector signs only: %s\n", name, n, SELFTEST_MARGIN, verdict_name(verdict));
+    else SAY(ST "%s: %d variants, margin %.2f: %s\n", name, n, SELFTEST_MARGIN, verdict_name(verdict));
+    return verdict == SELFTEST_PASS;
+}
+
+/* 1 when a case is not run because the run stopped (one line for all of them, skipped), else the case is named */
+static int not_run(const char* name, int up) {
+    char named[160];
+    snprintf(named, sizeof named, "%s %s", name, up ? "up" : "down");
+    step(named);
+    return skip_rest();
+}
+
+/* XeSS (XESS-DESIGN.md): case 2's sixteen combinations of the jitter's and the vectors' signs on an unequal
+   translation, at the suite's 320x180 for 480x270, logged and nothing chosen, as DLSS's jitter signs are. Only a
+   run that cannot be made fails. */
+static int vector_signs(int up) {
+    const size_t pixels = (size_t)OUT_W * OUT_H, size = sizeof(double) * 3 * pixels;
+    const double pan[2] = {1.3, 0.7};
+    double *reference = malloc(size), *output = malloc(size);
+    u8* regions = malloc(pixels);
+    Inputs in;
+    char name[64];
+    memset(&in, 0, sizeof in);
+    int ok = reference && output && regions;
+    if (ok && !not_run("case 2", up) && inputs_make(&in, SIZES, RENDER_W, RENDER_H, 0, 0, up, pan, 0, 0)) {
+        truth(&in, up, reference, regions);
+        snprintf(name, sizeof name, "case 2 %s all signs, logged only", up ? "up" : "down");
+        ok = signs(name, &in, 15, SELFTEST_BACKGROUND, reference, regions, output, 0);
+    } else if (!skip_rest()) {
+        SAY(ST "case 2 %s for %s: could not be made: FAIL\n", up ? "up" : "down", g.name);
+        ok = 0;
+    }
+    inputs_free(&in);
+    free(reference);
+    free(output);
+    free(regions);
+    return ok;
+}
+
+/* the whole suite for one sign of the viewport's height: 1 when every case passed */
+static int suite(int up) {
+    const size_t pixels = (size_t)OUT_W * OUT_H, size = sizeof(double) * 3 * pixels;
+    const double still[2] = {0.0, 0.0}, pan[2] = {1.3, 0.7};
+    double *reference = malloc(size), *output = malloc(size), *other = malloc(size);
+    u8* regions = malloc(pixels);
+    Inputs in;
+    int pass = 1, ok;
+    char name[64];
+    if (!reference || !output || !other || !regions) return 0;
+    SAY(ST "suite with a viewport height of %s: render %dx%d, output %dx%d, %d offsets, %d frames a run\n",
+        up ? "minus the image's (y up)" : "plus the image's (y down)", RENDER_W, RENDER_H, OUT_W, OUT_H, OFFSETS,
+        FRAMES);
+
+    /* Case 1: jitter alone over a still pattern. The jitter's signs, the plain scale, and settling. */
+    memset(&in, 0, sizeof in);
+    ok = !not_run("case 1", up) && inputs_make(&in, SIZES, RENDER_W, RENDER_H, 0, 0, up, still, 0, 0);
+    if (ok) {
+        double first = 0, last = 0;
+        truth(&in, up, reference, regions);
+        snprintf(name, sizeof name, "case 1 %s jitter signs", up ? "up" : "down");
+        ok = signs(name, &in, 3, SELFTEST_BACKGROUND, reference, regions, output, 1);
+        const int ran = run(&in, &CONFIGURED, 0, output, &first, &last, regions, NULL);
+        const double error = ran ? difference(&in, output, reference, regions, SELFTEST_BACKGROUND) : NAN;
+        plain(&in, in.frames - 1, up, other);
+        const double scaled = difference(&in, other, reference, regions, SELFTEST_BACKGROUND);
+        const int beats = ran && selftest_beats(error, scaled, SELFTEST_MARGIN);
+        const int settles = selftest_settles(first, last);
+        SAY(ST "case 1 %s: error %.6f against one frame scaled plainly %.6f: %s\n", up ? "up" : "down", error, scaled,
+            beats ? "PASS" : "FAIL");
+        SAY(ST "case 1 %s: change a frame over the first cycle %.6f, over the last %.6f: %s\n", up ? "up" : "down",
+            first, last, settles ? "PASS" : "FAIL");
+        ok = ok && beats && settles;
+    }
+    pass &= (ok) || skip_rest();
+    inputs_free(&in);
+
+    /* Case 2: a translation that is unequal in both axes. All sixteen combinations of the four signs. */
+    memset(&in, 0, sizeof in);
+    ok = !not_run("case 2", up) && inputs_make(&in, SIZES, RENDER_W, RENDER_H, 0, 0, up, pan, 0, 0);
+    if (ok) {
+        truth(&in, up, reference, regions);
+        snprintf(name, sizeof name, "case 2 %s all signs", up ? "up" : "down");
+        ok = signs(name, &in, 15, SELFTEST_BACKGROUND, reference, regions, output, 1);
+    }
+    pass &= (ok) || skip_rest();
+    inputs_free(&in);
+
+    /* Case 3: a nearer patch that moves on its own over a still background. The vector's signs inside the patch,
+       and the depth convention in the band the patch left. */
+    memset(&in, 0, sizeof in);
+    ok = !not_run("case 3", up) && inputs_make(&in, SIZES, RENDER_W, RENDER_H, 0, 0, up, still, 1, 0);
+    if (ok) {
+        const Variant flipped = {1, 1, 1, 1, 0};
+        truth(&in, up, reference, regions);
+        snprintf(name, sizeof name, "case 3 %s vector signs in the patch", up ? "up" : "down");
+        ok = signs(name, &in, 12, SELFTEST_INSIDE, reference, regions, output, 1);
+        /* the band the patch left, over every evaluated frame after the first cycle of offsets. Under BAND_LEAST
+           pixels it is too little to judge by, and the case fails as a test. */
+        Band own_band = {up, 0.0, 0}, wrong_band = {up, 0.0, 0};
+        const int ran = run(&in, &CONFIGURED, 0, output, NULL, NULL, NULL, &own_band) &&
+                        run(&in, &flipped, 0, other, NULL, NULL, NULL, &wrong_band);
+        const int enough = own_band.pixels >= BAND_LEAST && wrong_band.pixels == own_band.pixels;
+        const double own = ran && enough ? own_band.sum / (3.0 * (double)own_band.pixels) : NAN;
+        const double wrong = ran && enough ? wrong_band.sum / (3.0 * (double)wrong_band.pixels) : NAN;
+        const int beats = ran && enough && selftest_beats(own, wrong, SELFTEST_MARGIN);
+        SAY(ST "case 3 %s: the band the patch left, %zu pixels over %d frames (at least %d): error %.6f, with the "
+               "depth convention turned %.6f, background %.6f, patch %.6f: %s\n", up ? "up" : "down",
+            own_band.pixels, in.offsets, BAND_LEAST, own, wrong,
+            ran ? difference(&in, output, reference, regions, SELFTEST_BACKGROUND) : NAN,
+            ran ? difference(&in, output, reference, regions, SELFTEST_INSIDE) : NAN,
+            beats ? "PASS" : enough ? "FAIL" : "FAIL (too few pixels to judge by)");
+        ok = ok && beats;
+    }
+    pass &= (ok) || skip_rest();
+    inputs_free(&in);
+
+    /* Case 5: a new pattern with the reset flag. The output of that frame against a context that never saw the old
+       pattern, and the same without the flag as the control of the test itself. */
+    memset(&in, 0, sizeof in);
+    ok = !not_run("case 5", up) && inputs_make(&in, SIZES, RENDER_W, RENDER_H, 0, 0, up, still, 0, 1);
+    if (ok) {
+        Inputs fresh = in;
+        const int with = run(&in, &CONFIGURED, 1, output, NULL, NULL, NULL, NULL);
+        double* without = malloc(size);
+        const int control = without && run(&in, &CONFIGURED, 0, without, NULL, NULL, NULL, NULL);
+        /* the fresh context: the gate's first frame, then the frame of the cut alone */
+        const size_t skip = (size_t)in.frames - 2;
+        fresh.scene += skip;
+        fresh.colour += skip * in.w * in.h;
+        fresh.depth += skip * in.w * in.h;
+        fresh.motion += skip * in.w * in.h * 4;
+        fresh.frames = 2;
+        fresh.cut_at = -1;
+        memset(regions, SELFTEST_BACKGROUND, pixels);
+        const int alone = run(&fresh, &CONFIGURED, 0, other, NULL, NULL, NULL, NULL);
+        const double same = with && alone ? difference(&in, output, other, regions, SELFTEST_BACKGROUND) : NAN;
+        const double apart = control && alone ? difference(&in, without, other, regions, SELFTEST_BACKGROUND) : NAN;
+        SAY(ST "case 5 %s: the reset frame against a fresh context %.6f (at most %.2f): %s. Without the flag %.6f "
+               "(at least %.2f, the test's own control): %s\n", up ? "up" : "down", same, SELFTEST_SAME,
+            selftest_same(same) ? "PASS" : "FAIL", apart, SELFTEST_APART,
+            selftest_apart(apart) ? "PASS" : "FAIL (the control saw nothing)");
+        ok = selftest_same(same) && selftest_apart(apart);
+        free(without);
+    }
+    pass &= (ok) || skip_rest();
+    inputs_free(&in);
+
+    /* Case 6: the same content at a place that is not the first texel of larger images of other proportions, with
+       padding that is none of the scene's, against the content at the first texel of images of its own size. */
+    memset(&in, 0, sizeof in);
+    ok = !not_run("case 6", up) && inputs_make(&in, SIZES, 400, 240, 40, 30, up, pan, 0, 0);
+    if (ok) {
+        Inputs tight;
+        /* 320x180 at 40,30 of 400x240 is no shape of the game's, whose gate would refuse it every frame */
+        SAY(ST "case 6 %s: both runs are handed to the conversion and the adapter without the game's rectangle "
+               "gate\n", up ? "up" : "down");
+        in.ungated = 1;
+        ok = inputs_make(&tight, SIZES, RENDER_W, RENDER_H, 0, 0, up, pan, 0, 0);
+        tight.ungated = 1;
+        ok = ok &&
+             run(&in, &CONFIGURED, 0, output, NULL, NULL, NULL, NULL) &&
+             run(&tight, &CONFIGURED, 0, other, NULL, NULL, NULL, NULL);
+        memset(regions, SELFTEST_BACKGROUND, pixels);
+        const double same = ok ? difference(&in, output, other, regions, SELFTEST_BACKGROUND) : NAN;
+        SAY(ST "case 6 %s: a rectangle at 40,30 of 400x240 images against the same at 0,0 of %dx%d: %.6f (at most "
+               "%.2f): %s\n", up ? "up" : "down", RENDER_W, RENDER_H, same, SELFTEST_SAME,
+            selftest_same(same) ? "PASS" : "FAIL");
+        ok = selftest_same(same);
+        inputs_free(&tight);
+    }
+    pass &= (ok) || skip_rest();
+    inputs_free(&in);
+
+    free(reference);
+    free(output);
+    free(other);
+    free(regions);
+    return pass;
+}
+
+/* Case 4: the sizes change in mid-run, on one session: 320x180 to 480x270, then 400x224 to 640x360, so the
+   adapter gets a context of other sizes. The frames until that one is ready are skipped. Then the still pattern
+   is measured as in case 1 against the new size's true picture: after twice the offsets the error must beat
+   one frame scaled plainly by the margin, and the output must have stopped changing. */
+static int resize(int up) {
+    static const int BIG[4] = {400, 224, 640, 360};
+    const size_t size = sizeof(double) * 3 * (size_t)BIG[2] * BIG[3];
+    const double still[2] = {0.0, 0.0};
+    SnxUpscalerTraits traits = {.colour_usage = VK_IMAGE_USAGE_SAMPLED_BIT,
+                                .depth_usage = VK_IMAGE_USAGE_SAMPLED_BIT,
+                                .motion_usage = VK_IMAGE_USAGE_SAMPLED_BIT,
+                                .output_usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                                                VK_IMAGE_USAGE_TRANSFER_DST_BIT};
+    Inputs small, big, wrong;
+    Session s;
+    double *output = malloc(size), *previous = malloc(size), *reference = malloc(size), *scaled = malloc(size);
+    double *fresh = malloc(size), *again = malloc(size), *control = malloc(size);
+    u8* regions = malloc((size_t)BIG[2] * BIG[3]);
+    SelftestSettling settling = {{0.0, 0.0}, {0, 0}};
+    int evaluated = 0;
+    /* everything starts empty, and only what was made is freed */
+    memset(&small, 0, sizeof small);
+    memset(&big, 0, sizeof big);
+    memset(&wrong, 0, sizeof wrong);
+    memset(&s, 0, sizeof s);
+    int ok = !not_run("case 4", up) && output && previous && reference && scaled && regions && fresh && again &&
+             control &&
+             inputs_make(&small, SIZES, RENDER_W, RENDER_H, 0, 0, up, still, 0, 0) &&
+             inputs_make(&big, BIG, BIG[0], BIG[1], 0, 0, up, still, 0, 0) && session_open(&s, &small, &traits);
+    for (int i = 0; ok && i < 12; i++) ok = frame_run(&s, &small, i, &CONFIGURED, 0, output) >= 0;
+    const unsigned before = ok ? s.evaluated : 0, skipped = ok ? s.skipped : 0;
+    /* the change: pictures of the new sizes, and the same session, gate and contexts */
+    ok = ok && pictures_make(&s, &big, &traits);
+    if (ok) truth(&big, up, reference, regions);
+    for (int i = 0; ok && i < big.frames; i++) {
+        const int r = frame_run(&s, &big, i, &CONFIGURED, 0, output);
+        if (r < 0) ok = 0;
+        if (r <= 0) continue;
+        if (evaluated)
+            selftest_change(&settling, evaluated, big.offsets,
+                            difference(&big, output, previous, regions, SELFTEST_BACKGROUND));
+        memcpy(previous, output, size);
+        evaluated++;
+    }
+    const unsigned skipped_at_change = ok ? s.skipped - skipped : 0;
+    const double first = selftest_cycle(&settling, 0), last = selftest_cycle(&settling, 1);
+    const double error = ok ? difference(&big, output, reference, regions, SELFTEST_BACKGROUND) : NAN;
+    if (ok) plain(&big, big.frames - 1, up, scaled);
+    const double plainly = ok ? difference(&big, scaled, reference, regions, SELFTEST_BACKGROUND) : NAN;
+    const int counted = ok && before == 11 && skipped_at_change >= 1 && evaluated == 2 * big.offsets &&
+                        s.published == 2;
+    const int beats = ok && selftest_beats(error, plainly, SELFTEST_MARGIN), settles = selftest_settles(first, last);
+    SAY(ST "case 4 %s: %u frames evaluated at %dx%d to %dx%d, %u skipped at the change, %d evaluated at %dx%d to "
+           "%dx%d, %u contexts made: %s\n", up ? "up" : "down", before, RENDER_W, RENDER_H, OUT_W, OUT_H,
+        skipped_at_change, evaluated, BIG[0], BIG[1], BIG[2], BIG[3], s.published, counted ? "PASS" : "FAIL");
+    SAY(ST "case 4 %s: after the change, error %.6f against one frame scaled plainly %.6f: %s. Change a frame over "
+           "the first cycle %.6f, over the last %.6f: %s\n", up ? "up" : "down", error, plainly,
+        beats ? "PASS" : "FAIL", first, last, settles ? "PASS" : "FAIL");
+    session_close(&s);
+    /* The picture after the change against a fresh context's, given the same frames at the new sizes: the same
+       offsets in the same phase, the reset on its first frame, the same configuration. A second fresh context
+       gives the noise. The control is a fresh context whose images are one offset ahead of the jitter reported
+       for them: it must differ, or the comparison could not have failed (selftest_resized). */
+    int same = SELFTEST_BLIND;
+    if (ok) {
+        const int ran = run(&big, &CONFIGURED, 0, fresh, NULL, NULL, NULL, NULL) &&
+                        run(&big, &CONFIGURED, 0, again, NULL, NULL, NULL, NULL) &&
+                        inputs_build(&wrong, BIG, BIG[0], BIG[1], 0, 0, up, still, 0, 0, 0, 1, 0) &&
+                        run(&wrong, &CONFIGURED, 0, control, NULL, NULL, NULL, NULL);
+        const double apart = ran ? difference(&big, output, fresh, regions, SELFTEST_BACKGROUND) : NAN;
+        const double noise = ran ? difference(&big, fresh, again, regions, SELFTEST_BACKGROUND) : NAN;
+        const double off = ran ? difference(&big, control, fresh, regions, SELFTEST_BACKGROUND) : NAN;
+        same = ran ? selftest_resized(apart, noise, off) : SELFTEST_FAIL;
+        SAY(ST "case 4 %s: after the change, the picture against a fresh context's on the same frames %.6f (at "
+               "most %.3f). Two fresh contexts against each other %.6f. The control, images one offset ahead of "
+               "the reported jitter, against the fresh one %.6f (must be over %.3f and over the noise): %s\n",
+            up ? "up" : "down", apart, SELFTEST_RESIZED, noise, off, SELFTEST_RESIZED,
+            !ran                     ? "FAIL (a run could not be made)"
+            : same == SELFTEST_PASS  ? "PASS"
+            : same == SELFTEST_BLIND ? "FAIL (the control did not differ enough, or a number is not one: nothing "
+                                       "is decided)"
+                                     : "FAIL");
+    }
+    inputs_free(&small);
+    inputs_free(&big);
+    inputs_free(&wrong);
+    free(fresh);
+    free(again);
+    free(control);
+    free(output);
+    free(previous);
+    free(reference);
+    free(scaled);
+    free(regions);
+    return counted && beats && settles && same == SELFTEST_PASS;
+}
+
+/* The native suite: the render size is the output's size, so 8 offsets, as the game at full size has it. Two forms:
+   the game's far plane (near 0.1, far 5000, the create flag for a far plane at infinity off) and a far plane at
+   infinity. Every comparison is selftest_resized's: against a fresh context of the destination on the same
+   frames, with the noise of two fresh contexts and a control that is wrong on purpose. The doc lists the cases. */
+#define NATIVE_W 480
+#define NATIVE_H 270
+static const int NATIVE_SIZE[4] = {NATIVE_W, NATIVE_H, NATIVE_W, NATIVE_H};
+static const int NATIVE_SMALL[4] = {320, 180, 320, 180};
+/* D3-4: the same cases below the native size, for DLSS: the rectangle at the origin of images of the output's size,
+   as the game hands it on the hand-over. Each size's change of size comes from the other one. */
+static const int HALF_SIZE[4] = {NATIVE_W / 2, NATIVE_H / 2, NATIVE_W, NATIVE_H};
+static const int TWO_THIRDS_SIZE[4] = {NATIVE_W * 2 / 3, NATIVE_H * 2 / 3, NATIVE_W, NATIVE_H};
+static const SelftestProjection FINITE = {NEAR_PLANE, 5000.0};
+static const double STILL[2] = {0.0, 0.0};
+static const Variant WITHOUT_HDR = {1, 1, 1, 1, 1, 0, 1};
+static const SnxUpscalerTraits NATIVE_TRAITS = {.colour_usage = VK_IMAGE_USAGE_SAMPLED_BIT,
+                                                .depth_usage = VK_IMAGE_USAGE_SAMPLED_BIT,
+                                                .motion_usage = VK_IMAGE_USAGE_SAMPLED_BIT,
+                                                .output_usage = VK_IMAGE_USAGE_STORAGE_BIT |
+                                                                VK_IMAGE_USAGE_SAMPLED_BIT |
+                                                                VK_IMAGE_USAGE_TRANSFER_DST_BIT};
+enum { N_AGAIN, N_AHEAD, N_OLD, N_PLAIN, N_WORK, N_WITH, N_WITHOUT, N_ALONE, N_ALONE_AGAIN, N_OTHER, N_SCRATCH };
+typedef struct {
+    int up;
+    const char* way;
+    double *reference, *scratch[N_SCRATCH];
+    u8 *regions, *everywhere; /* each pixel's region for the still scene, and the whole picture as one region */
+    const char* suite;        /* "native suite", or the size below it (D3-4) */
+    const int *size, *small;  /* the render and output sizes, and those the change of size starts from */
+} Native;
+typedef struct {
+    const SelftestProjection* form;
+    const char* name;
+    Inputs in;         /* the still scene's frames, made for the form */
+    double* fresh;     /* a fresh context's last picture */
+    double noise, off; /* two fresh contexts apart, and the control one offset ahead against the fresh one */
+    int ran;
+} NativeForm;
+static const char* native_word(int ran, int verdict) {
+    return !ran                       ? "FAIL (a run could not be made)"
+           : verdict == SELFTEST_PASS ? "PASS"
+           : verdict == SELFTEST_BLIND ? "FAIL (the control did not differ enough, or a number is not one: nothing "
+                                         "is decided)"
+                                       : "FAIL";
+}
+
+/* The checksum of the depth image of frame i of these inputs as it is generated for a projection: made again
+   here, pixel by pixel, for the form a case expects, to be held against the checksum of what a frame handed
+   over. Not for inputs made one offset ahead. */
+static u64 depth_made(const Inputs* in, int i, const SelftestProjection* form) {
+    SelftestFrame f = in->scene[i];
+    const int x0 = (int)in->vp.x, y0 = (int)(in->vp.h < 0 ? in->vp.y + in->vp.h : in->vp.y);
+    u64 sum = SELFTEST_CHECKSUM_START;
+    f.depth[0] = selftest_depth(form, SELFTEST_FAR_DISTANCE);
+    f.depth[1] = selftest_depth(form, SELFTEST_NEAR_DISTANCE);
+    for (int py = 0; py < in->h; py++)
+        for (int qx = 0; qx < in->w; qx++) {
+            double rgb[3], z = 1.0, texel[2];
+            if (qx >= x0 && qx < x0 + in->rw && py >= y0 && py < y0 + in->rh)
+                selftest_input(&f, &in->vp, in->w, in->h, qx, py, rgb, &z, texel);
+            const u32 word = selftest_d24(z);
+            sum = selftest_checksum(&word, sizeof word, sum);
+        }
+    return sum;
+}
+
+/* A case's printed assertions (selftest_proof): the contexts a session used, against what the case expects. far:
+   the far plane each context is expected to be made for and handed. last, i, form: the inputs and the frame
+   whose depth image the last evaluate must have been handed, as generated for that form. 1 when all hold. */
+static int native_asserted(const char* name, const SelftestProof* p, unsigned contexts, const double far[],
+                           const Inputs* last, int i, const SelftestProjection* form) {
+    static const char* const words[] = {"PASS",
+                                        "FAIL (the number of contexts)",
+                                        "FAIL (a context evaluated no frame)",
+                                        "FAIL (the create flag for a far plane at infinity)",
+                                        "FAIL (the far plane handed over)",
+                                        "FAIL (a context's first evaluate had no reset)",
+                                        "FAIL (the depth image handed over)"};
+    const u64 made = depth_made(last, i, form);
+    const int reason = selftest_proof(p, contexts, far, SNX_UPSCALER_FAR_PLANE_INFINITE, made);
+    char text[640];
+    size_t at = 0;
+    text[0] = 0;
+    for (unsigned k = 0; k < p->contexts && k < SELFTEST_PROOF_MOST && at < sizeof text; k++)
+        at += (size_t)snprintf(text + at, sizeof text - at,
+                               " Context %u: flags 0x%x, made for a far plane %s, %u frames, the first %s the "
+                               "reset, far handed %.9g%s.",
+                               k + 1, p->flags[k],
+                               p->flags[k] & SNX_UPSCALER_FAR_PLANE_INFINITE ? "at infinity" : "that is finite",
+                               p->frames[k], p->first_reset[k] ? "with" : "WITHOUT", (double)p->far_plane[k],
+                               p->far_mixed[k] ? " AND OTHER VALUES" : "");
+    SAY(ST "%s, asserted: %u contexts came into use, %u expected.%s The last depth image handed over %016llx, the "
+           "one generated for a far plane of %g %016llx: %s\n",
+        name, p->contexts, contexts, text, (unsigned long long)p->depth_sum, form->far_plane,
+        (unsigned long long)made, words[reason]);
+    return reason == SELFTEST_PROOF_OK;
+}
+
+/* The suite's inputs: its rectangle at the origin of images of the output's size, handed whole */
+static int native_inputs(const Native* n, Inputs* in, const SelftestProjection* form, const int size[4], int cut,
+                         int ahead) {
+    const int made = inputs_project(in, form, size, NATIVE_W, NATIVE_H, 0, 0, n->up, STILL, 0, cut, 0, ahead, 0);
+    in->whole = 1;
+    return made;
+}
+
+/* A form's inputs and what every case of it is held against: a fresh context's picture, its repeat for the noise
+   and the control one offset ahead. Logged only: the error against the true picture and what the flag for
+   colours over 1 changes. The fresh context itself is asserted. */
+static int native_base(Native* n, NativeForm* F) {
+    Inputs ahead;
+    char name[160];
+    double first = NAN, last = NAN;
+    snprintf(name, sizeof name, "%s %s, %s, a fresh context", n->suite, n->way, F->name);
+    memset(&ahead, 0, sizeof ahead);
+    if (skip_rest()) return 1;
+    step(name);
+    const int made =
+        native_inputs(n, &F->in, F->form, n->size, 0, 0) && native_inputs(n, &ahead, F->form, n->size, 0, 1);
+    if (!made) {
+        SAY(ST "%s: could not be made: FAIL\n", name);
+        inputs_free(&ahead);
+        return 0;
+    }
+    SAY(ST "%s %s, %s: near %g, far %g, the create flag for a far plane at infinity %s, render %dx%d at the origin "
+           "of images of %dx%d, output %dx%d, %d offsets, %d frames a run\n",
+        n->suite, n->way, F->name, F->form->near_plane, F->form->far_plane, isinf(F->form->far_plane) ? "on" : "off",
+        n->size[0], n->size[1], NATIVE_W, NATIVE_H, n->size[2], n->size[3], F->in.offsets, F->in.frames);
+    truth(&F->in, n->up, n->reference, n->regions);
+    F->ran = run(&F->in, &CONFIGURED, 0, F->fresh, &first, &last, n->regions, NULL);
+    const SelftestProof fresh = g.proof;
+    F->ran = F->ran && run(&F->in, &CONFIGURED, 0, n->scratch[N_AGAIN], NULL, NULL, NULL, NULL) &&
+             run(&ahead, &CONFIGURED, 0, n->scratch[N_AHEAD], NULL, NULL, NULL, NULL);
+    /* the logged control of another create property: for DLSS the other depth convention, on the finite form */
+    const int control = !g.matrix || !isinf(F->form->far_plane);
+    if (F->ran && control && !g.matrix)
+        F->ran = run(&F->in, &WITHOUT_HDR, 0, n->scratch[N_OLD], NULL, NULL, NULL, NULL);
+    else if (F->ran && control) {
+        Inputs other;
+        F->ran = native_inputs(n, &other, F->form, n->size, 0, 0);
+        if (F->ran) selftest_depth_turn(other.depth, (size_t)other.frames * (size_t)other.w * (size_t)other.h);
+        F->ran = F->ran && run(&other, &STANDARD_DEPTH, 0, n->scratch[N_OLD], NULL, NULL, NULL, NULL);
+        inputs_free(&other);
+    }
+    inputs_free(&ahead);
+    if (!F->ran) {
+        SAY(ST "%s: a run could not be made: FAIL\n", name);
+        return 0;
+    }
+    F->noise = difference(&F->in, F->fresh, n->scratch[N_AGAIN], n->regions, SELFTEST_BACKGROUND);
+    F->off = difference(&F->in, n->scratch[N_AHEAD], F->fresh, n->regions, SELFTEST_BACKGROUND);
+    plain(&F->in, F->in.frames - 1, n->up, n->scratch[N_PLAIN]);
+    SAY(ST "%s %s, %s: logged only, no margin: error against the true picture %.6f, of one frame scaled "
+           "plainly %.6f. Change a frame over the first cycle %.6f, over the last %.6f. Two fresh contexts differ "
+           "by %.6f, a context made %s from one made as configured by %.6f\n",
+        n->suite, n->way, F->name, difference(&F->in, F->fresh, n->reference, n->regions, SELFTEST_BACKGROUND),
+        difference(&F->in, n->scratch[N_PLAIN], n->reference, n->regions, SELFTEST_BACKGROUND), first, last, F->noise,
+        !g.matrix ? "without the flag for colours over 1"
+        : control ? "with the other depth convention"
+                  : "with the other depth convention (not made on this form)",
+        control ? difference(&F->in, n->scratch[N_OLD], F->fresh, n->regions, SELFTEST_BACKGROUND) : NAN);
+    return native_asserted(name, &fresh, 1, &F->form->far_plane, &F->in, F->in.frames - 1, F->form);
+}
+
+/* D3-4, log only (research 22:30, 22:40): a reset SETTLE_AFTER frames before the inputs' end, the context with a
+   history against a fresh one given the same frames from the gate's first, on the reset frame and the ones after
+   it: whether the reset's difference settles. A run that cannot be made is said, and fails nothing. */
+enum { SETTLE_AFTER = 4 };
+static void native_settle(Native* n, NativeForm* F) {
+    const size_t picture = (size_t)3 * NATIVE_W * NATIVE_H;
+    double* out = malloc(sizeof(double) * picture * 2 * SETTLE_AFTER);
+    double apart[SETTLE_AFTER];
+    char name[160];
+    Inputs late, alone;
+    memset(&late, 0, sizeof late);
+    snprintf(name, sizeof name, "%s %s, %s, the reset settling", n->suite, n->way, F->name);
+    step(name);
+    int ok = out && !stopped() && native_inputs(n, &late, F->form, n->size, SETTLE_AFTER, 0);
+    alone = late;
+    if (ok) { /* the gate's first frame and the SETTLE_AFTER from the reset on */
+        const size_t skip = (size_t)late.frames - SETTLE_AFTER - 1, pixels = (size_t)late.w * late.h;
+        alone.scene += skip;
+        alone.colour += skip * pixels;
+        alone.depth += skip * pixels;
+        alone.motion += skip * pixels * 4;
+        alone.frames = SETTLE_AFTER + 1;
+        alone.cut_at = -1;
+    }
+    for (int fresh = 0; ok && fresh < 2; fresh++) {
+        const Inputs* in = fresh ? &alone : &late;
+        Session s;
+        int kept = 0;
+        ok = !stopped() && session_open(&s, in, &NATIVE_TRAITS);
+        for (int i = 0; ok && i < in->frames; i++) {
+            const int stored = i >= in->frames - SETTLE_AFTER;
+            double* to = stored ? out + picture * ((size_t)fresh * SETTLE_AFTER + (size_t)kept) : n->scratch[N_WORK];
+            const int r = frame_run(&s, in, i, &CONFIGURED, !fresh && i == in->cut_at, to);
+            if (r < 0 || (stored && r == 0)) ok = 0;
+            kept += stored && r > 0;
+        }
+        session_close(&s);
+        ok = ok && kept == SETTLE_AFTER;
+    }
+    for (int k = 0; ok && k < SETTLE_AFTER; k++)
+        apart[k] = difference(&late, out + picture * (size_t)k, out + picture * (size_t)(SETTLE_AFTER + k),
+                              n->everywhere, SELFTEST_BACKGROUND);
+    if (!ok) SAY(ST "%s: a run could not be made (logged only, nothing judged)\n", name);
+    else
+        SAY(ST "%s, logged only: a context reset at frame %d of its inputs against a fresh one on the same frames, on "
+               "the reset frame and the %d after it: %.6f %.6f %.6f %.6f\n", name, late.cut_at, SETTLE_AFTER - 1,
+            apart[0], apart[1], apart[2], apart[3]);
+    inputs_free(&late);
+    free(out);
+}
+
+/* A form's three cases: a changed create property (the flag for colours over 1), a changed size and a reset. */
+static int native_cases(Native* n, NativeForm* F) {
+    const double far[2] = {F->form->far_plane, F->form->far_plane};
+    const int end = F->in.frames - 1;
+    double* work = n->scratch[N_WORK];
+    char name[160];
+    Inputs cut, small;
+    Session s;
+    int pass = 1;
+    memset(&cut, 0, sizeof cut);
+    memset(&small, 0, sizeof small);
+    memset(&s, 0, sizeof s);
+    if (skip_rest()) return 1;
+    const int ran = F->ran &&
+                    native_inputs(n, &cut, F->form, n->size, 1, 0) &&
+                    (n->small == NATIVE_SMALL
+                         ? inputs_project(&small, F->form, NATIVE_SMALL, 320, 180, 0, 0, n->up, STILL, 0, 0, 0, 0, 0)
+                         : native_inputs(n, &small, F->form, n->small, 0, 0));
+    /* a change of a create property: the session's first frames without the flag, then every frame a fresh run
+       hands over (all but the gate's first) with it, on a context made anew */
+    snprintf(name, sizeof name, "%s %s, %s, a create property changed", n->suite, n->way, F->name);
+    step(name);
+    /* For DLSS, which takes no colour without the flag for colours over 1: the depth convention, on the finite form,
+       with inputs whose depth is of the other convention (research's ruling of N4 Q2). Not run on the infinite
+       form, where the change of the far plane's flag is the transition case. */
+    const u32 property = g.matrix ? SNX_UPSCALER_DEPTH_REVERSED : SNX_UPSCALER_COLOUR_LINEAR_HDR;
+    const char* property_name = g.matrix ? "the flag for reversed depth" : "the flag for colours over 1";
+    const int property_run = !g.matrix || !isinf(F->form->far_plane);
+    Inputs other;
+    memset(&other, 0, sizeof other);
+    int evaluated = 0, changed = ran && property_run && !stopped() && session_open(&s, &F->in, &NATIVE_TRAITS);
+    if (changed && g.matrix) {
+        changed = native_inputs(n, &other, F->form, n->size, 0, 0);
+        if (changed) selftest_depth_turn(other.depth, (size_t)other.frames * (size_t)other.w * (size_t)other.h);
+    }
+    const Inputs* first_inputs = g.matrix ? &other : &F->in;
+    const Variant* first_variant = g.matrix ? &STANDARD_DEPTH : &WITHOUT_HDR;
+    for (int i = 0; changed && i < 9; i++) changed = frame_run(&s, first_inputs, i, first_variant, 0, work) >= 0;
+    const unsigned before = changed ? s.evaluated : 0;
+    for (int i = 1; changed && i <= end; i++) {
+        const int r = frame_run(&s, &F->in, i, &CONFIGURED, 0, work);
+        changed = r >= 0;
+        evaluated += r > 0;
+    }
+    /* the property really changed: two contexts came into use, the first made without the flag and the second
+       with it, and the picture compared is the second's, against a fresh context made with it */
+    SelftestProof proof = s.proof;
+    const int remade = proof.contexts == 2 && !(proof.flags[0] & property) && (proof.flags[1] & property);
+    const int counted = changed && before == 8 && evaluated == end && remade;
+    session_close(&s);
+    inputs_free(&other);
+    const double apart = changed ? difference(&F->in, work, F->fresh, n->regions, SELFTEST_BACKGROUND) : NAN;
+    int verdict = changed ? selftest_resized(apart, F->noise, F->off) : SELFTEST_FAIL;
+    if (!property_run)
+        SAY(ST "%s: not run for %s on this form: its depth has no other convention here, and the change of the far "
+               "plane's flag is the transition case\n", name, g.name);
+    else {
+        SAY(ST "%s (%s): %u frames evaluated without the flag, %d with it, %u contexts made with the flags 0x%x and "
+               "then 0x%x: %s. The remade context's picture against a fresh context's made with the flag, on the "
+               "same frames %.6f (at most %.3f), two fresh contexts %.6f, the control one offset ahead %.6f (over "
+               "%.3f and over the noise): %s\n",
+            name, property_name, before, evaluated, proof.contexts, proof.flags[0], proof.flags[1],
+            counted ? "PASS" : "FAIL", apart, SELFTEST_RESIZED, F->noise, F->off, SELFTEST_RESIZED,
+            native_word(changed, verdict));
+        pass &= (counted && verdict == SELFTEST_PASS) || skip_rest();
+        pass &= (changed && native_asserted(name, &proof, 2, far, &F->in, end, F->form)) || skip_rest();
+    }
+    /* a change of size, on one session: the small size's frames, then the native ones */
+    snprintf(name, sizeof name, "%s %s, %s, the size changed", n->suite, n->way, F->name);
+    step(name);
+    memset(&s, 0, sizeof s);
+    evaluated = 0;
+    int resized = ran && !stopped() && session_open(&s, &small, &NATIVE_TRAITS);
+    for (int i = 0; resized && i < 9; i++) resized = frame_run(&s, &small, i, &CONFIGURED, 0, work) >= 0;
+    const unsigned small_frames = resized ? s.evaluated : 0;
+    resized = resized && pictures_make(&s, &F->in, &NATIVE_TRAITS);
+    for (int i = 0; resized && i <= end; i++) {
+        const int r = frame_run(&s, &F->in, i, &CONFIGURED, 0, work);
+        resized = r >= 0;
+        evaluated += r > 0;
+    }
+    proof = s.proof;
+    const int sized = resized && small_frames == 8 && evaluated == end && proof.contexts == 2;
+    session_close(&s);
+    const double moved = resized ? difference(&F->in, work, F->fresh, n->regions, SELFTEST_BACKGROUND) : NAN;
+    verdict = resized ? selftest_resized(moved, F->noise, F->off) : SELFTEST_FAIL;
+    SAY(ST "%s: %u frames evaluated at %dx%d, %d at %dx%d, %u contexts made: %s. The picture against a fresh "
+           "context's on the same frames %.6f (at most %.3f), two fresh contexts %.6f, the control one offset "
+           "ahead %.6f: %s\n",
+        name, small_frames, n->small[0], n->small[1], evaluated, n->size[0], n->size[1], proof.contexts,
+        sized ? "PASS" : "FAIL", moved,
+        SELFTEST_RESIZED, F->noise, F->off, native_word(resized, verdict));
+    pass &= (sized && verdict == SELFTEST_PASS) || skip_rest();
+    pass &= (resized && native_asserted(name, &proof, 2, far, &F->in, end, F->form)) || skip_rest();
+    /* a reset: the last frame shows the other pattern. With the flag, without it, and a context that is given
+       the gate's first frame and that frame alone, twice. */
+    snprintf(name, sizeof name, "%s %s, %s, a reset", n->suite, n->way, F->name);
+    step(name);
+    Inputs alone = cut;
+    if (ran) {
+        const size_t skip = (size_t)cut.frames - 2;
+        alone.scene += skip;
+        alone.colour += skip * cut.w * cut.h;
+        alone.depth += skip * cut.w * cut.h;
+        alone.motion += skip * cut.w * cut.h * 4;
+        alone.frames = 2;
+        alone.cut_at = -1;
+    }
+    int reset = ran && !stopped() && run(&cut, &CONFIGURED, 1, n->scratch[N_WITH], NULL, NULL, NULL, NULL);
+    proof = g.proof;
+    reset = reset && run(&cut, &CONFIGURED, 0, n->scratch[N_WITHOUT], NULL, NULL, NULL, NULL) &&
+            run(&alone, &CONFIGURED, 0, n->scratch[N_ALONE], NULL, NULL, NULL, NULL) &&
+            run(&alone, &CONFIGURED, 0, n->scratch[N_ALONE_AGAIN], NULL, NULL, NULL, NULL);
+    const double same =
+        reset ? difference(&cut, n->scratch[N_WITH], n->scratch[N_ALONE], n->everywhere, SELFTEST_BACKGROUND) : NAN;
+    const double twice = !reset ? NAN
+                                : difference(&cut, n->scratch[N_ALONE], n->scratch[N_ALONE_AGAIN], n->everywhere,
+                                             SELFTEST_BACKGROUND);
+    const double kept =
+        reset ? difference(&cut, n->scratch[N_WITHOUT], n->scratch[N_ALONE], n->everywhere, SELFTEST_BACKGROUND) : NAN;
+    verdict = reset ? selftest_resized(same, twice, kept) : SELFTEST_FAIL;
+    /* research 22:40: a reset nearer than the control but over the bar is said as such, and still fails */
+    const int improves = verdict == SELFTEST_FAIL && same < kept;
+    /* research 22:50, astra AGREE: at 1/2 (performance) such a reset is NGX's known deviation, still a FAIL, counted
+       apart so that the summary tells it from any other failure */
+    const int known = improves && g.dlss && n->size == HALF_SIZE;
+    SAY(ST "%s: the reset frame against a fresh context's %.6f (at most %.3f), two fresh contexts given the same two "
+           "frames (the gate's first and the reset frame) %.6f, the control without the flag %.6f (over %.3f and "
+           "over the noise): %s%s%s\n",
+        name, same, SELFTEST_RESIZED, twice, kept, SELFTEST_RESIZED, native_word(reset, verdict),
+        improves ? ". The reset improves on no reset, and is not equivalent to a fresh context" : "",
+        known ? ". Performance mode keeps state across InReset (DL-S5: 0.004 lasting, 2/3 exact): the known library "
+                "deviation" : "");
+    g.known += known;
+    pass &= (verdict == SELFTEST_PASS || known) || skip_rest();
+    pass &= (reset && native_asserted(name, &proof, 1, far, &cut, cut.frames - 1, F->form)) || skip_rest();
+    inputs_free(&cut);
+    inputs_free(&small);
+    if (n->size != NATIVE_SIZE && !skip_rest()) native_settle(n, F);
+    return pass;
+}
+
+/* The far plane changes on one session, at the same sizes: the first frames in one form, then every frame a fresh
+   run hands over in the other, on a context made anew for it. Held against the destination's fresh context. */
+static int native_transition(Native* n, const NativeForm* from, const NativeForm* to) {
+    const double far[2] = {from->form->far_plane, to->form->far_plane};
+    const int end = to->in.frames - 1;
+    double* work = n->scratch[N_WORK];
+    char name[160];
+    Session s;
+    snprintf(name, sizeof name, "%s %s, from %s to %s", n->suite, n->way, from->name, to->name);
+    memset(&s, 0, sizeof s);
+    if (skip_rest()) return 1;
+    step(name);
+    int evaluated = 0, changed = from->ran && to->ran && !stopped() && session_open(&s, &from->in, &NATIVE_TRAITS);
+    for (int i = 0; changed && i < 9; i++) changed = frame_run(&s, &from->in, i, &CONFIGURED, 0, work) >= 0;
+    const unsigned before = changed ? s.evaluated : 0;
+    for (int i = 1; changed && i <= end; i++) {
+        const int r = frame_run(&s, &to->in, i, &CONFIGURED, 0, work);
+        changed = r >= 0;
+        evaluated += r > 0;
+    }
+    const SelftestProof proof = s.proof;
+    const int counted = changed && before == 8 && evaluated == end;
+    session_close(&s);
+    const double apart = changed ? difference(&to->in, work, to->fresh, n->regions, SELFTEST_BACKGROUND) : NAN;
+    const int verdict = changed ? selftest_resized(apart, to->noise, to->off) : SELFTEST_FAIL;
+    SAY(ST "%s: %u frames evaluated in the first form, %d in the second: %s. The picture against a fresh context's "
+           "of the second form, on the same frames %.6f (at most %.3f), two fresh contexts %.6f, the control one "
+           "offset ahead %.6f (over %.3f and over the noise): %s. Logged only: the two forms' fresh contexts "
+           "differ by %.6f\n",
+        name, before, evaluated, counted ? "PASS" : "FAIL", apart, SELFTEST_RESIZED, to->noise, to->off,
+        SELFTEST_RESIZED, native_word(changed, verdict),
+        changed ? difference(&to->in, from->fresh, to->fresh, n->regions, SELFTEST_BACKGROUND) : NAN);
+    return counted && verdict == SELFTEST_PASS && native_asserted(name, &proof, 2, far, &to->in, end, to->form);
+}
+
+/* Two depths, in the game's form: a nearer patch moves on its own over the still background, judged as case 3 is.
+   The vector's signs inside the patch, and the depth convention turned as the control in the band the patch
+   left. The patch's and the background's errors are printed. */
+static int native_patch(Native* n, const SelftestProjection* form, const char* form_name) {
+    static const Variant flipped = {1, 1, 1, 1, 0};
+    const size_t pixels = (size_t)NATIVE_W * NATIVE_H;
+    double *output = n->scratch[N_WORK], *other = n->scratch[N_OTHER], *reference = n->scratch[N_PLAIN];
+    u8* regions = malloc(pixels);
+    char name[160];
+    Inputs in;
+    snprintf(name, sizeof name, "%s %s, %s, a nearer patch", n->suite, n->way, form_name);
+    memset(&in, 0, sizeof in);
+    step(name);
+    int ok = regions && !stopped() &&
+             inputs_project(&in, form, NATIVE_SIZE, NATIVE_W, NATIVE_H, 0, 0, n->up, STILL, 1, 0, 0, 0, 0);
+    if (!ok) SAY(ST "%s: could not be made: FAIL\n", name);
+    else {
+        char signs_name[200];
+        truth(&in, n->up, reference, regions);
+        snprintf(signs_name, sizeof signs_name, "%s, vector signs in the patch", name);
+        ok = signs(signs_name, &in, 12, SELFTEST_INSIDE, reference, regions, output, 1);
+        /* the band the patch left, over every evaluated frame after the first cycle of offsets, as in case 3 */
+        Band own_band = {n->up, 0.0, 0}, wrong_band = {n->up, 0.0, 0};
+        int ran = run(&in, &CONFIGURED, 0, output, NULL, NULL, NULL, &own_band);
+        const SelftestProof proof = g.proof;
+        ran = ran && run(&in, &flipped, 0, other, NULL, NULL, NULL, &wrong_band);
+        const int enough = own_band.pixels >= BAND_LEAST && wrong_band.pixels == own_band.pixels;
+        const double own = ran && enough ? own_band.sum / (3.0 * (double)own_band.pixels) : NAN;
+        const double wrong = ran && enough ? wrong_band.sum / (3.0 * (double)wrong_band.pixels) : NAN;
+        const int beats = ran && enough && selftest_beats(own, wrong, SELFTEST_MARGIN);
+        SAY(ST "%s: the band the patch left, %zu pixels over %d frames (at least %d): error %.6f, with the depth "
+               "convention turned %.6f (%.2f times it at least), background %.6f and with it turned %.6f, patch "
+               "%.6f and with it turned %.6f: %s\n",
+            name, own_band.pixels, in.offsets, BAND_LEAST, own, wrong, SELFTEST_MARGIN,
+            ran ? difference(&in, output, reference, regions, SELFTEST_BACKGROUND) : NAN,
+            ran ? difference(&in, other, reference, regions, SELFTEST_BACKGROUND) : NAN,
+            ran ? difference(&in, output, reference, regions, SELFTEST_INSIDE) : NAN,
+            ran ? difference(&in, other, reference, regions, SELFTEST_INSIDE) : NAN,
+            beats ? "PASS" : !ran ? "FAIL (a run could not be made)" : enough ? "FAIL" : "FAIL (too few pixels to "
+                                                                                        "judge by)");
+        ok = ok && beats;
+        ok = ran && native_asserted(name, &proof, 1, &form->far_plane, &in, in.frames - 1, form) && ok;
+    }
+    inputs_free(&in);
+    free(regions);
+    return ok;
+}
+
+/* suite: its name, size and small: the render and output sizes and the change of size's first ones */
+static int native_at(int up, const char* suite, const int size[4], const int small[4]) {
+    const size_t pixels = (size_t)NATIVE_W * NATIVE_H, size_bytes = sizeof(double) * 3 * pixels;
+    Native n = {up, up ? "up" : "down", malloc(size_bytes), {0}, malloc(pixels), malloc(pixels), suite, size, small};
+    NativeForm forms[2] = {{&FINITE, "the far plane at 5000"}, {&INFINITE, "the far plane at infinity"}};
+    int pass = 1, ok = !not_run(suite, up) && n.reference && n.regions && n.everywhere;
+    for (int k = 0; k < N_SCRATCH; k++) ok = (n.scratch[k] = malloc(size_bytes)) != NULL && ok;
+    for (int k = 0; k < 2; k++) ok = (forms[k].fresh = malloc(size_bytes)) != NULL && ok;
+    if (!ok) {
+        SAY(ST "%s %s: could not be made: FAIL\n", suite, n.way);
+        pass &= skip_rest();
+    } else {
+        memset(n.everywhere, SELFTEST_BACKGROUND, pixels);
+        for (int k = 0; k < 2; k++) pass &= (native_base(&n, &forms[k])) || skip_rest();
+        for (int k = 0; k < 2; k++) pass &= (native_cases(&n, &forms[k])) || skip_rest();
+        pass &= (native_transition(&n, &forms[0], &forms[1])) || skip_rest();
+        pass &= (native_transition(&n, &forms[1], &forms[0])) || skip_rest();
+        if (!g.matrix) pass &= (native_patch(&n, &FINITE, forms[0].name)) || skip_rest();
+        else {
+            /* The jitter's four sign variants, logged and nothing chosen (research's ruling of N4 Q4): the frame's
+               jitter times each variant's signs, as the module always hands NGX +1 and +1. A run that cannot be
+               made still fails, as every call must succeed. */
+            char name[160];
+            SAY(ST "%s %s, %s, a nearer patch: not run for %s, its verdict is one of quality\n", suite, n.way,
+                forms[0].name, g.name);
+            snprintf(name, sizeof name, "%s %s, %s, the jitter's signs", suite, n.way, forms[0].name);
+            /* only on a form that was generated and ran: its inputs exist, else nothing of them is read */
+            if (!forms[0].ran || !forms[0].in.scene) {
+                SAY(ST "%s: not run, the form's inputs or its fresh run were not made: FAIL\n", name);
+                pass &= skip_rest(); /* a failure, unless the run stopped */
+            } else if (!skip_rest()) {
+                truth(&forms[0].in, n.up, n.reference, n.regions);
+                pass &= (signs(name, &forms[0].in, 3, SELFTEST_BACKGROUND, n.reference, n.regions,
+                                            n.scratch[N_WORK], 0)) || skip_rest();
+            }
+        }
+    }
+    for (int k = 0; k < 2; k++) {
+        inputs_free(&forms[k].in);
+        free(forms[k].fresh);
+    }
+    for (int k = 0; k < N_SCRATCH; k++) free(n.scratch[k]);
+    free(n.reference);
+    free(n.regions);
+    free(n.everywhere);
+    return pass;
+}
+static int native(int up) { return native_at(up, "native suite", NATIVE_SIZE, NATIVE_SMALL); }
+/* D3-4: DLSS below the native size, at 1/2 and 2/3 of the output: integration judged as at native, the module's mode
+   printed by its context line */
+static int below_native(int up, int half) {
+    return half ? native_at(up, "the suite at 1/2", HALF_SIZE, TWO_THIRDS_SIZE)
+                : native_at(up, "the suite at 2/3", TWO_THIRDS_SIZE, HALF_SIZE);
+}
+
+/* DL2's sign protocol (UPSCALER-DESIGN.md, DL2 revision 2), for DLSS after both native suites: the jitter case's still
+   scene at the native size and the finite far plane, at both viewport signs, its first evaluated frame the reset at
+   phase 0 (inputs one offset behind). Each of the four jitter sign variants three times, each from a fresh context.
+   Scored: evaluated frames 8 to 15, every pixel, red, green and blue. Decided by selftest_sign_choose. The sign is a
+   finding, not a verdict: only a run that cannot be made fails. */
+/* the callbacks so far that are not NGX's own (research 22:20) */
+static u32 messages_now(void) {
+    while (__atomic_exchange_n(&g_said_lock, 1, __ATOMIC_ACQUIRE)) {}
+    const u32 n = g.messages - g_said.ngx_own;
+    __atomic_store_n(&g_said_lock, 0, __ATOMIC_RELEASE);
+    return n;
+}
+/* D3-4: at below, the 1/2 size on the hand-over's form, a diagnostic only that never sets the sign (5f7a6715): its
+   result is printed apart from the sign's source, and a valid unique one other than (+1, +1) says the step stops */
+static int sign_protocol(int below) {
+    enum { REPEATS = 3, FIRST_SCORED = 8, SCORED = 8, EVALUATED = 16 }; /* the run ends at EVALUATED frames */
+    const char* const at = below ? "the sign protocol at 1/2" : "the sign protocol";
+    static const char* const variants[4] = {"(+1, +1)", "(-1, +1)", "(+1, -1)", "(-1, -1)"};
+    const size_t pixels = (size_t)NATIVE_W * NATIVE_H, picture = 3 * pixels;
+    double score[2][4], noise = 0.0;
+    int valid = 1, made = 1;
+    if (skip_rest()) return 1;
+    step(at);
+    /* the experiment's forced sign multiplies every variant's: the protocol would not compare what it says */
+    const char* forced = getenv("SNX_ARCEUS_DLSS_JITTER_SIGN");
+    if (g.dlss && selftest_sign_forcing(forced)) { /* as the module: a value other than its eight is not used */
+        SAY(ST "%s: not run, SNX_ARCEUS_DLSS_JITTER_SIGN is %s (an experiment that forces the sign the module hands "
+               "NGX), and the protocol compares the signs itself\n", at, forced);
+        return 1;
+    }
+    if (g.dlss && forced && forced[0])
+        SAY(ST "%s: SNX_ARCEUS_DLSS_JITTER_SIGN=%s is not one of the module's eight values, which does not use it: "
+               "run as without it\n", at, forced);
+    double *reference = malloc(sizeof(double) * picture), *work = malloc(sizeof(double) * picture);
+    double* outputs = malloc(sizeof(double) * picture * SCORED * REPEATS);
+    u8 *regions = malloc(pixels), *everywhere = malloc(pixels);
+    if (!reference || !work || !outputs || !regions || !everywhere) {
+        SAY(ST "%s: could not be made: FAIL\n", at);
+        made = 0;
+    } else
+        memset(everywhere, SELFTEST_BACKGROUND, pixels);
+    const u32 messages = messages_now();
+    for (int up = 1; made && !stopped() && up >= 0; up--) {
+        const int sign = up ? 0 : 1;
+        Inputs in;
+        memset(&in, 0, sizeof in);
+        const int made_in =
+            inputs_project(&in, &FINITE, below ? HALF_SIZE : NATIVE_SIZE, NATIVE_W, NATIVE_H, 0, 0, up, STILL, 0, 0, 0,
+                           -1, 0);
+        in.whole = 1;
+        if (!made_in) {
+            SAY(ST "%s %s: its inputs could not be made: FAIL\n", at, up ? "up" : "down");
+            inputs_free(&in);
+            made = 0;
+            break;
+        }
+        truth(&in, up, reference, regions);
+        for (int v = 0; made && !stopped() && v < 4; v++) {
+            Variant variant = CONFIGURED;
+            variant.jitter_x = v & 1 ? -1 : 1;
+            variant.jitter_y = v & 2 ? -1 : 1;
+            double sum = 0.0;
+            int written[REPEATS] = {0}; /* the scored frames each repeat wrote: only whole ones enter the noise */
+            for (int r = 0; made && !stopped() && r < REPEATS; r++) {
+                Session s;
+                memset(&s, 0, sizeof s);
+                int evaluated = 0, ok = !stopped() && session_open(&s, &in, &NATIVE_TRAITS);
+                double error = 0.0;
+                for (int i = 0; ok && i < in.frames && evaluated < EVALUATED; i++) {
+                    const int got = frame_run(&s, &in, i, &variant, 0, work);
+                    if (got < 0) ok = 0;
+                    if (got <= 0) continue;
+                    const int at = evaluated++; /* the protocol's frame: 0 is the reset at phase 0 */
+                    if (at < FIRST_SCORED || at >= FIRST_SCORED + SCORED) continue;
+                    memcpy(outputs + picture * ((size_t)r * SCORED + (size_t)(at - FIRST_SCORED)), work,
+                           sizeof(double) * picture);
+                    written[r]++;
+                    error += difference(&in, work, reference, everywhere, SELFTEST_BACKGROUND);
+                }
+                session_close(&s);
+                if (skip_rest()) break;
+                if (!ok) {
+                    SAY(ST "%s %s, %s, run %d: a call failed: FAIL\n", at, up ? "up" : "down", variants[v], r + 1);
+                    made = 0;
+                }
+                error /= SCORED;
+                if (evaluated != EVALUATED || written[r] != SCORED || !isfinite(error)) valid = 0;
+                sum += error;
+                SAY(ST "%s %s, %s, run %d: %d frames evaluated, error over frames 8 to 15 %.6f\n", at,
+                    up ? "up" : "down", variants[v], r + 1, evaluated, error);
+            }
+            score[sign][v] = sum / REPEATS;
+            /* the noise: the outputs of two repeats against each other, every pair, over the same frames */
+            for (int a = 0; made && !stopped() && a < REPEATS; a++)
+                for (int b = a + 1; b < REPEATS; b++) {
+                    /* a repeat that did not write every scored frame is not valid, and its slots are not read
+                       (reviewer 05:16) */
+                    if (written[a] != SCORED || written[b] != SCORED) {
+                        valid = 0;
+                        continue;
+                    }
+                    double apart = 0.0;
+                    for (int f = 0; f < SCORED; f++)
+                        apart += difference(&in, outputs + picture * ((size_t)a * SCORED + (size_t)f),
+                                            outputs + picture * ((size_t)b * SCORED + (size_t)f), everywhere,
+                                            SELFTEST_BACKGROUND);
+                    apart /= SCORED;
+                    if (!isfinite(apart)) valid = 0;
+                    else if (apart > noise) noise = apart;
+                }
+        }
+        inputs_free(&in);
+    }
+    free(reference);
+    free(work);
+    free(outputs);
+    free(regions);
+    free(everywhere);
+    if (skip_rest()) return 1;
+    const u32 said = messages_now() - messages;
+    if (!g.validation || !g.checks_asked || said) valid = 0;
+    if (made) {
+        for (int sign = 0; sign < 2; sign++)
+            SAY(ST "%s %s: scores %.6f %.6f %.6f %.6f for %s %s %s %s\n", at, sign ? "down" : "up", score[sign][0],
+                score[sign][1], score[sign][2], score[sign][3], variants[0], variants[1], variants[2], variants[3]);
+        const int chosen = selftest_sign_choose(score, noise, valid);
+        if (!below)
+            SAY(ST "the sign protocol: noise %.6f (the floor %.3f), %u validation messages during it (NGX's own "
+                   "not counted), runs %s. The jitter's sign: %s%s\n", noise, SELFTEST_SIGN_NOISE_FLOOR, said,
+                valid ? "valid" : "NOT all valid",
+                chosen < 0 ? "UNRESOLVED, (+1, +1) is used" : variants[chosen < 0 ? 0 : chosen],
+                chosen < 0 ? "" : ", lowest at both viewport signs by more than four times the noise");
+        else {
+            SAY(ST "%s: noise %.6f (the floor %.3f), %u validation messages during it (NGX's own not counted), runs "
+                   "%s. The protocol: %s%s. The sign (+1, +1), from the user's look\n", at, noise,
+                SELFTEST_SIGN_NOISE_FLOOR, said,
+                valid ? "valid" : "NOT all valid", chosen < 0 ? "unresolved" : variants[chosen],
+                chosen < 0 ? "" : ", lowest at both viewport signs by more than four times the noise");
+            if (chosen > 0)
+                SAY(ST "%s: STOP: a valid, unique result other than (+1, +1) contradicts the user's look. DLSS below "
+                       "native is not to be run in the game until it is understood (nothing is switched)\n", at);
+        }
+    }
+    return made;
+}
+
+/* The edge case, for the jitter's signs, on a still grey picture with two edges. Seven pictures of the same frozen
+   images, each run a session of its own: the configured signs twice (for the noise), the three other combinations,
+   the jitter reported as zero, and one frame scaled plainly. Each is held against the reference by its edges'
+   profiles and over the same pixels. selftest_edge_judge has the conditions and the budgets. */
+static const char* edge_failed(unsigned failed, char* text, size_t size) {
+    static const char* const names[8] = {"the order of the errors", "a turned sign's margin",
+                                         "told nothing's margin",   "the plainly scaled frame",
+                                         "settling",                "both signs turned",
+                                         "the noise",               "a number that is not one"};
+    size_t at = 0;
+    text[0] = 0;
+    for (int bit = 0; bit < 8; bit++)
+        if ((failed >> bit & 1u) && at < size)
+            at += (size_t)snprintf(text + at, size - at, "%s%s", at ? ", " : "", names[bit]);
+    return text;
+}
+static int edge_case(int up) {
+    enum { OWN, AGAIN, TURNED_X, TURNED_Y, TURNED_BOTH, TOLD_NOTHING, PLAIN, PICTURES };
+    static const char* const names[PICTURES] = {"configured",        "configured again", "jitter x turned",
+                                                "jitter y turned",   "both turned",      "told nothing",
+                                                "one frame plainly"};
+    /* the two configured runs log every frame's inputs and dispatch: what FSR is given is to be known before
+       anything is reasoned about what it does with it */
+    static const Variant variants[PLAIN] = {{1, 1, 1, 1, 1, 1},  {1, 1, 1, 1, 1, 1},   {-1, 1, 1, 1, 1, 0},
+                                            {1, -1, 1, 1, 1, 0}, {-1, -1, 1, 1, 1, 0}, {0, 0, 1, 1, 1, 0}};
+    static const double still[2] = {0.0, 0.0};
+    const SelftestEdge* edges[2] = {&SELFTEST_EDGE_V, &SELFTEST_EDGE_H};
+    const size_t pixels = (size_t)OUT_W * OUT_H, size = sizeof(double) * 3 * pixels;
+    const size_t texels = (size_t)RENDER_W * RENDER_H;
+    const char* way = up ? "up" : "down";
+    double* picture[PICTURES] = {0};
+    double* reference = malloc(size);
+    u8* regions = malloc(pixels);
+    SelftestProfile profile[PICTURES][2], truth_profile[2];
+    SelftestEdgeMeasure measure[PICTURES][2];
+    SelftestEdgeRuns runs;
+    double first = NAN, last = NAN;
+    Inputs in;
+    char text[256];
+    int ok = !not_run("edge case", up) && reference && regions;
+    memset(&in, 0, sizeof in);
+    for (int k = 0; k < PICTURES; k++) ok = (picture[k] = malloc(size)) != NULL && ok;
+    ok = ok && inputs_build(&in, SIZES, RENDER_W, RENDER_H, 0, 0, up, still, 0, 0, 1, 0, 0);
+    if (ok) {
+        /* the images are the ones named before any adapter was looked for, or the case does not run */
+        const u64 sums[3] = {selftest_checksum(in.colour, (size_t)in.frames * texels * 4, SELFTEST_CHECKSUM_START),
+                             selftest_checksum(in.depth, (size_t)in.frames * texels * 4, SELFTEST_CHECKSUM_START),
+                             selftest_checksum(in.motion, (size_t)in.frames * texels * 8, SELFTEST_CHECKSUM_START)};
+        ok = !memcmp(sums, g.edge_sums[up], sizeof sums);
+        if (!ok) SAY(ST "edge case %s: the images are not the ones whose checksums were logged: FAIL\n", way);
+    }
+    if (ok) truth(&in, up, reference, regions);
+    for (int k = 0; ok && k < PLAIN; k++)
+        ok = run(&in, &variants[k], 0, picture[k], k == OWN ? &first : NULL, k == OWN ? &last : NULL,
+                 k == OWN ? regions : NULL, NULL);
+    if (ok) plain(&in, in.frames - 1, up, picture[PLAIN]);
+    if (!ok) {
+        SAY(ST "edge case %s: not every run could be made: FAIL\n", way);
+    } else {
+        for (int e = 0; e < 2; e++) {
+            selftest_profile_make(edges[e], reference, OUT_W, &truth_profile[e]);
+            for (int k = 0; k < PICTURES; k++) {
+                selftest_profile_make(edges[e], picture[k], OUT_W, &profile[k][e]);
+                measure[k][e].profile = selftest_profile_apart(&profile[k][e], &truth_profile[e]);
+                measure[k][e].pixels = selftest_edge_apart(edges[e], picture[k], reference, OUT_W);
+            }
+            runs.configured[e] = measure[OWN][e];
+            runs.turned_x[e] = measure[TURNED_X][e];
+            runs.turned_y[e] = measure[TURNED_Y][e];
+            runs.turned_both[e] = measure[TURNED_BOTH][e];
+            runs.told_nothing[e] = measure[TOLD_NOTHING][e];
+            runs.plain[e] = measure[PLAIN][e];
+            /* the noise is between the two configured pictures themselves, not between their errors */
+            runs.noise[e].profile = selftest_profile_apart(&profile[OWN][e], &profile[AGAIN][e]);
+            runs.noise[e].pixels = selftest_edge_apart(edges[e], picture[OWN], picture[AGAIN], OUT_W);
+        }
+        runs.settled = selftest_settles(first, last);
+        /* Each picture on each edge: the two measures that are judged, then for the log alone how far its edge
+           sits from the reference's, how wide its rise is and how far it overshoots, and its error as a multiple
+           of the configured run's. */
+        for (int k = 0; k < PICTURES; k++)
+            for (int e = 0; e < 2; e++)
+                SAY(ST "edge case %s %s, %s edge: profile error %.6f, per pixel %.6f. Logged only: edge moved %.3f px, "
+                       "rise %.3f px (reference %.3f), overshoot %.4f, %.2f times the configured profile error\n",
+                    way, names[k], e ? "near-horizontal" : "near-vertical", measure[k][e].profile,
+                    measure[k][e].pixels,
+                    selftest_profile_crossing(&profile[k][e], 0.5) - selftest_profile_crossing(&truth_profile[e], 0.5),
+                    selftest_profile_rise(&profile[k][e]), selftest_profile_rise(&truth_profile[e]),
+                    selftest_profile_overshoot(&profile[k][e]), measure[k][e].profile / measure[OWN][e].profile);
+        for (int k = 0; k < PICTURES; k++)
+            for (int e = 0; e < 2; e++) {
+                double by[3];
+                selftest_edge_channels(edges[e], picture[k], reference, OUT_W, by);
+                SAY(ST "edge case %s %s, %s edge, logged only, error by channel: r %.6f g %.6f b %.6f\n", way,
+                    names[k], e ? "near-horizontal" : "near-vertical", by[0], by[1], by[2]);
+            }
+        for (int e = 0; e < 2; e++)
+            SAY(ST "edge case %s noise, %s edge: between the two configured runs the profiles differ by %.6f and the "
+                   "pictures by %.6f per pixel\n",
+                way, e ? "near-horizontal" : "near-vertical", runs.noise[e].profile, runs.noise[e].pixels);
+        const unsigned failed = selftest_edge_judge(&runs);
+        ok = !failed;
+        SAY(ST "edge case %s: change a frame over the first cycle %.6f, over the last %.6f. A turned sign at least "
+               "%.3f worse on its edge, told nothing at least %.3f, each at least %.0f times the noise, on the "
+               "profile and per pixel: %s%s\n",
+            way, first, last, SELFTEST_EDGE_TURNED, SELFTEST_EDGE_TOLD, SELFTEST_EDGE_NOISE,
+            !failed ? "PASS" : selftest_edge_undecided(failed) ? "FAIL (the case decided nothing): " : "FAIL: ",
+            edge_failed(failed, text, sizeof text));
+    }
+    inputs_free(&in);
+    for (int k = 0; k < PICTURES; k++) free(picture[k]);
+    free(reference);
+    free(regions);
+    return ok;
+}
+
+/* Log only, no verdict: the matched pair. The edge images with y down, and with y up and the clip offset's y
+   negated, are the same bytes with the same jitter in pixels, so both orientations hand the adapter identical
+   inputs. The images and what each frame handed over are compared, and the two outputs' and a repeated run's
+   differences printed. Whether the outputs count as equal is not said: no number is declared for that. */
+static void edge_matched(void) {
+    static const Variant traced = {1, 1, 1, 1, 1, 1};
+    static const double still[2] = {0.0, 0.0};
+    const SelftestEdge* edges[2] = {&SELFTEST_EDGE_V, &SELFTEST_EDGE_H};
+    const size_t pixels = (size_t)OUT_W * OUT_H, size = sizeof(double) * 3 * pixels;
+    const size_t texels = (size_t)RENDER_W * RENDER_H;
+    Inputs down, up;
+    double *reference = malloc(size), *picture[3] = {malloc(size), malloc(size), malloc(size)};
+    u8* regions = malloc(pixels);
+    SelftestHanded* handed[2] = {NULL, NULL};
+    memset(&down, 0, sizeof down);
+    memset(&up, 0, sizeof up);
+    int ok = !stopped() && reference && regions && picture[0] && picture[1] && picture[2] &&
+             inputs_build(&down, SIZES, RENDER_W, RENDER_H, 0, 0, 0, still, 0, 0, 1, 0, 0) &&
+             inputs_build(&up, SIZES, RENDER_W, RENDER_H, 0, 0, 1, still, 0, 0, 1, 0, 1);
+    if (ok) {
+        handed[0] = calloc((size_t)down.frames, sizeof **handed);
+        handed[1] = calloc((size_t)down.frames, sizeof **handed);
+        ok = handed[0] && handed[1] && up.frames == down.frames;
+    }
+    if (!ok) {
+        SAY(ST "matched pair, log only: could not be made\n");
+    } else {
+        const size_t bytes[3] = {(size_t)down.frames * texels * 4, (size_t)down.frames * texels * 4,
+                                 (size_t)down.frames * texels * 8};
+        const void* images[2][3] = {{down.colour, down.depth, down.motion}, {up.colour, up.depth, up.motion}};
+        u64 sums[2][3];
+        int equal = 1;
+        for (int k = 0; k < 3; k++) {
+            for (int which = 0; which < 2; which++)
+                sums[which][k] = selftest_checksum(images[which][k], bytes[k], SELFTEST_CHECKSUM_START);
+            equal = equal && !memcmp(images[0][k], images[1][k], bytes[k]);
+        }
+        SAY(ST "matched pair, log only: %d frames. y down: colour %016llx, depth %016llx, vectors %016llx. y up with "
+               "the clip offset's y negated: colour %016llx, depth %016llx, vectors %016llx. Byte for byte the "
+               "same: %s\n",
+            down.frames, (unsigned long long)sums[0][0], (unsigned long long)sums[0][1],
+            (unsigned long long)sums[0][2], (unsigned long long)sums[1][0], (unsigned long long)sums[1][1],
+            (unsigned long long)sums[1][2], equal ? "yes" : "NO, the pair is not matched and is not run");
+        if (equal) {
+            truth(&down, 0, reference, regions);
+            g.record_n = down.frames;
+            g.record = handed[0];
+            const int ran_down = run(&down, &traced, 0, picture[0], NULL, NULL, NULL, NULL);
+            g.record = handed[1];
+            const int ran_up = run(&up, &traced, 0, picture[1], NULL, NULL, NULL, NULL);
+            g.record = NULL;
+            /* A run hands over every frame of its inputs but the first, which the gate does not let through. The
+               outputs are held against each other only when both runs succeeded, each handed over all of those
+               frames, and what they handed over is the same (selftest_matched). */
+            int first = -1, done[2] = {0, 0};
+            const int whole = down.frames - 1;
+            const int match = selftest_matched(handed[0], handed[1], down.frames, whole, ran_down, ran_up, &first);
+            for (int i = 0; i < down.frames; i++) {
+                done[0] += handed[0][i].done != 0;
+                done[1] += handed[1][i].done != 0;
+            }
+            if (match == SELFTEST_MATCHED)
+                SAY(ST "matched pair, log only: both runs succeeded and handed the adapter the same in %d of %d "
+                       "frames each, the first being the gate's (jitter, vector scale, frame time, near, far, field "
+                       "of view, the rectangle's origin and size, reset, flags, the context's sizes, each image's "
+                       "size, format and layout)\n", whole, down.frames);
+            else if (match == SELFTEST_MATCH_FAILED)
+                SAY(ST "matched pair, log only: a run did not succeed (y down %s, y up %s, %d and %d frames done of "
+                       "%d): the outputs are not compared\n", ran_down ? "ran" : "FAILED", ran_up ? "ran" : "FAILED",
+                    done[0], done[1], whole);
+            else if (match == SELFTEST_MATCH_SHORT)
+                SAY(ST "matched pair, log only: the runs did not hand over all frames (%d and %d done of %d, first "
+                       "frame done in one run only: %d): the outputs are not compared\n", done[0], done[1], whole,
+                    first);
+            else
+                SAY(ST "matched pair, log only: what was handed to the adapter differs first in frame %d (jitter "
+                       "%.9g %.9g against %.9g %.9g, reset %u against %u): the outputs are not compared\n",
+                    first, (double)handed[0][first].f[0], (double)handed[0][first].f[1],
+                    (double)handed[1][first].f[0], (double)handed[1][first].f[1], handed[0][first].u[4],
+                    handed[1][first].u[4]);
+            if (match == SELFTEST_MATCHED && run(&down, &CONFIGURED, 0, picture[2], NULL, NULL, NULL, NULL)) {
+                SAY(ST "matched pair, log only, not judged: the two outputs differ by %.9f over the picture, a "
+                       "repeated run of the first by %.9f\n",
+                    difference(&down, picture[0], picture[1], regions, SELFTEST_BACKGROUND),
+                    difference(&down, picture[0], picture[2], regions, SELFTEST_BACKGROUND));
+                for (int e = 0; e < 2; e++) {
+                    SelftestProfile p[3];
+                    for (int k = 0; k < 3; k++) selftest_profile_make(edges[e], picture[k], OUT_W, &p[k]);
+                    SAY(ST "matched pair, log only, not judged, %s edge: profiles differ by %.9f and pictures by "
+                           "%.9f per pixel between the two orientations, by %.9f and %.9f in the repeated run\n",
+                        e ? "near-horizontal" : "near-vertical", selftest_profile_apart(&p[0], &p[1]),
+                        selftest_edge_apart(edges[e], picture[0], picture[1], OUT_W),
+                        selftest_profile_apart(&p[0], &p[2]),
+                        selftest_edge_apart(edges[e], picture[0], picture[2], OUT_W));
+                }
+            } else if (match == SELFTEST_MATCHED)
+                SAY(ST "matched pair, log only: the repeated run could not be made: the outputs are not compared\n");
+        }
+    }
+    inputs_free(&down);
+    inputs_free(&up);
+    free(handed[0]);
+    free(handed[1]);
+    for (int k = 0; k < 3; k++) free(picture[k]);
+    free(reference);
+    free(regions);
+}
+
+/* Log only, exploratory, no verdict: the response table. For one axis at a time the jitter reported for it is
+   multiplied by a factor, the images and the other axis unchanged: 1 is configured, 0 told nothing, -1 the sign
+   turned. Each run's error on both edges is printed. A lowest error among these factors on one picture does not
+   name the factor a library wants: the table is for looking, and nothing is tuned or judged from it. */
+static void edge_response(int up) {
+    static const double factors[11] = {-1.0, -0.5, 0.0, 0.5, 9.0 / 16.0, 0.75, 1.0, 1.25, 1.5, 16.0 / 9.0, 2.0};
+    static const double still[2] = {0.0, 0.0};
+    const SelftestEdge* edges[2] = {&SELFTEST_EDGE_V, &SELFTEST_EDGE_H};
+    const size_t pixels = (size_t)OUT_W * OUT_H, size = sizeof(double) * 3 * pixels;
+    const char* way = up ? "up" : "down";
+    double *reference = malloc(size), *picture = malloc(size);
+    u8* regions = malloc(pixels);
+    SelftestProfile truth_profile[2];
+    Inputs in;
+    memset(&in, 0, sizeof in);
+    int ok = !stopped() && reference && picture && regions &&
+             inputs_build(&in, SIZES, RENDER_W, RENDER_H, 0, 0, up, still, 0, 0, 1, 0, 0);
+    if (ok) {
+        truth(&in, up, reference, regions);
+        for (int e = 0; e < 2; e++) selftest_profile_make(edges[e], reference, OUT_W, &truth_profile[e]);
+    }
+    for (int axis = 0; ok && axis < 2; axis++)
+        for (int k = 0; ok && k < 11; k++) {
+            const Variant v = {axis ? 1.0 : factors[k], axis ? factors[k] : 1.0, 1, 1, 1, 0};
+            double profile[2], per_pixel[2];
+            ok = run(&in, &v, 0, picture, NULL, NULL, NULL, NULL);
+            if (!ok) break;
+            for (int e = 0; e < 2; e++) {
+                SelftestProfile p;
+                selftest_profile_make(edges[e], picture, OUT_W, &p);
+                profile[e] = selftest_profile_apart(&p, &truth_profile[e]);
+                per_pixel[e] = selftest_edge_apart(edges[e], picture, reference, OUT_W);
+            }
+            /* the edge across the axis first: the near-vertical one for x, the near-horizontal one for y */
+            SAY(ST "response table %s, exploratory, not judged: reported jitter %c times %.4f: edge across it profile "
+                   "error %.6f, per pixel %.6f. The other edge %.6f, %.6f\n",
+                way, axis ? 'y' : 'x', factors[k], profile[axis], per_pixel[axis], profile[!axis], per_pixel[!axis]);
+        }
+    if (!ok) SAY(ST "response table %s, exploratory: could not be made or finished\n", way);
+    inputs_free(&in);
+    free(reference);
+    free(picture);
+    free(regions);
+}
+
+/* The edge case's images, made and named by their checksums before any adapter is looked for: they depend on no
+   library. The checksums are kept, and the case holds the images it runs on against them. The reference's two
+   profiles must be whole, or the case could compare nothing. 1 when all of it is in order. */
+static int edges_announce(void) {
+    static const double still[2] = {0.0, 0.0};
+    int ok = 1;
+    for (int up = 1; up >= 0 && ok; up--) {
+        Inputs in;
+        const size_t pixels = (size_t)RENDER_W * RENDER_H;
+        ok = inputs_build(&in, SIZES, RENDER_W, RENDER_H, 0, 0, up, still, 0, 0, 1, 0, 0);
+        double* reference = ok ? malloc(sizeof(double) * 3 * OUT_W * OUT_H) : NULL;
+        if (!reference) {
+            LOG(ST "edge case %s: the images could not be made: FAIL\n", up ? "up" : "down");
+            inputs_free(&in);
+            return 0;
+        }
+        const SelftestViewport out = {0, up ? OUT_H : 0, OUT_W, up ? -OUT_H : OUT_H};
+        for (int y = 0; y < OUT_H; y++)
+            for (int x = 0; x < OUT_W; x++)
+                selftest_reference(&in.scene[0], &out, x, y, SAMPLES, &reference[3 * ((size_t)y * OUT_W + x)]);
+        SelftestProfile v, h;
+        selftest_profile_make(&SELFTEST_EDGE_V, reference, OUT_W, &v);
+        selftest_profile_make(&SELFTEST_EDGE_H, reference, OUT_W, &h);
+        g.edge_sums[up][0] = selftest_checksum(in.colour, (size_t)in.frames * pixels * 4, SELFTEST_CHECKSUM_START);
+        g.edge_sums[up][1] = selftest_checksum(in.depth, (size_t)in.frames * pixels * 4, SELFTEST_CHECKSUM_START);
+        g.edge_sums[up][2] = selftest_checksum(in.motion, (size_t)in.frames * pixels * 8, SELFTEST_CHECKSUM_START);
+        ok = selftest_profile_whole(&v) && selftest_profile_whole(&h);
+        LOG(ST "edge case %s: %d frames of %dx%d made before any adapter. Checksums: colour %016llx, depth %016llx, "
+               "vectors %016llx. The reference's two profiles hold pixels in every bin: %s\n",
+            up ? "up" : "down", in.frames, RENDER_W, RENDER_H, (unsigned long long)g.edge_sums[up][0],
+            (unsigned long long)g.edge_sums[up][1], (unsigned long long)g.edge_sums[up][2], ok ? "yes" : "NO: FAIL");
+        free(reference);
+        inputs_free(&in);
+    }
+    return ok;
+}
+
+/* The mode. The process's result: 0 when every case passed and the validation layer was there and silent. */
+int vk_upscaler_selftest(const char* adapter) {
+    int pass = 1;
+    LOG(ST "started for the adapter \"%s\". No game is loaded and no window is opened\n", adapter);
+    if (!edges_announce()) return 1;
+    g.api = vk_upscaler_adapter_selftest(adapter);
+    g.dlss = !strcmp(adapter, "dlss");
+    g.matrix = g.dlss || !strcmp(adapter, "xess");
+    g.name = adapter;
+    g.at13 = !strcmp(adapter, "xess");
+    /* DLSS and XeSS take the vectors in two channels */
+    g.motion_format = g.matrix ? VK_FORMAT_R16G16_SFLOAT : VK_FORMAT_R16G16B16A16_SFLOAT;
+    if (!g.api) {
+        LOG(ST "FAIL: the adapter \"%s\" is not available\n", adapter);
+        return 1;
+    }
+    /* the output's format, as the adapter declares it when it is loaded (ABI 5), and only one this test reads back */
+    g.output_format = g.api->output_format != VK_FORMAT_UNDEFINED ? g.api->output_format : OUTPUT_FORMAT;
+    if (g.output_format != OUTPUT_FORMAT && g.output_format != VK_FORMAT_B10G11R11_UFLOAT_PACK32) {
+        LOG(ST "FAIL: the adapter's output format, Vulkan format %d, is not one the self-test reads back\n",
+            (int)g.output_format);
+        return 1;
+    }
+    LOG(ST "the adapter's output is made in Vulkan format %d%s\n", (int)g.output_format,
+        g.output_format == OUTPUT_FORMAT ? ", four 32 bit floats" : ", B10G11R11");
+    g.generation = 1;
+    if (!device_make()) return 1;
+    if (g.matrix) { /* DLSS's matrix, XeSS's too: the native size, and 1/2 and 2/3 (D3-4), quality not judged (N4 Q1) */
+        LOG(ST "the suite of cases 1 to 6: not run for %s, its verdicts are of quality (below native, the suites at "
+               "1/2 and 2/3 judge integration)%s\n", g.name, g.dlss ? "" : ". Case 2's vector signs are logged");
+        LOG(ST "the change of size below the native one: not run for %s, its suites at 1/2 and 2/3 change the size "
+               "instead\n", g.name);
+        LOG(ST "the edge case, its matched and its response runs: not run for %s, their verdicts are of quality\n",
+            g.name);
+        if (!g.dlss) /* XeSS (XESS-DESIGN.md): the vectors' signs by case 2's sixteen combinations, logged only */
+            for (int up = 1; up >= 0; up--) {
+                pass &= vector_signs(up) || skip_rest();
+                g.generation++;
+            }
+        pass &= native(1) || skip_rest(); /* with &=, so that the vector signs' runs above stay in the verdict */
+        g.generation++;
+        pass &= native(0) || skip_rest();
+        g.generation++;
+        pass &= sign_protocol(0) || skip_rest();
+        /* D3-4: below the native size at 1/2 and 2/3 of the output, then the sign protocol at 1/2 as a diagnostic */
+        for (int half = 1; half >= 0; half--)
+            for (int up = 1; up >= 0; up--) {
+                g.generation++;
+                pass &= below_native(up, half) || skip_rest();
+            }
+        g.generation++;
+        pass &= sign_protocol(1) || skip_rest();
+    } else {
+        /* after a stop each is neither run nor counted (skipped) */
+        pass = suite(1) || skip_rest();
+        g.generation++;
+        pass &= suite(0) || skip_rest();
+        g.generation++;
+        pass &= resize(1) || skip_rest();
+        g.generation++;
+        pass &= resize(0) || skip_rest();
+        g.generation++;
+        pass &= native(1) || skip_rest();
+        g.generation++;
+        pass &= native(0) || skip_rest();
+        g.generation++;
+        pass &= edge_case(1) || skip_rest();
+        g.generation++;
+        pass &= edge_case(0) || skip_rest();
+        /* log only from here: nothing below is a case, and none of it enters the result */
+        g.generation++;
+        edge_matched();
+        g.generation++;
+        edge_response(1);
+        g.generation++;
+        edge_response(0);
+    }
+    /* The wait is made whatever the cases before came to, and its answer is kept on its own. It is idle()'s wait,
+       written out here so that a wait that was not tried (the device's state was not known before it) and one
+       that was tried and failed, with its result, can be told apart afterwards. */
+    const int was_unknown = g.unknown;
+    VkResult wait_result = VK_SUCCESS;
+    int waited = 0;
+    if (!was_unknown) {
+        wait_result = vkDeviceWaitIdle(g.device);
+        waited = VK_OK(wait_result);
+        if (!waited) unknown("waiting for the device failed");
+    }
+    pass = pass && waited;
+    /* An adapter that started something for the device is shut down for it here, before case 7's count, so that
+       what its shutdown makes the layer say is counted. Only when every context is destroyed and the device is
+       idle. Otherwise nothing is shut down and the run ends with it alive. A FAILED shutdown fails the run. */
+    if (g.api->shutdown) {
+        if (!waited)
+            LOG(ST "the adapter is NOT shut down for the device: the device is not known to be idle: FAIL\n");
+        else if (g.contexts)
+            LOG(ST "the adapter is NOT shut down for the device: %u of its contexts were not destroyed: FAIL\n",
+                g.contexts);
+        else {
+            const int down = g.api->shutdown(g.device);
+            LOG(ST "the adapter was shut down for the device: %s\n", down == SNX_UPSCALER_OK ? "ok" : "FAILED: FAIL");
+            pass = pass && down == SNX_UPSCALER_OK;
+        }
+        pass = pass && !g.contexts;
+    }
+    /* Case 7: no message of the validation layer, with its synchronisation checks asked for, in any case. Without
+       the layer the case was not run, which is not a pass. Neither is a run that had to stop, nor silence of a
+       layer whose synchronisation checks were not asked for: that is not the case's condition. */
+    /* One copy of the callbacks' counts, taken under their lock after the wait for the device, is what the
+       summary, case 7's lines and the RESULT all read. When that wait could not be made or failed the copy is
+       taken all the same, case 7's line says so, and the case fails. A callback that arrives after the copy
+       gets a line of its own and fails the case too. The messenger is never destroyed in this mode. */
+    unsigned own = 0;
+    const unsigned said = validation_counts(&own), others = said - own; /* NGX's own are counted, not judged */
+    if (own)
+        LOG(ST "case 7: %u of the %u validation messages are NGX's own (%s in %s on %s only), shown and not judged "
+               "(research 22:20). The case is judged on the other %u\n", own, said, SELFTEST_NGX_ID,
+            SELFTEST_NGX_REGION, SELFTEST_NGX_IMAGE, others);
+    if (!g.validation) LOG(ST "case 7: NOT RUN, the validation layer is %s: FAIL\n", validation_missing());
+    else if (g.unknown)
+        LOG(ST "case 7: NOT JUDGED, the run stopped (%u validation messages until then): FAIL\n", said);
+    else if (!g.checks_asked)
+        LOG(ST "case 7: NOT MET, %u validation messages of a layer WITHOUT its synchronisation checks. Its condition "
+               "is no message with them asked for: FAIL\n", said);
+    else if (g.halted) /* exempt from the skip, a count over what ran (research 12:40) */
+        LOG(ST "case 7: %u validation messages over the part that ran (stopped after %s): %s\n", others, g.halted_in,
+            others ? "FAIL" : "PASS");
+    else LOG(ST "case 7: %u validation messages: %s\n", others, others ? "FAIL" : "PASS");
+    /* said also when the run stopped: the reason is kept whatever else failed */
+    if (g.validation && !g.checks_asked)
+        LOG(ST "case 7: the synchronisation checks were %s: FAIL\n", checks_missing());
+    /* the callbacks after the copy, NGX's own apart as in the copy (the reviewer's note on 4de0a6ad) */
+    while (__atomic_exchange_n(&g_said_lock, 1, __ATOMIC_ACQUIRE)) {}
+    const unsigned late_own = g_said.ngx_own - own, late = g.messages - said - late_own;
+    __atomic_store_n(&g_said_lock, 0, __ATOMIC_RELEASE);
+    if (late_own)
+        LOG(ST "case 7: %u more callbacks of NGX's own arrived after its count was taken, shown and not judged\n",
+            late_own);
+    if (late)
+        LOG(ST "case 7: %u more validation callbacks arrived after its count was taken. They are not in the lines "
+               "above: FAIL\n", late);
+    if (!waited && was_unknown)
+        LOG(ST "case 7: its count was taken without the device known to be idle. The wait for it was not tried: "
+               "the device's state was not known before it: FAIL\n");
+    else if (!waited)
+        LOG(ST "case 7: its count was taken without the device known to be idle. The wait for it was made and "
+               "failed with the result %d: FAIL\n", (int)wait_result);
+    LOG(ST "contexts: %u handed out and not destroyed at the end, each destroyed once and only with no command buffer "
+           "recorded: %s\n", g.contexts, g.ended_wrong ? "NO: FAIL" : "yes");
+    if (g.halted) LOG(ST "an evaluate answered UNKNOWN: FAIL\n");
+    pass = pass && g.validation && g.checks_asked && !others && !late && waited && !g.unknown && !g.halted &&
+           !g.ended_wrong;
+    if (g.matrix) { /* DL1 judges integration only: every call, every value, every run, the lifecycle, case 7 */
+        if (pass && g.known) /* every other check passed: the failure is the known deviation's alone */
+            LOG(ST "DL1 integration checks, quality unassessed: FAIL, with 1 known library deviation alone (the reset "
+                   "at 1/2 in performance mode, %d lines, research 22:50) and nothing else failed\n", g.known);
+        else
+            LOG(ST "%s integration checks, quality unassessed: %s%s\n", g.dlss ? "DL1" : g.name, pass ? "PASS" : "FAIL",
+                !pass && g.known ? ", and besides the known library deviation (the reset at 1/2) another check failed"
+                                 : "");
+        LOG(ST "quality: not assessed in %s\n", g.dlss ? "DL1" : "this matrix");
+    } else
+        LOG(ST "RESULT: %s\n", pass ? "PASS" : "FAIL");
+    return pass && !g.known ? 0 : 1;
+}

@@ -113,22 +113,32 @@ static const IniOpt* find_row(const char* key, int* own) {
 
 int snx_setting_known(const char* key) { return find_row(key, NULL) || unattended_known(key); }
 
-/* ---- the file's values, the command line's, and the menu's waiting to be written ---- */
+/* ---- the file's values, the command line's, and the changes made in the game ---- */
 
 #define KEY_MAX 64
 #define STORE_MAX 256
 #define VALUE_MAX 2048
 #define OVERRIDE_MAX 64
-#define PENDING_MAX 64
-#define PENDING_VALUE 256 /* a gamepad map's text is up to 165 bytes (pad_map.h) */
+#define CHANGE_VALUE_MAX 256 /* a gamepad map's text is up to 165 bytes (pad_map.h) */
 
-/* The file as last read, with the menu's changes merged in: only the thread that opens and polls it touches it */
+/* The file as last read, with the changes made in the game. dirty: the value came from the game and the file does not
+   have it yet. g_store_lock guards every entry and flag, and is a leaf: no call that takes a lock runs under it */
 typedef struct {
     char key[KEY_MAX];
     char value[VALUE_MAX];
+    int dirty;
 } Entry;
 static Entry g_store[STORE_MAX];
 static int g_nstore;
+static PMutex g_store_lock = PMUTEX_INIT;
+/* the store's copy for a reload's merge or a write: the frontend thread (ini_poll) or the settings CLI makes it, and
+   the two never run at once */
+static Entry g_work[STORE_MAX];
+/* a key and the text a window set, kept until the game restarts */
+typedef struct {
+    char key[KEY_MAX];
+    char value[CHANGE_VALUE_MAX];
+} SettingText;
 /* the command line's, set before ini_open and only read after */
 typedef struct {
     char key[KEY_MAX];
@@ -136,15 +146,6 @@ typedef struct {
 } Override;
 static Override g_over[OVERRIDE_MAX];
 static int g_nover;
-/* the menu's, from any thread, until a write of the file has them. g_pending_lock is a leaf: nothing is called while
-   it is held */
-typedef struct {
-    char key[KEY_MAX];
-    char value[PENDING_VALUE];
-} Pending;
-static Pending g_pending[PENDING_MAX];
-static int g_npending;
-static PMutex g_pending_lock = PMUTEX_INIT;
 static PMutex g_poll_lock = PMUTEX_INIT;
 
 static char g_path[1400];
@@ -172,53 +173,158 @@ static const char* override_of(const char* key) {
         if (!strcmp(g_over[i].key, key)) return g_over[i].value;
     return NULL;
 }
-static Entry* store_find(const char* key) {
+/* the key's entry, with g_store_lock held by the caller */
+static Entry* store_find_locked(const char* key) {
     int i;
     for (i = 0; i < g_nstore; i++)
         if (!strcmp(g_store[i].key, key)) return &g_store[i];
     return NULL;
 }
-/* a value that doesn't fit is dropped, never cut: 0 stored, -1 left out (the warning says why) */
-static int store_put(const char* key, const char* value) {
-    Entry* e = store_find(key);
+static Entry* store_find(const char* key) {
+    Entry* e;
+    pm_lock(&g_store_lock);
+    e = store_find_locked(key);
+    pm_unlock(&g_store_lock);
+    return e;
+}
+/* Why store_put_locked refused a value; the caller says it after it unlocks, since the log takes its own lock */
+typedef enum {
+    STORE_PUT_DONE = 0,
+    STORE_PUT_KEY_LONG,
+    STORE_PUT_VALUE_LONG,
+    STORE_PUT_FULL
+} StorePutResult;
+/* a value that doesn't fit is dropped, never cut. g_store_lock held; a stored value is not dirty */
+static StorePutResult store_put_locked(const char* key, const char* value) {
+    Entry* e = store_find_locked(key);
     size_t n = strlen(value);
-    if (strlen(key) >= KEY_MAX) {
-        WARN_LIMIT(1, "settings: key %.40s... is too long and is left out\n", key);
-        return -1;
-    }
-    if (n >= VALUE_MAX) {
-        WARN_LIMIT(1, "settings: the value of %s is longer than %d bytes and is left out\n", key, VALUE_MAX - 1);
-        return -1;
-    }
+    if (strlen(key) >= KEY_MAX) return STORE_PUT_KEY_LONG;
+    if (n >= VALUE_MAX) return STORE_PUT_VALUE_LONG;
     if (!e) {
-        if (g_nstore == STORE_MAX) {
-            WARN_LIMIT(1, "settings: more than %d keys, %s and those after it are left out\n", STORE_MAX, key);
-            return -1;
-        }
+        if (g_nstore == STORE_MAX) return STORE_PUT_FULL;
         e = &g_store[g_nstore++];
         memcpy(e->key, key, strlen(key) + 1);
     }
     memcpy(e->value, value, n + 1);
+    e->dirty = 0;
+    return STORE_PUT_DONE;
+}
+/* the one line a refused put says, once for each reason in a run */
+static void store_put_warn(StorePutResult why, const char* key) {
+    switch (why) {
+    case STORE_PUT_KEY_LONG:
+        WARN_LIMIT(1, "settings: key %.40s... is too long and is left out\n", key);
+        break;
+    case STORE_PUT_VALUE_LONG:
+        WARN_LIMIT(1, "settings: the value of %s is longer than %d bytes and is left out\n", key, VALUE_MAX - 1);
+        break;
+    case STORE_PUT_FULL:
+        WARN_LIMIT(1, "settings: more than %d keys, %s and those after it are left out\n", STORE_MAX, key);
+        break;
+    default:
+        break;
+    }
+}
+/* a file's value: 0 stored, -1 left out (the warning says why) */
+static int store_put(const char* key, const char* value) {
+    StorePutResult why;
+    pm_lock(&g_store_lock);
+    why = store_put_locked(key, value);
+    pm_unlock(&g_store_lock);
+    if (why != STORE_PUT_DONE) {
+        store_put_warn(why, key);
+        return -1;
+    }
     return 0;
 }
-/* the text's keys into the store: 0, or -1 when it holds one the store could not keep. The CLI's settings commands
-   refuse such a file, and the runtime writes no file in such a run, since the write would lose that key */
-static int store_parse(char* text) {
+/* The text's keys into the store, with the lock held and without a warning: the caller says it after it unlocks.
+   0, or -1 when the text held one the store could not keep */
+static int store_parse_locked(char* text, StorePutResult* why, char why_key[KEY_MAX]) {
     SnxIni ini;
     char *key, *value;
     int failed = 0;
     g_nstore = 0;
     snx_ini_start(&ini, text);
-    while (snx_ini_next(&ini, &key, &value))
-        if (store_put(key, value)) failed = 1;
+    while (snx_ini_next(&ini, &key, &value)) {
+        StorePutResult r = store_put_locked(key, value);
+        if (r == STORE_PUT_DONE) continue;
+        if (!failed) {
+            size_t n = strlen(key);
+            *why = r;
+            if (n >= KEY_MAX) n = KEY_MAX - 1;
+            memcpy(why_key, key, n);
+            why_key[n] = 0;
+        }
+        failed = 1;
+    }
     return failed ? -1 : 0;
 }
+/* the text's keys into the store: 0, or -1 when it holds one the store could not keep. The CLI's settings commands
+   refuse such a file, and the runtime writes no file in such a run, since the write would lose that key */
+static int store_parse(char* text) {
+    StorePutResult why = STORE_PUT_DONE;
+    char why_key[KEY_MAX] = "";
+    int failed;
+    pm_lock(&g_store_lock);
+    failed = store_parse_locked(text, &why, why_key);
+    pm_unlock(&g_store_lock);
+    if (failed) store_put_warn(why, why_key);
+    return failed ? -1 : 0;
+}
+/* The text's keys into the store, then the changes made in the game on top: an in-game value wins over the file's.
+   The store is copied aside first, since the parse overwrites it. A change that the new store cannot hold is left out.
+   0, or -1 when the text held a key the store could not keep */
+static int store_reparse(char* text) {
+    StorePutResult why = STORE_PUT_DONE;
+    char why_key[KEY_MAX] = "";
+    char lost_key[KEY_MAX] = "";
+    int i, n_old, failed, lost = 0;
+    pm_lock(&g_store_lock);
+    memcpy(g_work, g_store, (size_t)g_nstore * sizeof *g_store);
+    n_old = g_nstore;
+    failed = store_parse_locked(text, &why, why_key);
+    for (i = 0; i < n_old; i++) {
+        if (!g_work[i].dirty) continue;
+        /* the length checks of ini_set leave a full store as the only refusal of a change */
+        if (store_put_locked(g_work[i].key, g_work[i].value) != STORE_PUT_DONE) {
+            if (!lost) {
+                memcpy(lost_key, g_work[i].key, KEY_MAX);
+                lost = 1;
+            }
+            continue;
+        }
+        store_find_locked(g_work[i].key)->dirty = 1;
+    }
+    pm_unlock(&g_store_lock);
+    if (failed) store_put_warn(why, why_key);
+    if (lost) WARN_LIMIT(1, "settings: the store is full, %s is not saved\n", lost_key);
+    return failed ? -1 : 0;
+}
+/* Only the CLI calls this (snx_settings_value), in one thread with no ini_set, so the pointer stays valid */
 static const char* value_of(const IniOpt* o) {
     const char* v = override_of(o->key);
     const Entry* e;
     if (v) return v;
     e = store_find(o->key);
     return e ? e->value : o->def;
+}
+/* the snapshot's values are in the file: the store's copies that still match lose the flag; one changed stays dirty */
+static void store_clear_written(const Entry* snap, int n) {
+    int i;
+    pm_lock(&g_store_lock);
+    for (i = 0; i < n; i++) {
+        Entry* e = store_find_locked(snap[i].key);
+        if (e && !strcmp(e->value, snap[i].value)) e->dirty = 0;
+    }
+    pm_unlock(&g_store_lock);
+}
+/* 1 when an in-game change waits for the file */
+static int store_has_dirty(void) {
+    int i, found = 0;
+    pm_lock(&g_store_lock);
+    for (i = 0; i < g_nstore && !found; i++) found = g_store[i].dirty;
+    pm_unlock(&g_store_lock);
+    return found;
 }
 
 void ini_override(const char* k, const char* v) {
@@ -237,43 +343,18 @@ void ini_override(const char* k, const char* v) {
 
 void ini_set(const char* k, const char* v) {
     size_t kn = strlen(k), vn = strlen(v);
-    int i;
+    StorePutResult why;
     if (override_of(k)) return; /* this run's value, not the file's */
-    if (kn >= KEY_MAX || vn >= PENDING_VALUE) {
+    if (kn >= KEY_MAX || vn >= CHANGE_VALUE_MAX) {
         WARN_LIMIT(1, "settings: %s's value is too long to save\n", k);
         return;
     }
-    pm_lock(&g_pending_lock);
-    for (i = 0; i < g_npending && strcmp(g_pending[i].key, k); i++) continue;
-    if (i < PENDING_MAX) {
-        if (i == g_npending) memcpy(g_pending[g_npending++].key, k, kn + 1);
-        memcpy(g_pending[i].value, v, vn + 1);
-    }
-    pm_unlock(&g_pending_lock);
-    if (i == PENDING_MAX) WARN_LIMIT(1, "settings: too many changes at once, %s is not saved\n", k);
-}
-
-/* the menu's changes into the store: their copy in taken, for pending_written once the file has them */
-static int pending_take(Pending* taken) {
-    int n, i;
-    pm_lock(&g_pending_lock);
-    n = g_npending;
-    memcpy(taken, g_pending, (size_t)n * sizeof *taken);
-    pm_unlock(&g_pending_lock);
-    for (i = 0; i < n; i++) store_put(taken[i].key, taken[i].value);
-    return n;
-}
-/* drops the changes the file now has; one set again meanwhile stays for the next write */
-static void pending_written(const Pending* taken, int n) {
-    int i, j;
-    pm_lock(&g_pending_lock);
-    for (i = 0; i < n; i++)
-        for (j = 0; j < g_npending; j++)
-            if (!strcmp(g_pending[j].key, taken[i].key)) {
-                if (!strcmp(g_pending[j].value, taken[i].value)) g_pending[j] = g_pending[--g_npending];
-                break;
-            }
-    pm_unlock(&g_pending_lock);
+    pm_lock(&g_store_lock);
+    why = store_put_locked(k, v);
+    if (why == STORE_PUT_DONE) store_find_locked(k)->dirty = 1; /* the put made the entry or found it */
+    pm_unlock(&g_store_lock);
+    /* the length checks above leave a full store as the only refusal */
+    if (why != STORE_PUT_DONE) WARN_LIMIT(1, "settings: the store is full, %s is not saved\n", k);
 }
 
 /* ---- applying ---- */
@@ -292,9 +373,9 @@ static void apply(const char* key, const char* value) {
 int options_overridden(const char* key) { return override_of(key) != NULL; }
 
 /* The startup settings that a window changed in this run: saved to the file, but the running game keeps its value. The
-   window shows the saved one and that the game must start again. A leaf lock, as g_pending_lock's */
+   window shows the saved one and that the game must start again. A leaf lock, as g_store_lock's */
 enum { RESTART_MAX = 32 };
-static Pending g_restart[RESTART_MAX];
+static SettingText g_restart[RESTART_MAX];
 static int g_nrestart;
 static PMutex g_restart_lock = PMUTEX_INIT;
 
@@ -331,12 +412,29 @@ int options_change(const char* key, const char* value) {
         WARN_LIMIT(1, "settings: %s=%s is not taken: %s\n", key, value, why);
         return OPTIONS_REJECTED;
     }
+    /* The store gets the new value before apply, so that a reader of the store during apply (a backend_ini handler or
+       a set hook) would see the new value. No such reader exists today; case_store_before_apply checks the order. A
+       reload cannot run in between: ini_poll and every caller of options_change run on the frontend thread. */
+    ini_set(key, value);
     apply(key, value);
     if (g_started && (o->flags & INI_STARTUP)) restart_note(key, value);
-    ini_set(key, value);
     return OPTIONS_OK;
 }
 
+/* the row's value: the command line's or the row's default as they are, else the store's entry copied into buf. The
+   first two live for the whole process, so only the store needs the lock and the copy */
+static const char* row_value(const IniOpt* o, char buf[VALUE_MAX]) {
+    const char* v = override_of(o->key);
+    const Entry* e;
+    int have;
+    if (v) return v;
+    pm_lock(&g_store_lock);
+    e = store_find_locked(o->key);
+    have = e != NULL;
+    if (have) memcpy(buf, e->value, strlen(e->value) + 1);
+    pm_unlock(&g_store_lock);
+    return have ? buf : o->def;
+}
 /* every setting: the command line's value, else the file's, else its default; then the keys of no section the
    unattended options take */
 static void apply_all(void) {
@@ -345,12 +443,24 @@ static void apply_all(void) {
         for (t = 0; t < 3 && g_ini_sections[s].table[t]; t++) {
             const IniOpt* o;
             for (o = g_ini_sections[s].table[t]; o->key; o++) {
-                const char* v = value_of(o);
+                char buf[VALUE_MAX];
+                const char* v = row_value(o, buf);
                 if (v) apply(o->key, v);
             }
         }
-    for (i = 0; i < g_nstore; i++)
-        if (!find_row(g_store[i].key, NULL) && !override_of(g_store[i].key)) apply(g_store[i].key, g_store[i].value);
+    for (i = 0;; i++) {
+        char key[KEY_MAX], value[VALUE_MAX];
+        int have;
+        pm_lock(&g_store_lock);
+        have = i < g_nstore;
+        if (have) {
+            memcpy(key, g_store[i].key, sizeof key);
+            memcpy(value, g_store[i].value, sizeof value);
+        }
+        pm_unlock(&g_store_lock);
+        if (!have) break;
+        if (!find_row(key, NULL) && !override_of(key)) apply(key, value);
+    }
     for (i = 0; i < g_nover; i++)
         if (!find_row(g_over[i].key, NULL)) apply(g_over[i].key, g_over[i].value);
 }
@@ -396,33 +506,64 @@ static void put_header(FILE* f) {
     fprintf(f, ", F11 or\n;  Alt+Enter fullscreen\n");
     fprintf(f, "; ==================================================================================\n");
 }
-static void put_rows(FILE* f, const IniOpt* o) {
+/* the key's entry in a snapshot of the store, without the lock: a snapshot does not change */
+static const Entry* snapshot_find(const Entry* snap, int n, const char* key) {
+    int i;
+    for (i = 0; i < n; i++)
+        if (!strcmp(snap[i].key, key)) return &snap[i];
+    return NULL;
+}
+/* the section rows with a default that the snapshot lacks: the file gets the snapshot's n keys and these */
+static int default_rows_missing(const Entry* snap, int n) {
+    int s, t, missing = 0;
+    for (s = 0; s < g_ini_sections_count; s++)
+        for (t = 0; t < 3 && g_ini_sections[s].table[t]; t++) {
+            const IniOpt* o;
+            for (o = g_ini_sections[s].table[t]; o->key; o++)
+                if (o->def && !snapshot_find(snap, n, o->key)) missing++;
+        }
+    return missing;
+}
+/* the section's rows: the store's value or else the default, and with only_store only the store's keys */
+static void put_rows(FILE* f, const IniOpt* o, const Entry* snap, int n, int only_store) {
     for (; o->key; o++) {
-        const Entry* e = store_find(o->key);
-        const char* v = e ? e->value : o->def;
-        if (!v) continue; /* no default and never set */
+        const Entry* e = snapshot_find(snap, n, o->key);
+        const char* v = e ? e->value : only_store ? NULL : o->def;
+        if (!v) continue; /* no default and never set, or a default that the store's limit leaves out */
         if (o->help) put_help(f, o->help);
         fprintf(f, "%s=%s\n", o->key, v);
     }
 }
-/* 1 when put_rows writes a row of the section: one with a default, or set */
-static int section_set(const IniSection* section) {
+/* 1 when put_rows writes a row of the section: one that the store has, or with a default unless only_store */
+static int section_set(const IniSection* section, const Entry* snap, int n, int only_store) {
     int t;
     const IniOpt* o;
     for (t = 0; t < 3 && section->table[t]; t++)
         for (o = section->table[t]; o->key; o++)
-            if (o->def || store_find(o->key)) return 1;
+            if (snapshot_find(snap, n, o->key) || (!only_store && o->def)) return 1;
     return 0;
 }
-/* the store into the file: beside it, then moved over it, so the file is always whole. 0, -1 (warned once), or 1
-   with nothing written because the last parse of the file was incomplete */
+/* The store into the file: beside it, then moved over it, so the file is always whole. A row with a default is written
+   even when the store lacks it, so above STORE_MAX keys with the sections' defaults only the store's keys are written:
+   the next parse is complete and a row left out reads as its default. 0, -1 (warned once), or 1 with nothing written
+   because the last parse of the file was incomplete */
 static int write_file(void) {
     char tmp[sizeof g_path + 8];
     FILE* f;
-    int s, t, i, other = 0, failed;
+    int s, t, i, n, missing, only_store, other = 0, failed;
     unsigned char* text;
     size_t size;
+    const Entry* snap = g_work;
     if (g_write_blocked) return 1;
+    pm_lock(&g_store_lock);
+    memcpy(g_work, g_store, (size_t)g_nstore * sizeof *g_store);
+    n = g_nstore;
+    pm_unlock(&g_store_lock);
+    missing = default_rows_missing(snap, n);
+    only_store = n + missing > STORE_MAX;
+    if (only_store)
+        WARN_LIMIT(1, "settings: more than %d keys (%d in the store and %d with a default), so the file lists only "
+                      "the store's keys\n", STORE_MAX, n, missing);
     snprintf(tmp, sizeof tmp, "%s.tmp", g_path);
     f = fopen(tmp, "wb");
     if (!f) {
@@ -433,22 +574,22 @@ static int write_file(void) {
     }
     put_header(f);
     for (s = 0; s < g_ini_sections_count; s++) {
-        if (!section_set(&g_ini_sections[s])) continue; /* [Game] of a game made from no dump */
+        if (!section_set(&g_ini_sections[s], snap, n, only_store)) continue; /* [Game] of a game made from no dump */
         fprintf(f, "\n[%s]\n", g_ini_sections[s].name);
         for (t = 0; t < 3 && g_ini_sections[s].table[t]; t++) {
             if (g_ini_sections[s].page[t]) fprintf(f, "; -- %s --\n", g_ini_sections[s].page[t]);
-            put_rows(f, g_ini_sections[s].table[t]);
+            put_rows(f, g_ini_sections[s].table[t], snap, n, only_store);
         }
     }
-    for (i = 0; i < g_nstore; i++) /* a newer version's keys, typos, the unattended options: as they are */
-        if (!find_row(g_store[i].key, NULL) && !ini_deprecated(g_store[i].key)) {
+    for (i = 0; i < n; i++) /* a newer version's keys, typos, the unattended options: as they are */
+        if (!find_row(snap[i].key, NULL) && !ini_deprecated(snap[i].key)) {
             if (!other++) fprintf(f, "\n[Other]\n; keys this version does not know, kept as they are\n");
-            fprintf(f, "%s=%s\n", g_store[i].key, g_store[i].value);
+            fprintf(f, "%s=%s\n", snap[i].key, snap[i].value);
         }
-    for (i = 0, other = 0; i < g_nstore; i++) /* last, so the launcher's Clean Old Settings cuts to the end */
-        if (ini_deprecated(g_store[i].key)) {
+    for (i = 0, other = 0; i < n; i++) /* last, so the launcher's Clean Old Settings cuts to the end */
+        if (ini_deprecated(snap[i].key)) {
             if (!other++) ini_deprecated_head(f);
-            ini_deprecated_key(f, g_store[i].key, g_store[i].value);
+            ini_deprecated_key(f, snap[i].key, snap[i].value);
         }
     failed = ferror(f);
     if (fclose(f)) failed = 1;
@@ -463,6 +604,7 @@ static int write_file(void) {
     text = snx_read_file(g_path, &size);
     g_hash = g_seen = text ? fnv1a(text, size) : 0;
     free(text);
+    store_clear_written(snap, n);
     return 0;
 }
 
@@ -470,11 +612,16 @@ static int write_file(void) {
 static void say_setting(const char* line) { WARN("%s\n", line); }
 
 static void say_deprecated(void) {
+    char text[STORE_MAX][KEY_MAX];
     const char* keys[STORE_MAX];
     char line[2048];
-    int i, n = 0;
-    for (i = 0; i < g_nstore; i++)
-        if (ini_deprecated(g_store[i].key)) keys[n++] = g_store[i].key;
+    int i, count, n = 0;
+    pm_lock(&g_store_lock);
+    count = g_nstore;
+    for (i = 0; i < count; i++) memcpy(text[i], g_store[i].key, KEY_MAX);
+    pm_unlock(&g_store_lock);
+    for (i = 0; i < count; i++)
+        if (ini_deprecated(text[i])) keys[n++] = text[i];
     if (ini_deprecated_note(line, sizeof line, g_path, keys, n)) WARN("%s\n", line);
 }
 
@@ -508,10 +655,9 @@ static void set_write_blocked(int blocked) {
 }
 
 void ini_open(const char* path) {
-    Pending taken[PENDING_MAX];
     unsigned char* text;
     size_t size;
-    int i, n;
+    int i;
     char why[256];
     snprintf(g_path, sizeof g_path, "%s", path);
     ini_set_say(say_setting);
@@ -522,15 +668,14 @@ void ini_open(const char* path) {
     if (!text && !snx_path_missing(g_path))
         fatal("The settings file %s exists but cannot be read (%s)", g_path, why);
     if (text) {
-        set_write_blocked(store_parse((char*)text) != 0);
+        set_write_blocked(store_reparse((char*)text) != 0);
         g_hash = g_seen = fnv1a(text, size);
         free(text);
     }
-    n = pending_take(taken);
     say_deprecated();
     apply_all();
     debug_shown(0);
-    if (!write_file()) pending_written(taken, n);
+    write_file();
     g_started = 1;
 }
 
@@ -591,41 +736,32 @@ int snx_settings_save(const char* key, const char* value, char* out, size_t n) {
 }
 
 void ini_poll(int final) {
-    Pending taken[PENDING_MAX];
     unsigned char* text;
     size_t size;
-    int pending, n;
+    int dirty;
     u64 h;
     if (!g_path[0]) return;
     pm_lock(&g_poll_lock);
-    pm_lock(&g_pending_lock);
-    pending = g_npending;
-    pm_unlock(&g_pending_lock);
+    dirty = store_has_dirty();
     text = snx_read_file(g_path, &size);
     if (!text) {
         /* unreadable: left alone. Gone: made again when there is something to save */
-        if (!snx_path_exists(g_path) && pending) {
-            n = pending_take(taken);
-            if (!write_file()) pending_written(taken, n);
-        }
+        if (!snx_path_exists(g_path) && dirty) write_file();
         pm_unlock(&g_poll_lock);
         return;
     }
     h = fnv1a(text, size);
-    if (h != g_hash && (final ? pending : h == g_seen)) {
-        /* changed, and settled (seen the same a second before), or the menu's changes are to be saved at exit */
-        set_write_blocked(store_parse((char*)text) != 0);
-        n = pending_take(taken);
+    if (h != g_hash && (final ? dirty : h == g_seen)) {
+        /* changed, and settled (seen the same a second before), or the game's changes are to be saved at exit */
+        set_write_blocked(store_reparse((char*)text) != 0);
         apply_all();
         LOG("settings: %s reloaded\n", g_path);
         debug_shown(1);
-        if (!write_file()) pending_written(taken, n);
+        write_file();
     } else if (h != g_hash)
         g_seen = h; /* changed: maybe still being saved, read at the next poll if it stays so */
-    else if (pending) {
-        n = pending_take(taken);
-        if (!write_file()) pending_written(taken, n);
-    }
+    else if (dirty)
+        write_file();
     free(text);
     pm_unlock(&g_poll_lock);
 }

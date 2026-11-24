@@ -63,6 +63,7 @@ typedef struct {
     u32 discarded;
     u32 branch_cond; /* with structured flow, the condition of the branch that ends the block, 0 for always */
     u32 branch_target; /* and the word a BRX that ends it goes to */
+    u64 offset_size_mask; /* the slots whose size direct_offset_coords reads (ShaderInfo.tex_offset_size_mask) */
 } DirectCtx;
 
 int g_shader_texture_arrays;
@@ -993,6 +994,11 @@ static u32 texture_mask_bit(DirectCtx* c, u32 push, int slot, u32 low_component,
         spv_emit_shift_right_u32(&c->emit, c->u32_type, bits, spv_emit_constant_u32(&c->emit, c->u32_type, slot & 31)),
         spv_emit_constant_u32(&c->emit, c->u32_type, 1));
 }
+
+/* a test-only build of the translator (tests/CMakeLists.txt): 0 in every other build */
+#ifndef SNX_TEST_TXQ_MUTANT
+#define SNX_TEST_TXQ_MUTANT 0
+#endif
 
 /* Fragment fetches from a scaled render target (render_resolution=): texel p is at (p + 0.5) * scale, and TXQ answers the
    size over the scale. The texture's bit is in the push constants' uvec4, x for slots 0-31, y for 32-63 */
@@ -3031,6 +3037,7 @@ static u32 pack_texture_halves(DirectCtx* c, u32 vec2, u32 first, u32 second) {
 /* Sampling with a register offset uses normalized coordinates because SPIR-V requires a constant sample Offset. */
 static u32 direct_offset_coords(DirectCtx* c, u32 coords, u32 offset, u32 coord_count, u32 offset_count, int slot,
                                 u32 level, u32 vec2, u32 vec3, u32 vec2_i32, u32 vec3_i32, u32 i32_type) {
+    if (slot >= 0 && slot < 64) c->offset_size_mask |= 1ull << slot; /* a size read no key rewrites */
     u32 size = spv_emit_image_query_size_lod(&c->emit, coord_count == 3 ? vec3_i32 : vec2_i32, c->sampled_type[slot],
                                              c->sampler[slot], level);
     if (c->depth_array && c->swapped == (u32)slot + 1) {
@@ -3465,6 +3472,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
     ShTex textures[SH_MAXTEX] = {0};
     int texture_count = 0;
     ShaderInfo image_info = {0};
+    si->tex_txq_mask = si->tex_offset_size_mask = 0; /* this translation's size reads, set as each is found */
     int needs_fragcoord = 0;
     int needs_frontface = 0;
     int needs_point_coord = 0, needs_sample_id = 0, needs_coverage = 0;
@@ -8139,6 +8147,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
                 slot = direct_query_slot(textures, texture_count, off, bindless, bank, handle_count, bank2, off2,
                                          indexed, ldc);
             if (textures[slot].flags & SNX_TEX_INDEXED) direct_swap_element(c, slot);
+            if (slot >= 0 && slot < 64) si->tex_txq_mask |= 1ull << slot; /* which slots a size query reads */
             /* a 3D texture's depth, or an array's layers, is the third component; a 1D texture is bound as a 2D one of
                height 1, a cube's faces are no layers */
             int third = qtype == 2 || qarray;
@@ -8150,7 +8159,16 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
                 third ? spv_emit_vec4_extract(&c->emit, c->u32_type, dimensions, 2)
                       : spv_emit_constant_u32(&c->emit, c->u32_type, 1),
                 spv_emit_image_query_levels(&c->emit, c->u32_type, c->sampled_type[slot], c->sampler[slot])};
-            if (qtype == 1 && needs_texel_scale)
+            /* the keyed slot (ShaderInfo.txq_fixed): a plain 2D query answers the key's size, unscaled. The test
+               mutants (tests/txq_variant must fail them): 1 width and height swapped, 2 every other slot keyed */
+            if (stage == ST_FS && !bindless && !indexed && qtype == 1 && !qarray && si->txq_fixed[0] &&
+                !textures[slot].bindless && !(textures[slot].flags & SNX_TEX_INDEXED) &&
+                (SNX_TEST_TXQ_MUTANT == 2 ? textures[slot].cbuf_off + 1 != si->txq_fixed[0]
+                                          : textures[slot].cbuf_off + 1 == si->txq_fixed[0])) {
+                const int swap = SNX_TEST_TXQ_MUTANT == 1;
+                values[0] = spv_emit_constant_u32(&c->emit, c->u32_type, si->txq_fixed[swap ? 2 : 1]);
+                values[1] = spv_emit_constant_u32(&c->emit, c->u32_type, si->txq_fixed[swap ? 1 : 2]);
+            } else if (qtype == 1 && needs_texel_scale)
                 scaled_coords(c, push, slot, 1, fragcoord, i32_type, &values[0], &values[1]);
             u32 dst = d;
             for (u32 k = 0; k < 4; k++)
@@ -8479,6 +8497,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
     free(c->ftz);
     free(c->ftz_of);
     free(c->ftz_of_block);
+    si->tex_offset_size_mask = c->offset_size_mask;
     free(c);
     free(case_labels); /* the literals and block starts too */
     free(structure);
@@ -8502,6 +8521,9 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
     next.tex_dc_color_mask = si->tex_dc_color_mask;
     next.tex_dc_color_funcs = si->tex_dc_color_funcs;
     next.in_unfed_mask = si->in_unfed_mask;
+    memcpy(next.txq_fixed, si->txq_fixed, sizeof next.txq_fixed);
+    next.tex_txq_mask = si->tex_txq_mask;
+    next.tex_offset_size_mask = si->tex_offset_size_mask;
     next.ntex = texture_count;
     next.nimg = image_info.nimg;
     memcpy(next.img, image_info.img, (size_t)image_info.nimg * sizeof image_info.img[0]);
