@@ -1117,16 +1117,23 @@ VkSampler vk_sampler(const u32* tsc, int raise, int integer) {
     static struct {
         u32 tsc[8];
         int raise, integer;
+        int shift; /* the temporal passes' level shift in 1/16 levels, for raise bit 1 */
         VkSampler s;
     } tab[TAB];
     static u32 n, ncustom;
     static VkSampler first;
     u32 hk = 2166136261u;
     for (int i = 0; i < 8; i++) hk = (hk ^ tsc[i]) * 16777619u;
+    /* the shift follows the scene's size each frame: part of the key, rounded to 1/16 level so that a sampler made for
+       one size is not kept for another, while the samplers made stay few */
+    const int shift = (raise & 2) ? (int)floorf(g_vk_sampler_shift * 16.0f + 0.5f) : 0;
     hk = (hk ^ (u32)(raise << 1 | integer)) * 16777619u;
+    hk = (hk ^ (u32)shift) * 16777619u;
     u32 j = hk & (TAB - 1);
     for (u32 probe = 0; probe < TAB && tab[j].s; probe++, j = (j + 1) & (TAB - 1))
-        if (!memcmp(tab[j].tsc, tsc, 32) && tab[j].raise == raise && tab[j].integer == integer) return tab[j].s;
+        if (!memcmp(tab[j].tsc, tsc, 32) && tab[j].raise == raise && tab[j].integer == integer &&
+            tab[j].shift == shift)
+            return tab[j].s;
     if (n >= MAX || tab[j].s) {
         LOG_LIMIT(1, "vulkan: more than %d sampler states: the others use the first one\n", MAX);
         return first;
@@ -1148,7 +1155,7 @@ VkSampler vk_sampler(const u32* tsc, int raise, int integer) {
         else
             LOG_LIMIT(1, "arceus-temporal: a sampler without a level bias of its own takes ours (%.2f)\n",
                       (double)g_vk_sampler_shift);
-        lb = temporal_mip_bias(lb, g_vk_sampler_shift, lbmax);
+        lb = temporal_mip_bias(lb, (float)shift / 16.0f, lbmax);
     }
     static const float aniso_lut[8] = {1, 2, 4, 6, 8, 10, 12, 16}; /* Ryujinx's SamplerDescriptor */
     u32 aniso = (tsc[0] >> 20) & 7;
@@ -1232,6 +1239,7 @@ VkSampler vk_sampler(const u32* tsc, int raise, int integer) {
     memcpy(tab[j].tsc, tsc, 32);
     tab[j].raise = raise;
     tab[j].integer = integer;
+    tab[j].shift = shift;
     tab[j].s = s;
     if (g_sampler_made_n < sizeof g_sampler_made / sizeof g_sampler_made[0]) {
         g_sampler_made[g_sampler_made_n].s = s;

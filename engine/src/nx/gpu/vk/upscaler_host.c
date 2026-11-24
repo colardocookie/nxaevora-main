@@ -15,6 +15,9 @@
 #include "common/gpu/vk/vk_common.h"
 #include "common/utilities/common.h"
 #include "nx/runtime/platform/log.h"
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 #ifdef _WIN32
 const SnxUpscalerApi* snx_upscaler_fsr(void);  /* gpu/vk/upscaler_fsr.cpp */
@@ -95,6 +98,49 @@ static const SnxUpscalerApi* module_adapter(const char* name) {
         WARN("arceus-upscaler: %s is not available: %s (%s beside the program%s%s)\n", name, snx_module_text(why),
              file, path[0] ? ", " : "", path);
     return api;
+}
+void* vk_upscaler_library_beside(const char* file, char* tried, size_t tried_size) {
+    void* library = NULL;
+    if (tried_size) tried[0] = 0;
+#ifdef _WIN32
+    char* program = snx_executable(NULL);
+    const size_t len = strlen(file) + 1;
+    char path[4096];
+    size_t folder = 0;
+    /* the program's own folder: up to its last separator */
+    for (size_t i = 0; program && program[i]; i++)
+        if (program[i] == '/' || program[i] == '\\') folder = i + 1;
+    if (!program || !folder || folder + len > sizeof path) {
+        snprintf(tried, tried_size, "the program's folder is not known");
+        free(program);
+        return NULL;
+    }
+    memcpy(path, program, folder);
+    memcpy(path + folder, file, len);
+    free(program);
+    snprintf(tried, tried_size, "%s", path);
+    if (!snx_module_full_path(path, 1)) return NULL;
+    wchar_t* wide = calloc(32768, sizeof *wide);
+    /* its own folder for what it depends on, then the system's: not the current folder, not the search path */
+    if (wide && MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wide, 32768))
+        library = (void*)LoadLibraryExW(wide, NULL, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
+    free(wide);
+#else
+    (void)file;
+    snprintf(tried, tried_size, "the SDKs' libraries are loaded on Windows only");
+#endif
+    return library;
+}
+void* vk_upscaler_library_symbol(void* library, const char* name) {
+    void* p = NULL;
+#ifdef _WIN32
+    const FARPROC found = library ? GetProcAddress((HMODULE)library, name) : NULL;
+    if (found) memcpy(&p, &found, sizeof p);
+#else
+    (void)library;
+    (void)name;
+#endif
+    return p;
 }
 /* The self-test's lookup: the same as the game's */
 const SnxUpscalerApi* vk_upscaler_adapter_selftest(const char* name) { return vk_upscaler_adapter(name); }

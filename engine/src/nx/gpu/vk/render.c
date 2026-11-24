@@ -3055,11 +3055,14 @@ retry:
     VkSh* last = gs ? gs : tes ? tes : vs;
     VkSh* fs = NULL;
     FsKey fk = {0};
-    /* the targets, read before the fragment program's variant: the hand-over's decision needs their size */
-    Surf* rt[8];
-    Surf* zt;
-    u32 n;
-    read_targets(ch, rt, &zt, &n);
+    /* the targets: read before the fragment program's variant only while the hand-over watches, as its decision needs
+       their size; otherwise after the prefetches, where the draw has always read them (reading them may make target
+       surfaces and record uploads, which the textures' resolve must not see changed) */
+    Surf* rt[8] = {0};
+    Surf* zt = NULL;
+    u32 n = 0;
+    const int targets_early = g_vk_watch != NULL;
+    if (targets_early) read_targets(ch, rt, &zt, &n);
     g_spatial.larger = g_spatial.scene = g_spatial.listed = 0;
     g_spatial.keyed = 0;
     if (sh.fs0) {
@@ -3102,6 +3105,7 @@ retry:
     cb_prefetch(ch, 0, vs, 0);
     if (fs) cb_prefetch(ch, 4, fs, 0);
     draw_indices_prefetch(ch, indexed, first, count, 0);
+    if (!targets_early) read_targets(ch, rt, &zt, &n);
     if (vk_temporal_enabled()) { /* what the temporal probe learns from a draw: its targets and sampled surfaces */
         Surf* sampled[SH_MAXTEX];
         const u32 *tic[SH_MAXTEX], *tsc[SH_MAXTEX]; /* the headers of each, for the probe's lines */

@@ -179,6 +179,18 @@ extern "C"
 /* gpu/vk/upscaler_module.c: the table of the module at this full path, handed the log, or NULL with why
    (upscaler_module.h) */
 const SnxUpscalerApi* vk_upscaler_module_load(const char* path, SnxUpscalerLog log, int* why);
+#ifdef __cplusplus
+extern "C" {
+#endif
+/* gpu/vk/upscaler_host.c: an SDK's own library, the file of this name in the program's folder, loaded by its full
+   path with what it depends on looked for in that folder and the system's only (not the current folder, not the
+   search path), or NULL. tried says the path tried, or why none was. Windows only, where the SDKs are */
+void* vk_upscaler_library_beside(const char* file, char* tried, size_t tried_size);
+/* a function of a library from vk_upscaler_library_beside, or NULL */
+void* vk_upscaler_library_symbol(void* library, const char* name);
+#ifdef __cplusplus
+}
+#endif
 
 /* The boundary to a module of its own, stated: a 64 bit system in both files, C linkage and the one export
    name, the platform's one calling convention, natural alignment with no packing pragma, and Vulkan's handles

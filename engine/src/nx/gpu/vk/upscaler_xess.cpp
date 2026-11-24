@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the NXAevora contributors */
 /* The XeSS adapter (upscaler.h, XESS-DESIGN.md revision 2): Intel's XeSS Super Resolution through its Vulkan API,
-   whose MIT headers are in third_party/XeSS. The SDK's library, libxess.dll, is loaded by name from beside the
+   whose MIT headers are in third_party/XeSS. The SDK's library, libxess.dll, is loaded by its full path from beside the
    program, supplied by the user and never part of this repository. Built on Windows only. Its prepare submits work
    of its own (submits_at_init): the runtime runs it between two idle waits (upscaler_protocol.h). */
 #include <cstdint>
@@ -14,9 +14,6 @@
 #include "nx/gpu/vk/upscaler_modes.h"
 
 extern "C" {
-void* plat_dl_open(const char* path);
-void* plat_dl_sym(void* h, const char* name);
-const char* plat_dl_error(void);
 uint64_t plat_ns(void);
 void logf_(int lvl, const char* fmt, ...) __attribute__((format(printf, 2, 3)));
 const SnxUpscalerApi* snx_upscaler_xess(void);
@@ -46,7 +43,7 @@ struct Library {
 Library g_library;
 
 template <typename T> void symbol(T& out, const char* name) {
-    void* p = plat_dl_sym(g_library.module, name);
+    void* p = vk_upscaler_library_symbol(g_library.module, name);
     std::memcpy(&out, &p, sizeof out);
 }
 
@@ -54,10 +51,13 @@ template <typename T> void symbol(T& out, const char* name) {
 int library(void) {
     if (g_library.tried) return g_library.execute != nullptr;
     g_library.tried = 1;
-    g_library.module = plat_dl_open(XESS_LIBRARY);
+    char tried[4096];
+    /* by its full path in the program's folder: a file of that name in the current folder or on the search path is
+       never taken */
+    g_library.module = vk_upscaler_library_beside(XESS_LIBRARY, tried, sizeof tried);
     if (!g_library.module) {
-        logf_(0, "arceus-upscaler: xess is not available: %s was not found beside the program (%s)\n", XESS_LIBRARY,
-              plat_dl_error());
+        logf_(0, "arceus-upscaler: xess is not available: %s could not be loaded from beside the program (%s)\n",
+              XESS_LIBRARY, tried);
         return 0;
     }
     Library& l = g_library;

@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the NXAevora contributors */
 /* The FSR adapter (upscaler.h): AMD's FSR upscaler through the FidelityFX SDK's API, whose headers are in
-   third_party/FidelityFX-SDK. The SDK's own library, amd_fidelityfx_loader_vk.dll, is loaded by name from beside
+   third_party/FidelityFX-SDK. The SDK's own library, amd_fidelityfx_loader_vk.dll, is loaded by its full path from beside
    the program and is never part of this repository. Built on Windows only, where that library exists. Used by
    nothing but the self-test mode so far. C++ because the SDK's Vulkan helpers are. */
 #include <cmath>
@@ -15,9 +15,6 @@
 #include "nx/gpu/vk/upscaler.h"
 
 extern "C" {
-void* plat_dl_open(const char* path);
-void* plat_dl_sym(void* h, const char* name);
-const char* plat_dl_error(void);
 void logf_(int lvl, const char* fmt, ...) __attribute__((format(printf, 2, 3)));
 const SnxUpscalerApi* snx_upscaler_fsr(void);
 }
@@ -35,7 +32,7 @@ struct Library {
 Library g_library;
 
 template <typename T> void symbol(T& out, const char* name) {
-    void* p = plat_dl_sym(g_library.module, name);
+    void* p = vk_upscaler_library_symbol(g_library.module, name);
     std::memcpy(&out, &p, sizeof out);
 }
 
@@ -43,10 +40,13 @@ template <typename T> void symbol(T& out, const char* name) {
 int library(void) {
     if (g_library.tried) return g_library.dispatch != nullptr;
     g_library.tried = 1;
-    g_library.module = plat_dl_open(FSR_LIBRARY);
+    char tried[4096];
+    /* by its full path in the program's folder: a file of that name in the current folder or on the search path is
+       never taken */
+    g_library.module = vk_upscaler_library_beside(FSR_LIBRARY, tried, sizeof tried);
     if (!g_library.module) {
-        logf_(0, "arceus-upscaler: fsr is not available: %s was not found beside the program (%s)\n", FSR_LIBRARY,
-              plat_dl_error());
+        logf_(0, "arceus-upscaler: fsr is not available: %s could not be loaded from beside the program (%s)\n",
+              FSR_LIBRARY, tried);
         return 0;
     }
     symbol(g_library.create, "ffxCreateContext");
