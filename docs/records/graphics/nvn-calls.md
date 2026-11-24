@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- Copyright 2026 the NXAevora contributors -->
 # NVN functions that Arceus called (run of 2026-11-02)
 
 Source: `nvn_trace=1`, update program, 302.75 s, 8900 frames shown, 30 frames a second, 0 JIT misses. 522 addresses were

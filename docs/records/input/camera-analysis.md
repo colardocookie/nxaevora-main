@@ -1,3 +1,6 @@
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- Copyright 2026 the NXAevora contributors -->
+
 # Camera analysis
 
 Goal: find the code of the game that turns the right stick into camera rotation, so that a patch can add the mouse

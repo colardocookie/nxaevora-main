@@ -1,3 +1,6 @@
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- Copyright 2026 the NXAevora contributors -->
+
 # NXAevora roadmap
 
 NXAevora aims to run Pokemon Legends Arceus natively on the PC. The code of the game is recompiled ahead of time with
