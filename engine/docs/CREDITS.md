@@ -15,6 +15,8 @@ Generated modules include runtime ABI code. Game assets, keys and firmware are e
 | yuzu's controller button glyphs (`font_nintendo_extended.cpp`, as Eden carries it) | GPL-2.0-or-later |
 | LZ4 (the library, `lib/`) | BSD-2-Clause |
 | xxHash 0.8.3 (XXH3 and its x86 dispatcher, the renderer's content hashes: `src/nx/gpu/vk/xxh3.c`) | BSD-2-Clause |
+| FidelityFX SDK API headers (`third_party/FidelityFX-SDK`, v2.4.0, AMD) | MIT |
+| XeSS SDK headers (`third_party/XeSS`, commit `de0fb9c`, Intel) | MIT |
 | Vulkan-Headers | Apache 2.0 |
 | volk / Vulkan Memory Allocator | MIT |
 | SDL3 | zlib |

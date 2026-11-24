@@ -60,3 +60,9 @@ draw that captures transform feedback and every compute dispatch is logged, up t
 A skinned mesh reads its positions from a buffer another pass wrote. If a stream address of a scene draw is a
 feedback or compute output of the same frame, and the buffer stays at that address in the next frame, last frame's
 positions can be kept for motion vectors.
+
+## Current state
+
+- The census is opt-in and off by default (`SNX_PASS_CENSUS=1` or `SNX_ARCEUS_PASS_CENSUS=1`). It only reads.
+- It logs two frames in a row every 1200 presents from the 900th, up to 10 times.
+- Limits: 384 passes and 12 samples a pass, and 48 feedback or compute lines a frame.

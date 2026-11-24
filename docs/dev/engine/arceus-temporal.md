@@ -24,8 +24,11 @@
 3. It notes the fragment program of the first draw that samples the scene colour after it was written. From the next
    frame on the probe runs just before that draw, which is after the last write to the scene colour and before its
    first read.
-4. There a pass writes camera motion vectors to a two-channel float image of the scene's size: for each pixel its uv
-   minus the uv the same world point had in the frame before, from depth and the two matrices. Zero at the far plane.
+4. There a pass writes camera motion vectors to a four-channel float image (`VK_FORMAT_R16G16B16A16_SFLOAT`) of the
+   scene's size: for each pixel its uv minus the uv the same world point had in the frame before, from depth and the
+   two matrices. Red and green hold the vector, blue the depth the point had a frame ago, and alpha 1 where the point
+   is an object's. Zero at the far plane. An upscaler that takes two-channel vectors gets a copy in
+   `VK_FORMAT_R16G16_SFLOAT` (the motion image itself stays four channels).
 
 ## Views
 
@@ -322,7 +325,7 @@ complete by cause, and the frames whose object vectors were given up for a link.
 
 ## The scene inside a rectangle (`SNX_ARCEUS_TEMPORAL_RECT=1`)
 
-With `SNX_ARCEUS_SCENE_SCALE` below 1 (`docs/arceus-timing.md`) the game draws the scene into the top left
+With `SNX_ARCEUS_SCENE_SCALE` below 1 (`docs/records/game/arceus-timing.md`, section "Scene scale") the game draws the scene into the top left
 rectangle of its targets, which keep their size. Without this switch the temporal code takes the whole target only
 and leaves every such frame as drawn. With it, in `probe` and in `taa`, a frame goes through the rectangle's gate
 (the rules are pure functions in `temporal_math.h`, the wiring is in `gpu/vk/temporal.c`):
@@ -449,7 +452,7 @@ with the mark set, or a timeline that cannot be read, it is off for the session.
 
 Two things the upscalers build on.
 
-The rules for a scene inside a rectangle of its targets (`SNX_ARCEUS_SCENE_SCALE`, `docs/arceus-timing.md`) are pure
+The rules for a scene inside a rectangle of its targets (`SNX_ARCEUS_SCENE_SCALE`, `docs/records/game/arceus-timing.md`, section "Scene scale") are pure
 functions in `temporal_math.h` with host tests: the active rectangle of a signed viewport, a frame's geometry
 from the viewport, the fraction that belongs to a geometry, the gate with its candidate and history stamp, the
 refusal of a history fetch whose centre is outside the rectangle the history was made in, the rejection bound from
@@ -597,7 +600,7 @@ after the frames in flight. Only once a submission did not run as recorded, or a
 (that sets the same mark), is nothing destroyed any more, to the end of the session. A frame has one
 fate in the counts, the first reported for it, and is counted in one window with its decision.
 
-Below native size (`SNX_ARCEUS_UPSCALER=fsr`, `dlss` or `xess` with the fixed resolution (on unless `SNX_ARCEUS_FIXED_RESOLUTION=0`) and a scene
+Below native size (`SNX_ARCEUS_UPSCALER=fsr`, `dlss` or `xess` with the fixed resolution (on unless `SNX_ARCEUS_FIXED_RESOLUTION` is set to a value other than `1`) and a scene
 scale of 1/2, 3/5, 2/3, 3/4 or 4/5): the library takes the scene's rectangle as its render size and the target as its
 output, and its picture is handed to the game's readers in a larger texture, as the spatial path's hand-over does.
 DLSS and XeSS take the mode whose optimal render size the library gives as the rectangle, else the nearest one whose
@@ -996,3 +999,9 @@ on the jitter's margin of cases 1 and 2, on case 4's error and on the missing va
 has been built and has not run. Errors are
 means over a region, so a fault in very few pixels can pass. The scene has one depth step and no transparency. A
 pass says the signs and conventions agree with the SDK on this scene. It says nothing about the game's picture.
+
+## Current state
+
+- Every switch here is opt-in and off by default: `SNX_ARCEUS_TEMPORAL` (unset), its options, `SNX_ARCEUS_UPSCALER` and `SNX_ARCEUS_SCENE_SCALE`.
+- The probe, TAA, the object vectors and the rectangle gate are experimental and are not part of a normal run; the sections above and their log lines give the game runs.
+- The upscaler game path is experimental and not played. Its self-test passes for XeSS, fails for FSR (the edge case's budgets and case 4) and fails for DLSS with one known library deviation (the reset at 1/2). The checks before the switch is used in a run are open.
