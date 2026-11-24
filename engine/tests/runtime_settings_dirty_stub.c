@@ -28,6 +28,8 @@ char g_test_new[64];
 char g_test_def[64];
 char g_test_backend[64];
 char g_test_backend_store[64];
+size_t g_test_backend_len;
+char g_test_backend_last;
 const IniOpt g_test_table[] = {
     {"mem_key", NULL, NULL, INI_TEXT, 0, g_test_mem, 0, 0, NULL, NULL, NULL, 0, 0, sizeof g_test_mem},
     {"new_key", NULL, NULL, INI_TEXT, 0, g_test_new, 0, 0, NULL, NULL, NULL, 0, 0, sizeof g_test_new},
@@ -62,6 +64,9 @@ int unattended_known(const char* k) {
     return 0;
 }
 int backend_ini(const char* k, const char* v) {
+    size_t n = strlen(v);
+    g_test_backend_len = n;
+    g_test_backend_last = n ? v[n - 1] : 0;
     snprintf(g_test_backend, sizeof g_test_backend, "%s", v);
     if (!strcmp(k, "back_key")) {
         const char* s = snx_settings_value(&g_test_back_table[0]);

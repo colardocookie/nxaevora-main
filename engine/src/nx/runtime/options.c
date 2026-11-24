@@ -131,7 +131,8 @@ typedef struct {
 static Entry g_store[STORE_MAX];
 static int g_nstore;
 static PMutex g_store_lock = PMUTEX_INIT;
-/* the store's copy for a reload's merge or a write: the ini thread makes it, and the two never run at once */
+/* the store's copy for a reload's merge or a write: the frontend thread (ini_poll) or the settings CLI makes it, and
+   the two never run at once */
 static Entry g_work[STORE_MAX];
 /* a key and the text a window set, kept until the game restarts */
 typedef struct {
@@ -411,7 +412,9 @@ int options_change(const char* key, const char* value) {
         WARN_LIMIT(1, "settings: %s=%s is not taken: %s\n", key, value, why);
         return OPTIONS_REJECTED;
     }
-    /* the store holds the value before apply, so a reload in between re-applies it and memory keeps the game's value */
+    /* The store gets the new value before apply, so that a reader of the store during apply (a backend_ini handler or
+       a set hook) would see the new value. No such reader exists today; case_store_before_apply checks the order. A
+       reload cannot run in between: ini_poll and every caller of options_change run on the frontend thread. */
     ini_set(key, value);
     apply(key, value);
     if (g_started && (o->flags & INI_STARTUP)) restart_note(key, value);

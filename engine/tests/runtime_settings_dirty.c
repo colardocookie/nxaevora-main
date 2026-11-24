@@ -13,6 +13,8 @@
 
 /* the store's limit, STORE_MAX in options.c */
 #define TEST_STORE_MAX 256
+/* the value's limit, VALUE_MAX in options.c */
+#define TEST_VALUE_MAX 2048
 
 extern char g_test_log[8192];
 extern size_t g_test_log_len;
@@ -22,6 +24,9 @@ extern char g_test_new[64];
 extern char g_test_backend[64];
 extern char g_test_backend_store[64];
 extern const IniOpt g_test_table[];
+extern char g_test_def[64];
+extern size_t g_test_backend_len;
+extern char g_test_backend_last;
 
 static void log_clear(void) {
     g_test_log[0] = 0;
@@ -101,6 +106,22 @@ static char* make_keys_text(int keys) {
     assert(at < cap);
     return text;
 }
+/* back_key with a value of len bytes, the last one last: a value that the 64-byte captures cannot hold */
+static char* make_backend_text(size_t len, char last) {
+    const char* key = "back_key";
+    size_t klen = strlen(key);
+    size_t cap = klen + len + 3;
+    char* text = malloc(cap);
+    size_t i;
+    assert(text);
+    memcpy(text, key, klen);
+    text[klen] = '=';
+    for (i = 0; i + 1 < len; i++) text[klen + 1 + i] = 'a';
+    text[klen + len] = last;
+    text[klen + len + 1] = '\n';
+    text[klen + len + 2] = 0;
+    return text;
+}
 /* #86: a store of TEST_STORE_MAX unknown keys beside a section's default row writes at most TEST_STORE_MAX key rows,
    keeps every key, and the next start parses the file whole and writes a change */
 static void case_full_store(const char* root) {
@@ -178,6 +199,88 @@ static void case_store_before_apply(const char* root) {
     free(path);
 }
 
+/* #90: the limit counts the store's keys and the missing default rows together: at TEST_STORE_MAX the write is full,
+   and it keeps every key, so the next start parses the file whole */
+static void case_store_limit_boundary(const char* root) {
+    char* path = snx_path_join(root, "boundary.ini");
+    char line[32];
+    char* text;
+    int i;
+    assert(path);
+    text = make_keys_text(TEST_STORE_MAX - 1);
+    put(path, text);
+    free(text);
+    ini_open(path);
+    assert_has(path, "def_key=dflt\n");
+    assert(count_key_rows(path) <= TEST_STORE_MAX);
+    for (i = 0; i < TEST_STORE_MAX - 1; i++) {
+        snprintf(line, sizeof line, "zz_test_%03d=1\n", i);
+        assert_has(path, line);
+    }
+    ini_open(path);
+    ini_set("zz_test_000", "2");
+    ini_poll(1);
+    assert_has(path, "zz_test_000=2\n");
+    assert_has(path, "def_key=dflt\n");
+    free(path);
+}
+/* #90: one past the limit the write warns once, with the store's key count and the missing default count */
+static void case_write_limit_warns(const char* root) {
+    char* path = snx_path_join(root, "over.ini");
+    char expect[128];
+    char* text;
+    assert(path);
+    text = make_keys_text(TEST_STORE_MAX);
+    put(path, text);
+    free(text);
+    log_clear();
+    ini_open(path);
+    snprintf(expect, sizeof expect, "settings: more than %d keys (%d in the store and 1 with a default)",
+             TEST_STORE_MAX, TEST_STORE_MAX);
+    assert(g_test_warn_count == 1);
+    assert(strstr(g_test_log, expect));
+    free(path);
+}
+/* #90: a store value of TEST_VALUE_MAX - 1 bytes reaches a backend_ini row whole, not cut */
+static void case_row_value_long(const char* root) {
+    char* path = snx_path_join(root, "long.ini");
+    char* text;
+    assert(path);
+    text = make_backend_text(TEST_VALUE_MAX - 1, 'Z');
+    put(path, text);
+    free(text);
+    ini_open(path);
+    assert(g_test_backend_len == (size_t)(TEST_VALUE_MAX - 1));
+    assert(g_test_backend_last == 'Z');
+    free(path);
+}
+/* #90: the command line's value wins over the store's and reaches the backend_ini row */
+static void case_row_value_override(const char* root) {
+    char* path = snx_path_join(root, "override.ini");
+    char* text;
+    assert(path);
+    text = make_backend_text(4, 'x');
+    put(path, text);
+    free(text);
+    g_test_backend[0] = 0;
+    g_test_backend_len = 0;
+    ini_override("back_key", "cli");
+    ini_open(path);
+    assert(!strcmp(g_test_backend, "cli"));
+    assert(g_test_backend_len == (size_t)3);
+    free(path);
+}
+/* #90: with no store value and no override, the row's default reaches the row's variable */
+static void case_row_value_default(const char* root) {
+    char* path = snx_path_join(root, "default.ini");
+    assert(path);
+    put(path, "mem_key=x\n");
+    g_test_def[0] = 0;
+    ini_open(path);
+    assert(!strcmp(g_test_def, "dflt"));
+    free(path);
+}
+
 int main(void) {
     char* root = snx_temp_dir(NULL);
     char* path;
@@ -193,6 +296,8 @@ int main(void) {
 
     /* before the first ini_open of the run, as the game's menu can set a value there */
     case_set_before_open(root);
+    /* the first write that goes over the store's limit: the warning is once for the run */
+    case_write_limit_warns(root);
 
     /* a full store: a change of a key in the file is written, and its flag clears */
     text = make_text(255, "one");
@@ -273,6 +378,10 @@ int main(void) {
     case_defaults_kept(root);
     case_write_failed_keeps_dirty(root);
     case_store_before_apply(root);
+    case_store_limit_boundary(root);
+    case_row_value_long(root);
+    case_row_value_default(root);
+    case_row_value_override(root); /* last: an override lasts for the rest of the run */
 
     free(path);
     free(root);
