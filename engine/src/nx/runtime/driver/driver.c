@@ -43,6 +43,7 @@ static void usage(void) {
     puts("The old options are aliases:\n"
          "  INPUT                  A game made already, or an NRO; a decrypted game folder with -r\n"
          "  -r, --recompile        Recompile a decrypted game folder or an NRO, without playing\n"
+         "                         (-r -h or --recompile --help: the recompile options)\n"
          "  -H, --headless         Run without a window or swapchain");
     puts("  --tracy                Start the Tracy client for a GUI connection (SNX_TRACY builds)\n"
          "  --tracy-capture        Record the run with tracy-capture, from Tracy 0.14.1 on PATH (SNX_TRACY builds)");
@@ -52,8 +53,7 @@ static void usage(void) {
         "  --controls=0|1         The on-screen controls: hidden or shown\n"
         "  --KEY=VALUE            Any setting of the game's .ini, for this run\n"
         "  --settings[=recompile] List the settings, tab-separated");
-    puts("  -r -h                  Recompilation options\n"
-         "  --game=DIR             Play the recompiled game in DIR (recompiled/<title ID>)");
+    puts("  --game=DIR             Play the recompiled game in DIR (recompiled/<title ID>)");
     puts("  -O LEVEL               The recompile's optimization: 0, 1, 2, 3, s or z (default: 2); a game made\n"
          "                         already keeps its code until -r");
     puts("  --outdir DIR           Where the game's folder goes (default: recompiled/)\n"
@@ -432,7 +432,7 @@ static int setting_known(const char* option) {
 }
 /* The exit code of a failed dump: a program that cannot be loaded is the game's files, a failed write or a failure of
    the host is inside the runtime */
-int dump_exit_code(SnxDumpResult result) {
+int snx_dump_exit_code(SnxDumpResult result) {
     return result == SNX_DUMP_INPUT ? SNX_EXIT_GAME_FILES : SNX_EXIT_INTERNAL;
 }
 /* --dump-modules PROGRAM DIR: each module's image and symbols, at the bases the runtime gives them (loader.h's
@@ -447,7 +447,7 @@ static int dump_modules(int argc, char** argv) {
     result = snx_dump_program(argv[2], argv[3], error, sizeof error);
     if (result != SNX_DUMP_OK) {
         snx_error("%s", error);
-        return dump_exit_code(result);
+        return snx_dump_exit_code(result);
     }
     return SNX_EXIT_OK;
 }

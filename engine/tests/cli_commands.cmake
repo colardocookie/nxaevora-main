@@ -30,19 +30,24 @@ if(NOT new_scope_code EQUAL 0 OR NOT "${new_scope_err}" STREQUAL ""
    OR NOT "${new_scope_out}" STREQUAL "${old_scope_out}")
     message(FATAL_ERROR "settings list --scope=recompile is not --settings=recompile: exit ${new_scope_code}, stderr \"${new_scope_err}\"")
 endif()
-# a bad word is exit 2, and stderr has a part of that refusal: the bad word, or, where the word is the message's start,
-# the line's own words (a wrong line then fails here)
-foreach(case "settings list extra|extra" "settings list --scope=bogusscope|bogusscope" "settings|name a command"
-             "settings bogus|bogus" "logs|name a command" "cache|name a command"
-             "run|name a game program" "run -x|-x" "run --game=missing.nro|is an option, not a program")
+# a bad word is exit 2, stdout is empty, and stderr is the full refusal line, not a part of it (a wrong line then fails
+# here)
+foreach(case "settings list extra|settings list: extra: unexpected argument"
+             "settings list --scope=bogusscope|settings list: --scope bogusscope: not game or recompile"
+             "settings|settings: name a command: list, schema, get, set or check"
+             "settings bogus|settings: bogus: not a command (list, schema, get, set or check)"
+             "logs|logs: name a command: export" "cache|cache: name a command: clean"
+             "run|run: name a game program" "run -x|run: -x is an option, not a program"
+             "run --game=missing.nro|run: --game=missing.nro is an option, not a program")
     string(REPLACE "|" ";" fields "${case}")
     list(GET fields 0 args)
-    list(GET fields 1 part)
+    list(GET fields 1 expected)
     separate_arguments(args_list UNIX_COMMAND "${args}")
     engine(bad ${args_list})
-    string(FIND "${bad_err}" "${part}" at)
-    if(NOT bad_code EQUAL 2 OR at LESS 0)
-        message(FATAL_ERROR "nxaevora-engine ${args} ended with ${bad_code}, not 2, or stderr has no \"${part}\":\n${bad_err}")
+    string(STRIP "${bad_err}" line)
+    if(NOT bad_code EQUAL 2 OR NOT "${line}" STREQUAL "nxaevora-engine: ${expected}"
+       OR NOT "${bad_out}" STREQUAL "")
+        message(FATAL_ERROR "nxaevora-engine ${args} ended with ${bad_code}, not 2, said \"${line}\" on stderr and \"${bad_out}\" on stdout:\n${bad_err}")
     endif()
 endforeach()
 # a missing input is the game's files (exit_codes.h: SNX_EXIT_GAME_FILES 3), recompile and its alias -r alike
@@ -58,6 +63,17 @@ engine(play_missing missing.nro)
 if(NOT run_missing_code EQUAL 3 OR NOT play_missing_code EQUAL 3)
     message(FATAL_ERROR "run missing.nro ended with ${run_missing_code} and missing.nro with ${play_missing_code}, not 3")
 endif()
+# run takes the game's own arguments after --, and a --KEY=VALUE after the program reaches the driver as a setting, not
+# a program: the program is not there, so both are the game's files (exit_codes.h: SNX_EXIT_GAME_FILES 3), not a usage
+# error (2) of the run command
+engine(run_args run missing.nro -- a b)
+engine(run_setting run missing.nro --touch=2)
+foreach(prefix run_args run_setting)
+    string(STRIP "${${prefix}_err}" line)
+    if(NOT ${prefix}_code EQUAL 3 OR NOT "${line}" MATCHES "missing\\.nro is not a file$")
+        message(FATAL_ERROR "${prefix} ended with ${${prefix}_code}, not 3, or stderr does not end with the message:\n${${prefix}_err}")
+    endif()
+endforeach()
 # a bad --KEY=VALUE is refused as the recompile path refuses it: exit 2 and the same line, before anything runs
 engine(value_new recompile missing.nro --aot_threads=abc)
 engine(value_old -r missing.nro --aot_threads=abc)

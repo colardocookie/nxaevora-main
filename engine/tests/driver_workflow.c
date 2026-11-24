@@ -689,9 +689,9 @@ int main(int argc, char** argv) {
     }
     /* --dump-modules' code of a failed dump, from exit_codes.h: the program's files 3, a failed write or a failure of
        the host 1 */
-    CHECK(dump_exit_code(SNX_DUMP_INPUT) == 3);
-    CHECK(dump_exit_code(SNX_DUMP_OUTPUT) == 1);
-    CHECK(dump_exit_code(SNX_DUMP_INTERNAL) == 1);
+    CHECK(snx_dump_exit_code(SNX_DUMP_INPUT) == 3);
+    CHECK(snx_dump_exit_code(SNX_DUMP_OUTPUT) == 1);
+    CHECK(snx_dump_exit_code(SNX_DUMP_INTERNAL) == 1);
     CHECK(!snx_remove_tree(root));
     free(exe);
     free(root);

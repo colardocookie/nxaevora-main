@@ -576,6 +576,15 @@ static void test_dump(const char* root) {
     free(text);
     free(path);
     CHECK(snx_dump_program(scratch, out, error, sizeof error) == -1 && strstr(error, "exefs/main"));
+    /* an output that cannot be written: a folder below a regular file is SNX_DUMP_OUTPUT */
+    path = snx_path_join(scratch, "not a folder");
+    CHECK(!snx_write_file(path, "x", 1));
+    {
+        char* below = snx_path_join(path, "dump");
+        CHECK(snx_dump_program(root, below, error, sizeof error) == SNX_DUMP_OUTPUT);
+        free(below);
+    }
+    free(path);
     free(out);
     puts("PASS the module dump for tools");
 }
