@@ -1472,12 +1472,6 @@ int vk_gfx_image_in_flight(int unsubmitted) {
         if (g_img_out[i].sub && (!unsubmitted || g_img_out[i].sub > vk_last_submit())) return 1;
     return 0;
 }
-/* PERF-36: whether vk_gfx_image_frame_done(sub) would land an entry */
-int vk_gfx_image_due(u64 sub) {
-    for (size_t i = 0; i < g_img_count; i++)
-        if (g_img_out[i].sub && g_img_out[i].sub <= sub) return 1;
-    return 0;
-}
 void vk_gfx_image_frame_done(u64 sub) {
     int landing = g_img_landing;
     g_img_landing = 1; /* nothing lands the entries over again while they are walked */

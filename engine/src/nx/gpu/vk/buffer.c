@@ -255,12 +255,6 @@ typedef struct GfxOut {
     u64 seq, wstamp;
     u64 gw0; /* PERF-35 (PERF_PROBES): the write generation before org was read */
     u8 in_out; /* in g_out (from its commit until a landing takes it out): what gfx_gpu_src's walks go over */
-    /* PERF-36 (SNX_ARCEUS_PERF_BESIDE): in the batch written beside the GPU thread, from A to C. B fills the rest:
-       whether it changed a byte, how many it wrote, its changed runs in the batch's arena */
-    u8 fly, changed;
-    u8* dst;
-    u32 run0, nruns;
-    u64 written;
     struct GfxOut* next;
 } GfxOut;
 static GfxOut *g_prep, *g_prep_tail, *g_out, *g_out_tail;
@@ -649,7 +643,7 @@ static int walk_index(const GfxOut* e, u64* walk) {
     u32 n = 0;
     for (u32 i = 0; i < e->npages && e->pages[i] != ~0ull; i++)
         for (WalkRef* r = *walk_bucket(e->pages[i]); r; r = r->next) {
-            if (r->page != e->pages[i] || r->o->wstamp == stamp || !r->o->composed || r->o->fly) continue;
+            if (r->page != e->pages[i] || r->o->wstamp == stamp || !r->o->composed) continue;
             if (r->o->wdepth && r->o->wdepth != g_walk_depth) continue;
             if (n == WALK_BOUND) {
                 walk_noted(1, 1, n + 1);
@@ -686,7 +680,7 @@ static void out_rebase_later(const GfxOut* e, GfxOut* rest, u64* runs_ns, u64* w
     for (int l = 0; l < 3; l++)
         for (GfxOut* o = lists[l]; o; o = o->next) {
             if (walk) walk[PCW_VISITED]++, walk[PCW_COMPOSED] += o->composed;
-            if (o->composed && !o->fly && pages_meet(e, o)) { /* PERF-36: a batch's own were rebased in B */
+            if (o->composed && pages_meet(e, o)) {
                 if (walk) walk[PCW_MET]++;
                 out_rebase(e, o);
             }
@@ -765,11 +759,8 @@ static void land_copy(void) {
     __atomic_fetch_add(&g_perf_handoff.land_copy_ns, plat_ns() - t0, __ATOMIC_RELAXED);
     g_land_n = 0;
 }
-static void land_list(GfxOut* done);
-static u64 g_frames_done; /* vk_buf_frame_done's calls: PERF-36's A takes today's path if one ran inside gmem_ptr */
 void vk_buf_frame_done(u64 frame) {
     GfxOut *done = NULL, *done_tail = NULL;
-    g_frames_done++;
     for (GfxOut** pp = &g_out; *pp;) {
         GfxOut* o = *pp;
         if (o->frame != frame) {
@@ -787,11 +778,6 @@ void vk_buf_frame_done(u64 frame) {
     }
     g_out_tail = NULL;
     for (GfxOut* o = g_out; o; o = o->next) g_out_tail = o;
-    land_list(done);
-}
-/* lands done's results in order, out of g_out already: vk_buf_frame_done's loop, and PERF-36's C for the results its
-   B did not reach */
-static void land_list(GfxOut* done) {
     g_gfx_any = g_out != NULL || done != NULL;
     VmaAllocation invalidated = VK_NULL_HANDLE;
     g_out_landing++;
@@ -857,332 +843,13 @@ static void land_list(GfxOut* done) {
         __atomic_fetch_add(&g_perf_handoff.land_loop_ns, plat_ns() - loop0, __ATOMIC_RELAXED);
         land_copy();
         for (int k = 0; k < LMS_N; k++) { /* the masked pass's counts, nested landings' too, under vk_lock */
-            const u64 steps = __atomic_exchange_n(&g_landing_mask[k], 0, __ATOMIC_RELAXED);
-            __atomic_fetch_add(&g_perf_handoff.land_steps[k], steps, __ATOMIC_RELAXED);
+            __atomic_fetch_add(&g_perf_handoff.land_steps[k], g_landing_mask[k], __ATOMIC_RELAXED);
+            g_landing_mask[k] = 0;
         }
     }
     g_out_landing--;
     if (g_perf_compare == 2) g_walk_depth--;
     g_gfx_any = g_out != NULL;
-}
-/* ---------------------------------------------------------------- PERF-36, the landing beside the GPU thread */
-/* SNX_ARCEUS_PERF_BESIDE=1 (research's BUILD SPEC 2026-11-22 14:08): the release thread's graphics landing in three
-   steps. A picks a batch under vk_lock and leaves it pending (g_out, its pages, the walk index), B writes it with no
-   lock, C finishes it under the lock. Until B is written, an access that reaches its bytes under vk_lock waits */
-typedef struct {
-    const u8 *lo, *hi;
-} FlyRange;
-enum { FLY_NONE, FLY_WRITING, FLY_WRITTEN };
-static struct {
-    GfxOut** res; /* the batch in landing order: by frame, then as in g_out */
-    u32 n, cap, reached, partial;
-    FlyRange* rng; /* their host ranges, sorted and merged */
-    u32 nrng, caprng;
-    ChgRun* runs; /* each result's changed runs from its run0 */
-    u32 nruns, capruns, full;
-    u64 last;
-    u32 lander; /* plat_tid of the thread writing it */
-    int state;  /* under g_fly_mx */
-} g_fly;
-static PMutex g_fly_mx = PMUTEX_INIT;
-static PCond g_fly_cv;
-static int g_fly_cv_made;
-static int fly_range_cmp(const void* a, const void* b) {
-    const u8 *x = ((const FlyRange*)a)->lo, *y = ((const FlyRange*)b)->lo;
-    return (x > y) - (x < y);
-}
-/* whether [p, p + n) meets a range of the batch: the first range ending after p starts before p + n */
-static int fly_meets(const u8* p, u64 n) {
-    u32 lo = 0, hi = g_fly.nrng;
-    while (lo < hi) {
-        const u32 mid = lo + (hi - lo) / 2;
-        if (g_fly.rng[mid].hi <= p)
-            lo = mid + 1;
-        else
-            hi = mid;
-    }
-    return lo < g_fly.nrng && g_fly.rng[lo].lo < p + n;
-}
-void vk_buf_fly_wait(const void* host, u64 n) {
-    if (plat_tid() == __atomic_load_n(&g_fly.lander, __ATOMIC_RELAXED)) return;
-    const int kind = host ? GPU_FLY_RANGE : n < GPU_FLY_KINDS ? (int)n : GPU_FLY_RANGE;
-    const u64 t0 = g_perf_probes ? plat_ns() : 0;
-    int waited = 0;
-    pm_lock(&g_fly_mx);
-    while (g_fly.state == FLY_WRITING && (!host || fly_meets(host, n))) {
-        waited = 1;
-        pc_wait(&g_fly_cv, &g_fly_mx, -1);
-    }
-    pm_unlock(&g_fly_mx);
-    if (t0 && waited) {
-        __atomic_fetch_add(&g_perf_bs.wait_n[kind], 1, __ATOMIC_RELAXED);
-        __atomic_fetch_add(&g_perf_bs.wait_ns[kind], plat_ns() - t0, __ATOMIC_RELAXED);
-    }
-}
-static int fly_grow(void** p, u32* cap, u32 need, size_t each) {
-    if (need <= *cap) return 1;
-    u32 c = *cap ? *cap : 256;
-    while (c < need) c *= 2;
-    void* b = realloc(*p, (size_t)c * each);
-    if (!b) return 0;
-    *p = b, *cap = c;
-    return 1;
-}
-static int fly_frame_cmp(const void* a, const void* b) { /* stable by the index A stored in dst's place */
-    const GfxOut *x = *(GfxOut* const*)a, *y = *(GfxOut* const*)b;
-    if (x->frame != y->frame) return (x->frame > y->frame) - (x->frame < y->frame);
-    return (x->run0 > y->run0) - (x->run0 < y->run0);
-}
-static void fly_today(int why) {
-    if (g_perf_probes) __atomic_fetch_add(&g_perf_bs.today[why], 1, __ATOMIC_RELAXED);
-}
-void vk_buf_fly_today_caller(void) { fly_today(FLYR_CALLER); }
-/* A, under vk_lock on the release thread at depth 1: the results of submits [first, last] picked as one batch. 1 when
-   it is in flight (g_gfx_fly set). 0, with nothing changed, when one of them needs today's path: the caller lands
-   them as today, counted by the first reason */
-int vk_buf_fly_pick(u64 first, u64 last) {
-    const u64 t0 = g_perf_probes ? plat_ns() : 0;
-    int why = -1;
-    u32 n = 0;
-    if (__atomic_load_n(&g_gpu_fly_hold, __ATOMIC_ACQUIRE))
-        why = FLYR_HOLD;
-    else if (__atomic_load_n(&g_own_any, __ATOMIC_ACQUIRE))
-        why = FLYR_OWN;
-    else if (vk_gfx_image_due(last))
-        why = FLYR_IMAGE;
-    for (GfxOut* o = g_out; o && why < 0; o = o->next) {
-        if (o->frame < first || o->frame > last) continue;
-        if (o->initial) {
-            why = FLYR_INITIAL;
-            break;
-        }
-        if (vk_rt_pages_hit(o->addr, o->size)) {
-            why = FLYR_TARGET;
-            break;
-        }
-        g_out_landing++; /* as in today's write: its own pending result is not landed by the pointer's lookup */
-        const u64 frames_done = g_frames_done;
-        u8* dst = gmem_ptr(o->addr, o->size);
-        g_out_landing--;
-        /* the pointer's hooks landed a compute result, whose flush can land graphics frames (a target's flush, a
-           vk_finish): results here may be freed. Today's path, and nothing of the batch touched again */
-        if (g_frames_done != frames_done) {
-            why = FLYR_NESTED;
-            break;
-        }
-        if (!dst) {
-            why = FLYR_DST;
-            break;
-        }
-        if (!fly_grow((void**)&g_fly.res, &g_fly.cap, n + 1, sizeof *g_fly.res) ||
-            !fly_grow((void**)&g_fly.rng, &g_fly.caprng, n + 1, sizeof *g_fly.rng)) {
-            why = FLYR_ARENA;
-            break;
-        }
-        o->dst = dst;
-        o->run0 = n; /* the order in g_out, for the sort below */
-        g_fly.res[n++] = o;
-    }
-    if (why < 0 && !n) why = FLYR_EMPTY;
-    if (why >= 0) {
-        fly_today(why);
-        return 0;
-    }
-    qsort(g_fly.res, n, sizeof *g_fly.res, fly_frame_cmp);
-    VmaAllocation invalidated = VK_NULL_HANDLE;
-    for (u32 i = 0; i < n; i++) {
-        GfxOut* o = g_fly.res[i];
-        o->fly = 1;
-        if (o->mem != invalidated) {
-            if (!VK_OK(vmaInvalidateAllocation(g_vk.vma, o->mem, 0, VK_WHOLE_SIZE)))
-                fatal("Could not invalidate a graphics storage buffer after its frame completed");
-            invalidated = o->mem;
-        }
-        g_fly.rng[i] = (FlyRange){o->dst, o->dst + o->size};
-    }
-    qsort(g_fly.rng, n, sizeof *g_fly.rng, fly_range_cmp);
-    u32 m = 0;
-    for (u32 i = 0; i < n; i++) /* merged where they meet or abut, so fly_meets finds one by binary search */
-        if (m && g_fly.rng[i].lo <= g_fly.rng[m - 1].hi) {
-            if (g_fly.rng[i].hi > g_fly.rng[m - 1].hi) g_fly.rng[m - 1].hi = g_fly.rng[i].hi;
-        } else
-            g_fly.rng[m++] = g_fly.rng[i];
-    if (!g_fly_cv_made) pc_init(&g_fly_cv), g_fly_cv_made = 1;
-    g_fly.n = n, g_fly.nrng = m, g_fly.reached = 0, g_fly.partial = 0, g_fly.nruns = 0, g_fly.last = last;
-    __atomic_store_n(&g_fly.lander, plat_tid(), __ATOMIC_RELAXED);
-    pm_lock(&g_fly_mx);
-    g_fly.state = FLY_WRITING;
-    pm_unlock(&g_fly_mx);
-    __atomic_store_n(&g_gfx_fly, 1, __ATOMIC_RELEASE); /* after the ranges: a reader that sees it finds them */
-    if (t0) {
-        __atomic_fetch_add(&g_perf_bs.beside, 1, __ATOMIC_RELAXED);
-        __atomic_fetch_add(&g_perf_bs.results, n, __ATOMIC_RELAXED);
-        __atomic_fetch_add(&g_perf_bs.a_ns, plat_ns() - t0, __ATOMIC_RELAXED);
-    }
-    return 1;
-}
-typedef struct {
-    GfxOut* o;
-} FlyPut;
-static void fly_put(void* ctx, u32 from, u32 n) { /* the masked pass's tail under 64 bytes */
-    const GfxOut* o = ((const FlyPut*)ctx)->o;
-    memcpy(o->dst + from, o->ptr + from, n);
-}
-static void fly_chg(void* ctx, u32 from, u32 n) { /* a changed run into the arena, or B stops at this result */
-    (void)ctx;
-    if (g_fly.full) return;
-    if (!fly_grow((void**)&g_fly.runs, &g_fly.capruns, g_fly.nruns + 1, sizeof *g_fly.runs)) {
-        g_fly.full = 1;
-        return;
-    }
-    g_fly.runs[g_fly.nruns++] = (ChgRun){from, from + n};
-}
-typedef struct {
-    Rebase r;
-    const ChgRun* runs;
-    u32 n;
-} FlyRebase;
-/* rebase_span with e's runs from the arena in place of g_chg */
-static void fly_rebase_span(void* user, u64 at, u64 from, u64 n) {
-    const FlyRebase* f = user;
-    u32 lo = 0, hi = f->n;
-    while (lo < hi) {
-        u32 mid = lo + (hi - lo) / 2;
-        if (f->runs[mid].to <= from)
-            lo = mid + 1;
-        else
-            hi = mid;
-    }
-    for (u32 i = lo; i < f->n && f->runs[i].from < from + n; i++) {
-        const u64 a = f->runs[i].from > from ? f->runs[i].from : from;
-        const u64 b = f->runs[i].to < from + n ? f->runs[i].to : from + n;
-        rebase_bytes(&f->r, at + (a - from), a, b - a);
-    }
-}
-/* B, with no lock, on the release thread after A: each result's masked write into its host bytes, then the batch's
-   later composed results that meet it rebased from its runs, so their write compares against its bytes. Nothing else
-   is touched: no flush, no stamp, no hook. A full arena stops it before that result, which C lands as today */
-void vk_buf_fly_write(void) {
-    const u64 t0 = g_perf_probes ? plat_ns() : 0;
-    u64 bytes = 0;
-    u32 i = 0;
-    g_out_landing++;
-    vk_result_begin();
-    for (; i < g_fly.n; i++) {
-        GfxOut* o = g_fly.res[i];
-        o->run0 = g_fly.nruns, o->nruns = 0, o->changed = 0, o->written = 0;
-        if (memcmp(o->ptr, o->org, o->size)) {
-            FlyPut d = {o};
-            g_fly.full = 0;
-            o->written = landing_masked_chg(o->ptr, o->org, o->dst, o->size, fly_put, NULL, &d, fly_chg, NULL);
-            if (g_fly.full) {
-                g_fly.partial = 1; /* written, but not all its runs kept */
-                break;
-            }
-            o->nruns = g_fly.nruns - o->run0;
-            o->changed = o->written != 0;
-            bytes += o->written;
-        }
-        for (u32 j = i + 1; o->nruns && j < g_fly.n; j++) {
-            GfxOut* p = g_fly.res[j];
-            if (!p->composed || !pages_meet(o, p)) continue;
-            FlyRebase f = {{o, p}, g_fly.runs + o->run0, o->nruns};
-            out_spans(o, p->addr, p->size, p->vmap, fly_rebase_span, &f);
-        }
-    }
-    vk_result_end();
-    g_out_landing--;
-    g_fly.reached = i;
-    pm_lock(&g_fly_mx);
-    g_fly.state = FLY_WRITTEN;
-    pc_broadcast(&g_fly_cv);
-    pm_unlock(&g_fly_mx);
-    if (t0) {
-        __atomic_fetch_add(&g_perf_bs.bytes, bytes, __ATOMIC_RELAXED);
-        __atomic_fetch_add(&g_perf_bs.b_ns, plat_ns() - t0, __ATOMIC_RELAXED);
-    }
-}
-/* C, under vk_lock, once: by the release thread after B, or by a land_through that joins. Per result B reached, in
-   order: its stamp, its pages, its walk entry, the composed results outside the batch rebased from its runs, the
-   counts today's loop makes. The rest land by today's loop. The last submit of the batch, or 0 when none is written */
-u64 vk_buf_fly_finish(void) {
-    pm_lock(&g_fly_mx);
-    const int written = g_fly.state == FLY_WRITTEN;
-    pm_unlock(&g_fly_mx);
-    if (!written) return 0;
-    const u64 t0 = g_perf_probes ? plat_ns() : 0;
-    g_out_landing++;
-    for (u32 i = 0; i < g_fly.reached; i++) {
-        GfxOut* o = g_fly.res[i];
-        walk_remove(o);
-        if (o->changed) gpu_mem_written_shader(o->addr, o->size); /* write_changed's stamp */
-        if (o->written && g_perf_times) perf_count(&g_perf, PC_WC_BYTES, o->written);
-        out_pages(o, -1);
-        g_nchg = 0, g_chg_lost = 0;
-        for (u32 k = 0; k < o->nruns; k++) chg_put(NULL, g_fly.runs[o->run0 + k].from,
-                                                     g_fly.runs[o->run0 + k].to - g_fly.runs[o->run0 + k].from);
-        g_chg_for = o;
-        out_rebase_later(o, NULL, &(u64){0}, NULL);
-        g_chg_for = NULL;
-        if (copy_stats_on()) {
-            g_wb_outputs++;
-            g_wb_bytes += o->size;
-        }
-        if (g_perf_times) {
-            perf_count(&g_perf, PC_WB_OUTPUTS, 1);
-            perf_count(&g_perf, PC_WB_BYTES, o->size);
-            if (g_ww > 0) (void)written_since_gva(o->addr, o->size, vk_ww_now());
-            perf_landed_add(g_perf_landed, o->addr, o->size, vk_frame_id(), o->frame_id, vk_submit_number(),
-                            gpu_mem_generation(), vk_ww_now());
-        }
-        if (g_perf_probes) {
-            perf_mem_free(&g_perf_mem, g_perf_release_thread, out_block(o->npages, o->size));
-            perf_sub_landed(&g_perf, o->frame, plat_ns());
-        }
-        o->fly = 2; /* landed: freed below */
-    }
-    g_out_landing--;
-    if (g_fly.partial) { /* B wrote all of it (the masked pass runs to its end) but kept too few runs: its stamp now,
-                            as write_changed's, and today's loop finds nothing more to write in it */
-        const GfxOut* o = g_fly.res[g_fly.reached];
-        if (o->written) gpu_mem_written_shader(o->addr, o->size);
-        if (o->written && g_perf_times) perf_count(&g_perf, PC_WC_BYTES, o->written);
-    }
-    for (GfxOut** pp = &g_out; *pp;) { /* the batch out of g_out: the landed freed, the rest kept in order below */
-        GfxOut* o = *pp;
-        if (!o->fly) {
-            pp = &o->next;
-            continue;
-        }
-        *pp = o->next;
-        if (o->fly == 2) free(o);
-    }
-    g_out_tail = NULL;
-    for (GfxOut* o = g_out; o; o = o->next) g_out_tail = o;
-    GfxOut *done = NULL, *done_tail = NULL;
-    for (u32 i = g_fly.reached; i < g_fly.n; i++) {
-        GfxOut* o = g_fly.res[i];
-        o->fly = 0, o->next = NULL;
-        if (g_perf_compare == 2) o->wdepth = g_walk_depth + 1, o->in_out = 0; /* as vk_buf_frame_done's list */
-        if (done_tail)
-            done_tail->next = o;
-        else
-            done = o;
-        done_tail = o;
-    }
-    if (done)
-        land_list(done);
-    else
-        g_gfx_any = g_out != NULL;
-    const u64 last = g_fly.last;
-    g_fly.n = 0, g_fly.nrng = 0;
-    pm_lock(&g_fly_mx);
-    g_fly.state = FLY_NONE;
-    __atomic_store_n(&g_gfx_fly, 0, __ATOMIC_RELEASE);
-    pc_broadcast(&g_fly_cv);
-    pm_unlock(&g_fly_mx);
-    if (t0) __atomic_fetch_add(&g_perf_bs.c_ns, plat_ns() - t0, __ATOMIC_RELAXED);
-    return last;
 }
 /* At the frame's submit: its storage results are copied into host-cached memory (vk_stage_back), where landing them
    compares bytes quickly. A result whose copy can't be allocated is read where the shader wrote it. */
@@ -2940,9 +2607,7 @@ static const u8* entry_host(Vb* e, u64 gva, u64 len) {
         e->host_cpu = p ? (u64)(p - g_mem) : ~0ull;
         e->host_gen = g_vb_map_gen;
     }
-    if (e->host_cpu == ~0ull) return NULL;
-    gpu_fly_wait(GP(e->host_cpu), len); /* PERF-36: its users read the bytes in this hold (patch_dirty) */
-    return GP(e->host_cpu);
+    return e->host_cpu == ~0ull ? NULL : GP(e->host_cpu);
 }
 /* vk_written_since by GPU address, run by run of the host memory behind it: a range the GPU maps from several pieces
    of guest memory (a buffer of several memory handles) has no one host pointer, and had no answer, so it was hashed

@@ -366,7 +366,6 @@ int own_begin(u64 addr, u64 size, void* res, u64 res_off) {
     ResList rel = {0};
     u32 i, n;
     if (!g_traps || !size || addr >= AS_SIZE || size > AS_SIZE - addr) return -1;
-    if (g_hooks.fly_wait) g_hooks.fly_wait(NULL, 0); /* PERF-36: before mem_own_prepare remaps a page */
     hi = (end + g_page - 1) & ~(g_page - 1);
     /* the pages in the pool, mapped here only (the caller holds the renderer's lock, as host memory changes do) */
     if (mem_own_prepare(lo, hi - lo, runs, sizeof runs / sizeof *runs, &n)) return -1;
@@ -429,7 +428,6 @@ u32 own_stage(u64 addr, u64 size, u8* dst, OwnRange* out, u32 max) {
     /* No owner on its pages: read as they are. One just landed may still be armed until its landing lets it go; the
        caller holds the producer's lock, which that landing holds until then, so none is armed here */
     if (!trapped) {
-        if (g_hooks.fly_wait) g_hooks.fly_wait(GP(addr), size); /* PERF-36 */
         memcpy(dst, GP(addr), (size_t)size);
         return n;
     }
@@ -445,10 +443,8 @@ u32 own_stage(u64 addr, u64 size, u8* dst, OwnRange* out, u32 max) {
         pm_unlock(&g_own_lk);
         if (owned && !mem_pool_offset(a, &off))
             memcpy(dst + (a - addr), mirror + off, (size_t)(end - a));
-        else {
-            if (g_hooks.fly_wait) g_hooks.fly_wait(GP(a), end - a); /* PERF-36 */
+        else
             memcpy(dst + (a - addr), GP(a), (size_t)(end - a));
-        }
         a = end;
     }
     return n;

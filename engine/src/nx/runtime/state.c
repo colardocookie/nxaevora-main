@@ -412,7 +412,6 @@ static int load_memory(StateReader* r, ShmPlan* plan, char* why, size_t whysize)
     /* past here, the running game's memory is gone */
     begun = 1;
     if (mem_restore_begin()) goto fatal;
-    gpu_fly_hold(1); /* PERF-36: no graphics batch is written beside the GPU thread until the restore ends */
     for (i = 0; i < nspan; i++) {
         u64 at;
         int host = span_rec[2 * i] != 0;
@@ -448,7 +447,6 @@ static int load_memory(StateReader* r, ShmPlan* plan, char* why, size_t whysize)
         }
     }
     mem_restore_end(hdr[0], hdr[1]);
-    gpu_fly_hold(-1);
     r_ = 0;
     goto out;
 fatal:

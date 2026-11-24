@@ -46,9 +46,6 @@ void vk_query_pred_hold(u32);
 void vk_query_pred_drop(u32);
 int vk_render_predicate(u64 a, int equal, u32* pred);
 void vk_render_predicate_drop(u32 pred);
-int vk_lock_depth(void);
-void vk_buf_fly_today_caller(void);
-int vk_land_beside(u64 value);
 static u64 g_vk_drawn; /* vk.h is stood in: release.c reads the draw count with the probes (PERF-33) */
 #include "nx/gpu/vk/release.c"
 #include "nx/gpu/vk/writeback.c"
@@ -91,15 +88,6 @@ void logf_(int level, const char* fmt, ...) {
     (void)fmt;
 }
 void vk_lock(void) { lock_depth++; }
-int vk_lock_depth(void) { return (int)lock_depth; }
-/* PERF-36: the beside path is buffer.c's and cmd.c's, tested apart (tests/vulkan_beside.py). Here it never takes */
-static unsigned beside_calls, beside_callers;
-void vk_buf_fly_today_caller(void) { beside_callers++; }
-int vk_land_beside(u64 value) {
-    (void)value;
-    beside_calls++;
-    return 0;
-}
 /* as device.c's: the outermost unlock signals the event slots the releases under it reached */
 void vk_unlock(void) {
     assert(lock_depth);
@@ -633,7 +621,6 @@ int main(void) {
     assert(phase_compute == c && (phase_graphics & g) && (phase_write & (1u << (g_perf_probes ? VKH_RELEASES : 0))));
     assert(g_perf_probes || (phase_graphics == 1 && phase_write == 1));
     assert(g_vk_hold_phase == VKH_OTHER);
-    assert(!beside_calls && !beside_callers); /* PERF-36 unset: the release thread lands as before, nothing counted */
     /* and the holds counted with the probes only, those that find a range owned apart */
     const u64 holds = g_perf_vkx.holds;
     assert(g_perf_probes ? holds && !g_perf_vkx.holds_owned : !holds);

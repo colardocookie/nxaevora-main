@@ -76,7 +76,6 @@ static int copy_runs(u64 gva, u8* in, const u8* out, u64 size) {
             goto next;
         }
         if (__atomic_load_n(&g_own_any, __ATOMIC_ACQUIRE)) own_acquire(cpu, n);
-        gpu_fly_wait(GP(cpu), n); /* PERF-36 */
         if (in)
             memcpy(in, GP(cpu), (size_t)n);
         else
@@ -139,21 +138,11 @@ int gmem_write(u64 gva, const void* src, u64 size) {
 }
 /* the host pointer of [gva, gva + size) when contiguous, what the GPU holds of it landed (memory/own.c): the caller
    reads or writes it on the CPU, maybe with the renderer's lock held */
-void gpu_fly_wait_slow(const void* host, u64 n) {
-    if (g_renderer && g_renderer->fly_wait) g_renderer->fly_wait(host, n);
-}
-_Alignas(64) int g_gfx_fly; /* PERF-36: a graphics landing is written without vk_lock (gpu.h) */
-int g_gpu_fly_hold;
-void gpu_fly_hold(int delta) {
-    if (delta > 0) gpu_fly_wait_all(GPU_FLY_LOAD);
-    __atomic_add_fetch(&g_gpu_fly_hold, delta, __ATOMIC_ACQ_REL);
-}
 u8* gmem_ptr_untracked(u64 gva, u64 size) {
     u64 cpu = 0;
     if (!size) size = 1;
     if (gmmu_run(gva, size, &cpu) != size) return NULL;
     if (__atomic_load_n(&g_own_any, __ATOMIC_ACQUIRE)) own_acquire(cpu, size);
-    gpu_fly_wait(GP(cpu), size); /* PERF-36 */
     return GP(cpu);
 }
 u8* gmem_host(u64 gva, u64 size) {

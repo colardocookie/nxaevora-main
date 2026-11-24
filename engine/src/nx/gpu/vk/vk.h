@@ -540,20 +540,11 @@ void vk_gfx_image_put_aside(void);
 int vk_gfx_image_in_flight(int unsubmitted);
 /* the submissions up to sub are done: the write-backs recorded in them land (cmd.c's landing, vk_lock) */
 void vk_gfx_image_frame_done(u64 sub);
-int vk_gfx_image_due(u64 sub); /* PERF-36: an entry vk_gfx_image_frame_done(sub) would land */
-int vk_rt_pages_hit(u64 gva, u64 size); /* PERF-36: a render target pending over the range */
+int vk_rt_pages_hit(u64 gva, u64 size); /* PERF-37: a render target pending over the range */
 /* PERF-37: a queued release, a graphics result, a compute result pending over the range's pages (vk_lock held) */
 int vk_release_pages_hit(u64 gva, u64 len);
 int vk_buf_pages_hit(u64 gva, u64 len);
 int vk_compute_pages_hit(u64 a, u64 n);
-/* PERF-36 (SNX_ARCEUS_PERF_BESIDE, buffer.c): A picks a batch under vk_lock (1 when in flight), B writes it with no
-   lock, C finishes it under the lock (its last submit, 0 when nothing was written). The wait is the renderer's */
-int vk_buf_fly_pick(u64 first, u64 last);
-void vk_buf_fly_write(void);
-u64 vk_buf_fly_finish(void);
-void vk_buf_fly_wait(const void* host, u64 n);
-void vk_buf_fly_today_caller(void);
-int vk_land_beside(u64 value); /* cmd.c: release_through's landing through value by A, B and C, 0 for today's */
 int vk_gfx_image_holds(const Surf* s); /* s has a storage result waiting to land in memory */
 u64 vk_surf_guest_size(const Surf* s);
 int vk_surf_can_writeback(const Surf* s);

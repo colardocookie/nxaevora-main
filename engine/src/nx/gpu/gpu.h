@@ -410,22 +410,4 @@ void r3d_const_upload(GpuChannel* ch, u32 v, int last);
 void r3d_const_flush(GpuChannel* ch); /* writes the constant buffer data r3d_const_upload is holding */
 int r3d_blit(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, double sx, double sy, double sdx,
              double sdy);
-/* PERF-36 (SNX_ARCEUS_PERF_BESIDE): a graphics landing writes guest bytes without vk_lock between its pick and its
-   end. An access that can run with vk_lock held waits here for the host bytes it reaches, [host, host + n), or for
-   the whole batch (gpu_fly_wait_all). g_gfx_fly is never set without the switch, so then this reads one int */
-extern int g_gfx_fly; /* atomic */
-/* the renderer's fly_wait: host NULL waits for the whole batch, n then the kind of wait, for the counts */
-void gpu_fly_wait_slow(const void* host, u64 n);
-enum { GPU_FLY_RANGE, GPU_FLY_TARGET, GPU_FLY_OWN, GPU_FLY_LOAD, GPU_FLY_MUST, GPU_FLY_KINDS };
-static inline void gpu_fly_wait(const void* host, u64 n) {
-    if (__atomic_load_n(&g_gfx_fly, __ATOMIC_ACQUIRE)) gpu_fly_wait_slow(host, n ? n : 1);
-}
-static inline void gpu_fly_wait_all(int kind) {
-    if (__atomic_load_n(&g_gfx_fly, __ATOMIC_ACQUIRE)) gpu_fly_wait_slow(NULL, (u64)kind);
-}
-/* the state load's hold (state.c, from after mem_restore_begin to mem_restore_end): no batch starts while it is not
-   0. Raising it waits for one in flight first */
-extern int g_gpu_fly_hold; /* atomic */
-void gpu_fly_hold(int delta);
-
 #endif

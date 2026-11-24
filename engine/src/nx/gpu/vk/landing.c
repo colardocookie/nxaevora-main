@@ -154,11 +154,8 @@ masked(const uint8_t* res, const uint8_t* org, uint8_t* dst, uint32_t size, Land
         if (note) landing_note_mask(m, k, note, ctx);
     }
     if (count) {
-        /* atomic: PERF-36's B adds without vk_lock beside a landing that holds it */
-        __atomic_fetch_add(&g_landing_mask[LMS_STEPS], steps, __ATOMIC_RELAXED);
-        __atomic_fetch_add(&g_landing_mask[LMS_NONE], none, __ATOMIC_RELAXED);
-        __atomic_fetch_add(&g_landing_mask[LMS_ALL], all, __ATOMIC_RELAXED);
-        __atomic_fetch_add(&g_landing_mask[LMS_SOME], steps - none - all, __ATOMIC_RELAXED);
+        g_landing_mask[LMS_STEPS] += steps, g_landing_mask[LMS_NONE] += none, g_landing_mask[LMS_ALL] += all;
+        g_landing_mask[LMS_SOME] += steps - none - all;
     }
     if (w) landing_words_tail(w, res, org, k, size);
     Runs r = {put, ctx, 0, 0, 0};

@@ -73,9 +73,6 @@ typedef struct Renderer {
     /* 0 when no pending result or queued release covers [a, a + n): a read needs none of the mem_need hooks */
     int (*mem_pending)(u64 a, u64 n);
     void (*gfx_mem_need)(u64 a, u64 n);
-    /* PERF-36: until the graphics landing written without the lock is written, if host [p, p + n) meets its bytes
-       (p NULL: whatever it meets, n then gpu.h's GPU_FLY_* kind). Returns at once on the landing's own thread */
-    void (*fly_wait)(const void* p, u64 n);
     void (*before_syncwait)(void); /* the stream is about to wait on a syncpoint: flush everything in flight */
     void (*stream_incr)(u32 id);   /* a syncpoint increment in the stream, after everything before it is done */
     /* a semaphore or report the game can poll: len bytes written at gva once everything before it is done (it may

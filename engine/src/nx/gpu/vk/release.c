@@ -185,11 +185,7 @@ static void release_through(u64 gate, u64 cgate) {
     vk_compute_land_through(cgate);
     const u64 compute = held ? plat_ns() : 0; /* PERF-27: the hold by part */
     if (g_perf_probes) hold_phase(VKH_GRAPHICS);
-    /* PERF-36 (SNX_ARCEUS_PERF_BESIDE): beside the GPU thread only from the release thread's own loop, whose hold
-       this is alone. Any other caller (release() with the queue full holds vk_lock already) lands as today */
-    const int beside = g_perf_beside && t_release_thread && vk_lock_depth() == 1;
-    if (g_perf_beside && !beside) vk_buf_fly_today_caller();
-    if (!beside || !vk_land_beside(gate)) vk_land_through(gate);
+    vk_land_through(gate);
     const u64 graphics = held ? plat_ns() : 0;
     vk_result_end();
     if (g_perf_probes) hold_phase(VKH_RELEASES);

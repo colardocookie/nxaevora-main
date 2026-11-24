@@ -662,19 +662,6 @@ typedef struct {
     uint64_t unlocked[VKU_N];                                                    /* atomic */
 } PerfVkx;
 extern PerfVkx g_perf_vkx;
-/* PERF-36 (SNX_ARCEUS_PERF_BESIDE, research's BUILD SPEC 2026-11-22 14:08), with the probes: the release thread's
-   graphics landings written beside the GPU thread (beside), or on today's path by the first reason that sent them
-   there, results and bytes written in B, the ms of A, B and C, the waits that blocked by kind (gpu.h's GPU_FLY_*)
-   with their ms, submit()'s landings skipped and the joins that ran C */
-enum { FLYR_CALLER, FLYR_HOLD, FLYR_OWN, FLYR_IMAGE, FLYR_EMPTY, FLYR_INITIAL, FLYR_DST, FLYR_TARGET, FLYR_ARENA,
-       FLYR_NESTED, FLYR_N };
-typedef struct {
-    uint64_t beside, today[FLYR_N], results, bytes, a_ns, b_ns, c_ns; /* atomic */
-    uint64_t wait_n[5], wait_ns[5], skipped, joins;                    /* atomic: wait by GPU_FLY_* */
-} PerfBeside;
-extern PerfBeside g_perf_bs;
-extern int g_perf_beside; /* SNX_ARCEUS_PERF_BESIDE=1 and what it needs (main.c) */
-size_t perf_beside_line(PerfBeside* b, uint32_t frames, char* out, size_t size);
 /* PERF-37 (research 2026-11-22 14:39), with the probes: the GPU thread's calls of the renderer's guest-write hook
    (vkr_before_write), those for every byte (size 0), and what the others find pending over their bytes by kind
    (a bit each, PBW_*), with those that find nothing and those made while a storage image result is pending */

@@ -1287,31 +1287,6 @@ void perf_bw_note(PerfBw* b, int whole, unsigned kinds, int img_any) {
     for (int k = 0; k < PBW_N; k++)
         if (kinds >> k & 1) __atomic_fetch_add(&b->kind[k], 1, __ATOMIC_RELAXED);
 }
-PerfBeside g_perf_bs;
-int g_perf_beside;
-size_t perf_beside_line(PerfBeside* b, uint32_t frames, char* out, size_t size) {
-    static const char* const why[FLYR_N] = {"caller", "hold", "owned", "image", "empty", "initial", "dst", "target",
-                                            "arena", "nested"};
-    static const char* const kind[5] = {"range", "target", "own", "load", "must"};
-    if (!size) return 0;
-    const double f = frames ? frames : 1;
-    size_t at = putf(out, size, 0,
-                     "perf-beside: frames=%u (PERF-36, a frame: the release thread's graphics landings written beside "
-                     "the GPU thread, those on today's path by reason, results and KB written without vk_lock, the ms "
-                     "of A, B and C, the waits that blocked by kind, calls/ms, submit's landings skipped, joins that "
-                     "ran C) beside=%.2f today=",
-                     frames, take64(&b->beside) / f);
-    for (int k = 0; k < FLYR_N; k++)
-        at = putf(out, size, at, "%s%s:%.2f", k ? "/" : "", why[k], take64(&b->today[k]) / f);
-    at = putf(out, size, at, " results=%.1f kb=%.1f ms=%.3f/%.3f/%.3f waits=", take64(&b->results) / f,
-              take64(&b->bytes) / f / 1024, take64(&b->a_ns) / f / 1e6, take64(&b->b_ns) / f / 1e6,
-              take64(&b->c_ns) / f / 1e6);
-    for (int k = 0; k < 5; k++)
-        at = putf(out, size, at, "%s%s:%.2f/%.3f", k ? "," : "", kind[k], take64(&b->wait_n[k]) / f,
-                  take64(&b->wait_ns[k]) / f / 1e6);
-    at = putf(out, size, at, " skipped=%.2f joins=%.2f", take64(&b->skipped) / f, take64(&b->joins) / f);
-    return at < size ? at : size - 1;
-}
 void perf_vklock_note(int phase, const void* at, uint64_t ns) {
     perf_waits_note(&g_perf_vklock, t_perf_who, phase, at, ns);
 }

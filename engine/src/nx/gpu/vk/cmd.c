@@ -277,26 +277,8 @@ static void timeline_wait(u64 value, int site) {
     gpu_wait_note(NULL, 0);
     if (t0) perf_time_add(&g_perf, site, plat_ns() - t0);
 }
-/* PERF-36: the batch written beside the GPU thread finished (C), once, under vk_lock: g_landed moves past it */
-static void fly_c(void) {
-    const u64 last = vk_buf_fly_finish();
-    if (!last) return;
-    for (u64 f = g_landed + 1; f <= last; f++) vk_gfx_image_frame_done(f); /* nothing due, by A's test */
-    g_landed = last;
-}
-/* the storage results of every submission up to value, which has finished, land in guest memory, in order. With a
-   PERF-36 batch in flight, must waits for it and finishes it first, and the submit's own landing (may) lands nothing */
-static void land_through(u64 value, int must) {
-    if (__atomic_load_n(&g_gfx_fly, __ATOMIC_ACQUIRE)) {
-        if (!must) {
-            if (g_perf_probes) __atomic_fetch_add(&g_perf_bs.skipped, 1, __ATOMIC_RELAXED);
-            return;
-        }
-        gpu_fly_wait_all(GPU_FLY_MUST);
-        const u64 before = g_landed;
-        fly_c();
-        if (g_landed != before && g_perf_probes) __atomic_fetch_add(&g_perf_bs.joins, 1, __ATOMIC_RELAXED);
-    }
+/* the storage results of every submission up to value, which has finished, land in guest memory, in order */
+static void land_through(u64 value) {
     while (g_landed < value) {
         vk_buf_frame_done(++g_landed);
         vk_gfx_image_frame_done(g_landed);
@@ -309,7 +291,7 @@ static void frame_recycle(Frame* f) {
     SNX_ZONE(z, "vk frame recycle");
     if (done) {
         timeline_wait(done, PT_TL_RECYCLE);
-        land_through(done, 1);
+        land_through(done);
         f->last = 0;
         f->hold = 0;
     }
@@ -535,7 +517,7 @@ static void submit(const VkSemaphoreSubmitInfo* xw, const VkSemaphoreSubmitInfo*
     u64 done = 0;
     if (land && VK_OK(vkGetSemaphoreCounterValue(g_vk.dev, g_gsem, &done))) {
         if (g_perf_times) perf_sub_seen(&g_perf, done, plat_ns());
-        land_through(done < g_gval ? done : g_gval, 0);
+        land_through(done < g_gval ? done : g_gval);
     }
     SNX_ZONE_END(z_submit);
 }
@@ -571,7 +553,7 @@ void vk_finish(void) {
     perf_submit_why(SW_FINISH);
     vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
     timeline_wait(g_gval, PT_TL_FINISH);
-    land_through(g_gval, 1);
+    land_through(g_gval);
     g_vk_finishes++;
     g_vk_finish_ns += plat_ns() - t0;
 }
@@ -622,16 +604,7 @@ void vk_submit_progress(u64* submitted, u64* done) {
     if (g_perf_times && *done) perf_sub_seen(&g_perf, *done, plat_ns());
 }
 void vk_wait_submit(u64 value) { timeline_wait(value, PT_TL_SUBMIT); }
-void vk_land_through(u64 value) { land_through(value < g_gval ? value : g_gval, 1); }
-int vk_land_beside(u64 value) {
-    const u64 last = value < g_gval ? value : g_gval;
-    if (last <= g_landed || !vk_buf_fly_pick(g_landed + 1, last)) return 0;
-    vk_unlock(); /* the release thread's only hold: B writes with no lock */
-    vk_buf_fly_write();
-    vk_lock();
-    fly_c(); /* unless a land_through joined and ran it meanwhile */
-    return 1;
-}
+void vk_land_through(u64 value) { land_through(value < g_gval ? value : g_gval); }
 u64 vk_frame_id(void) { return g_frame_id; }
 void vk_frame_hold(u64 frame_id) {
     if (frame_id + 1 != g_frame_id) return; /* this frame's own rings, or an older frame's, landed when reused */

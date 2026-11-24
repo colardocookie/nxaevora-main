@@ -933,27 +933,6 @@ int snx_main(int argc, char** argv) {
             LOG("perf-landing: on (level 3), storage results land %s\n",
                 g_landing_masked ? "with 64-byte masked stores (AVX-512BW)"
                                  : "with word compares: no AVX-512BW on this CPU or OS");
-        /* PERF-36: the release thread's graphics landing written beside the GPU thread (gpu/vk/buffer.c) */
-        const char* beside = getenv("SNX_ARCEUS_PERF_BESIDE");
-        if (beside && !strcmp(beside, "1")) {
-            const char* off = g_perf_landing != 3     ? "it needs SNX_ARCEUS_PERF_LANDING=3"
-                              : g_perf_compare != 2   ? "it needs SNX_ARCEUS_PERF_COMPARE=2"
-                              : !g_landing_masked     ? "no 64-byte masked stores (AVX-512BW) on this CPU or OS"
-                              : g_perf_times > 1      ? "SNX_ARCEUS_PERF_TIMES is above 1"
-                                                      : NULL;
-            g_perf_beside = !off;
-            if (off)
-                LOG("arceus-perf-beside: off, %s\n", off);
-            else
-                LOG("arceus-perf-beside: on, EXPERIMENT: graphics landings are written beside the GPU thread. Write "
-                    "tracking: %s, which takes no fault\n",
-#ifdef _WIN32
-                    "the write watch"
-#else
-                    "userfaultfd's asynchronous write protection where the kernel has it, else none"
-#endif
-                );
-        }
         if (g_perf_times)
             LOG("perf-times: on, a line every %u presents (SNX_ARCEUS_PERF_TIMES)%s\n", PERF_TIMES_WINDOW,
                 g_perf_times > 1 ? ", with the record of every byte as written" : "");

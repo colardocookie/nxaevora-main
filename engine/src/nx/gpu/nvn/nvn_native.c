@@ -7030,10 +7030,6 @@ static void perf_line(void) {
         LOG("%s\n", line);
         perf_vklock_line(&g_perf_vklock, &g_perf_vkx, PERF_TIMES_WINDOW, line, PERF_COPIES_LINE); /* PERF-36G */
         LOG("%s\n", line);
-        if (g_perf_beside) {
-            perf_beside_line(&g_perf_bs, PERF_TIMES_WINDOW, line, PERF_COPIES_LINE); /* PERF-36 */
-            LOG("%s\n", line);
-        }
     }
     perf_copies_line(&g_perf_cp, PERF_TIMES_WINDOW, line, PERF_COPIES_LINE);
     LOG("%s\n", line);
