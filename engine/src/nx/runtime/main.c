@@ -13,7 +13,11 @@
 #include "common/utilities/ini_lines.h"
 #include "common/utilities/progress.h"
 #include "nx/gpu/nvn/diag/draw_record.h"
+#include "nx/gpu/nvn/nvn_cmdlist.h"
 #include "nx/gpu/gpu.h"
+#include "nx/gpu/perf_times.h"
+#include "nx/gpu/frame_log.h"
+#include "nx/gpu/vk/landing.h"
 #include "nx/gpu/nvn/nvn_native.h"
 #include "nx/gpu/nvn/diag/nvn_trace.h"
 #include "nx/gpu/renderer.h"
@@ -206,6 +210,8 @@ static const SnxModule* load_module(const char* path) {
 }
 
 /* the dispatch table: a function for each code word the recompiler compiled one for */
+static uint64_t perf_hook_now(void) { return plat_ns(); } /* PERF-32's wait hook clock */
+_Static_assert(PW_VKWAIT == PMW_N, "perf_times.h's wait kinds follow host.h's");
 static void dispatch_init(void) {
     u64 words, i;
     g_code_lo = g_mod->code_lo;
@@ -863,6 +869,104 @@ int snx_main(int argc, char** argv) {
 #if defined(SNX_TRACY)
     if (g_settings.tracy_profiler) g_opt_tracy_client = 1; /* the .ini's Debug section asks for the client */
 #endif
+    /* SNX_ARCEUS_PROFILE=1 and SNX_ARCEUS_GPU_PROFILE=1 are the profile and vk_gpu_profile options for a launcher that
+       passes only SNX_ARCEUS_* variables. Before any thread starts, since each one is sampled from its start */
+    {
+        const char* profile = getenv("SNX_ARCEUS_PROFILE");
+        const char* gpu_profile = getenv("SNX_ARCEUS_GPU_PROFILE");
+        const char* times = getenv("SNX_ARCEUS_PERF_TIMES");
+        if (profile && !strcmp(profile, "1")) g_settings.profiler = 1;
+        if (gpu_profile && !strcmp(gpu_profile, "1")) g_settings.gpu_profile = 1;
+        const char* landing = getenv("SNX_ARCEUS_PERF_LANDING");
+        const char* validation = getenv("SNX_ARCEUS_VK_VALIDATION");
+        const char* replay = getenv("SNX_ARCEUS_PERF_REPLAY");
+        /* 1: the draw's bind walks stop early (gpu/nvn/nvn_dirty.h). 2: also the builders' words go to the replay as
+           they are written (PERF-30, gpu/nvn/nvn_params.h). 3: also the header helpers act without their words */
+        g_perf_replay = perf_level(replay, 1, 3); /* 3 by default, the play set's */
+        if (g_perf_replay) LOG("perf-replay: on, the draw's bind walks stop at their last set flag\n");
+        if (g_perf_replay >= 2)
+            LOG("perf-replay: EXPERIMENT level 2, a draw's bind and draw words go to the 3D engine as they are "
+                "written, decoded as before, not stored and decoded after\n");
+        if (g_perf_replay >= 3)
+            LOG("perf-replay: EXPERIMENT level 3, a header helper sets the decoder's state itself and a run's words "
+                "take its open-run branch inline\n");
+        if (validation && !strcmp(validation, "1")) g_settings.vulkan_validation_layer = 1; /* vk_validation */
+        if (validation && !strcmp(validation, "2")) { /* and its synchronization checks, never saved in the settings */
+            g_settings.vulkan_validation_layer = 1;
+            g_vk_sync_validation = 1;
+        }
+        /* the frame's timing line (gpu/perf_times.h), 2 also PERF-23's record of every byte as written (it halved
+           T23's frame rate) */
+        g_perf_times = times && !strcmp(times, "1") ? 1 : times && !strcmp(times, "2") ? 2 : 0;
+        const char* probes = getenv("SNX_ARCEUS_PERF_PROBES"); /* PERF-29's line, only with the timing line */
+        g_perf_probes = g_perf_times && probes && !strcmp(probes, "1");
+        if (g_perf_probes) {
+            static const PmWaitHook hook = {perf_hook_now, perf_wait_note}; /* PERF-32 */
+            g_perf_waits.base = g_perf_vklock.base = (uint64_t)(uintptr_t)&pm_wait_note;
+            pm_wait_hook_set(&hook);
+            g_landing_count = 1; /* PERF-35: the masked pass's steps by mask */
+            LOG("perf-probes: on, a perf-p29 line with the hash callers, the replay's draws, the releases by kind and "
+                "the page index's lookups, a perf-mem line, a perf-waits line and a perf-vklock line\n");
+        }
+        const char* inplace = getenv("SNX_ARCEUS_PERF_INPLACE"); /* 4 by default (gpu/perf_times.h, PERF-17) */
+        g_perf_inplace = perf_level(inplace, 1, 4);
+        if (g_perf_inplace) {
+            LOG("perf-inplace: EXPERIMENT level %d: a read binds the newest result sharing a byte in place%s%s%s\n",
+                g_perf_inplace, g_perf_inplace >= 2 ? ", a vertex stream over pending results at its exact length" : "",
+                g_perf_inplace >= 3 ? ", a read skips the reuse barrier with no writable result handed out since" : "",
+                g_perf_inplace >= 4 ? ", a writable composition skips gfx_overlay with no byte to copy" : "");
+        } else if (inplace && *inplace && strcmp(inplace, "0"))
+            LOG("perf-inplace: '%s' is not 0 to 4, off\n", inplace);
+        const char* query = getenv("SNX_ARCEUS_PERF_QUERY"); /* on by default (gpu/perf_times.h, PERF-19) */
+        g_perf_query = perf_level(query, 1, 1);
+        if (g_perf_query)
+            LOG("perf-query: EXPERIMENT on, a samples-passed report keeps the pass open and its counts are copied at "
+                "the submission's end, or at half the query ring\n");
+        const char* sample = getenv("SNX_ARCEUS_PERF_SAMPLE"); /* on by default (gpu/perf_times.h, PERF-24) */
+        g_perf_sample = perf_level(sample, 1, 1);
+        if (g_perf_sample)
+            LOG("perf-sample: EXPERIMENT on, with write tracking a buffer's full check takes no sampled hash (only the "
+                "check without write tracking reads one)\n");
+        const char* compare = getenv("SNX_ARCEUS_PERF_COMPARE"); /* 2 by default (gpu/perf_times.h, PERF-28) */
+        g_perf_compare = perf_level(compare, 2, 2); /* 1 was PERF-28 1a, not kept and removed */
+        if (g_perf_compare == 2)
+            LOG("perf-compare: EXPERIMENT level 2, a landing's whole-size masked pass finds its changed runs, and its "
+                "walk and a binding's walk visit only the pending results on their pages\n");
+        const char* scan = getenv("SNX_ARCEUS_PERF_SCAN"); /* on by default (gpu/nvn/nvn_cmdlist.h, PERF-33 part 2) */
+        g_nvn_oplist_marks = perf_level(scan, 1, 1); /* before any list is recorded */
+        if (g_nvn_oplist_marks)
+            LOG("perf-scan: EXPERIMENT on, a list's fence, wait and call ops are marked as they are appended and the "
+                "submit reads them at their marks, not by walking every op\n");
+        const char* patch_hash = getenv("SNX_ARCEUS_PATCH_HASH"); /* a fix, off by default (gpu/vk/buffer.c) */
+        g_patch_hash = patch_hash && !strcmp(patch_hash, "1");
+        if (g_patch_hash)
+            LOG("patch-hash: EXPERIMENT on, a buffer patched in place is taken as changed at its next full check, and "
+                "the checks without write tracking do not skip it\n");
+        const char* frame_log = getenv("SNX_ARCEUS_FRAME_LOG"); /* log only, DAILY-LT (gpu/frame_log.h) */
+        g_frame_log = frame_log && !strcmp(frame_log, "1");
+        if (g_frame_log)
+            LOG("frame-log: on, every interval between present posts in microseconds, lines every %u presents\n",
+                FRAME_LOG_WINDOW);
+        const char* latency = getenv("SNX_ARCEUS_LATENCY_PROBE"); /* log only, DAILY-LT (gpu/frame_log.h) */
+        g_latency_probe = latency && !strcmp(latency, "1");
+        if (g_latency_probe)
+            LOG("latency-probe: on, a scripted press is stamped where HID hands it to the guest, %u presents before "
+                "and %u from it get a line with a %ux%u picture difference\n",
+                LAT_BEFORE, LAT_AFTER, LAT_W, LAT_H);
+        /* masked stores in the landing (gpu/vk/landing.h), 3 by default, the only level left: 1 and 2 were removed */
+        g_perf_landing = perf_level(landing, 3, 3);
+        g_landing_masked = g_perf_landing && landing_masked_supported(); /* the CPU and OS check, once */
+        if (landing && (!strcmp(landing, "1") || !strcmp(landing, "2")))
+            LOG("perf-landing: level %s was removed (research 19:31), storage results land as with it =0\n",
+                landing);
+        if (g_perf_landing)
+            LOG("perf-landing: on (level 3), storage results land %s\n",
+                g_landing_masked ? "with 64-byte masked stores (AVX-512BW)"
+                                 : "with word compares: no AVX-512BW on this CPU or OS");
+        if (g_perf_times)
+            LOG("perf-times: on, a line every %u presents (SNX_ARCEUS_PERF_TIMES)%s\n", PERF_TIMES_WINDOW,
+                g_perf_times > 1 ? ", with the record of every byte as written" : "");
+    }
     /* SNX_ARCEUS_NVN_BLEND_TARGETS: a blend slot per colour target in the native replay (nvn_blend_slots.h), on by
        default (it repairs the over-bright opening), 0 turns it off */
     {
@@ -964,7 +1068,7 @@ int snx_main(int argc, char** argv) {
     if (g_settings.profiler) {
 #if defined(_WIN32)
         plat_prof_start();
-        LOG("profiler: on, profile.txt every 10 seconds\n");
+        LOG("profiler: on, profile.txt and profile-<seconds>.txt every 10 seconds, per thread\n");
 #else
         LOG("the CPU profiler is Windows only, profile=1 does nothing here\n");
 #endif

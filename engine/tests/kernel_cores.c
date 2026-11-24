@@ -94,6 +94,7 @@ int plat_address_space(u64* mapped, u64* largest_free) {
     return 1;
 }
 void plat_thread_exit(void) { pthread_exit(NULL); }
+void plat_prof_label_self(const char* name) { (void)name; }
 /* a game pause's clock, and its report of a thread that didn't stop */
 u64 plat_ns(void) {
     struct timespec t;

@@ -329,10 +329,18 @@ static void thread_run(KThread* t, u64 pc) {
         while ((pc = t->cpu.pc) != 0);
     svc_exit_thread(t); /* its entry function returned: there is nothing to return to */
 }
+/* The guest thread's id and name in profile.txt (the profile option) */
+static void prof_label(const KThread* t) {
+    char label[64];
+    if (!g_settings.profiler) return;
+    snprintf(label, sizeof label, "guest %llu%s%s", (unsigned long long)t->id, t->name[0] ? " " : "", t->name);
+    plat_prof_label_self(label);
+}
 static void thread_main(void* p) {
     KThread* t = (KThread*)p;
     tls_thread = t;
     SNX_THREAD_NAME(t->name[0] ? t->name : "guest");
+    prof_label(t);
     __atomic_add_fetch(&g_host.thread.nhost, 1, __ATOMIC_ACQ_REL);
     thread_run(t, t->entry);
 }
@@ -477,6 +485,7 @@ static void thread_resume_main(void* p) {
     KThread* t = (KThread*)p;
     int park = t->park;
     tls_thread = t;
+    prof_label(t);
     __atomic_add_fetch(&g_host.thread.nhost, 1, __ATOMIC_ACQ_REL);
     kthread_hold_point(t, park);
     if (park == PARK_ENTER || park == PARK_SERVICE) {

@@ -7,6 +7,7 @@
 #include "nx/gpu/nvn/nvn_native.h"
 #include "nx/gpu/nvn/nvn_cmdlist.h"
 #include "nx/gpu/nvn/nvn_frame.h"
+#include "nx/gpu/nvn/nvn_dirty.h"
 #include "nx/gpu/nvn/diag/nvn_measure.h"
 #include "nx/gpu/nvn/diag/nvn_measure_calc.h"
 #include "nx/gpu/nvn/nvn_objtab.h"
@@ -15,6 +16,9 @@
 #include "nx/gpu/nvn/diag/nvn_trace.h"
 #include "nx/gpu/maxwell/kepler_compute_regs.h"
 #include "nx/gpu/renderer.h"
+#include "nx/gpu/perf_times.h"
+#include "nx/gpu/perf_sample.h"
+#include "nx/gpu/frame_log.h"
 #include "nx/runtime/loader.h"
 #include "nx/runtime/main.h"
 #include "nx/runtime/cheats.h"
@@ -3239,7 +3243,9 @@ static void h_command_buffer_add_control_memory(CPU* c, u64 entry) {
         cb->control_begin = c->x[1];
         cb->control_end = c->x[1] <= UINT64_MAX - c->x[2] ? c->x[1] + c->x[2] : UINT64_MAX;
         cb->control_adds++;
+        const uint64_t u0 = g_perf_probes ? plat_ns() : 0; /* PERF-34: the lists' unref walk, on this thread */
         command_buffer_drop_owned(cb, owned_overlaps, cb->control_begin, cb->control_end);
+        if (u0) perf_wait_note(PW_UNREF, NULL, plat_ns() - u0);
     }
     command_unhold(&hold);
 }
@@ -5234,7 +5240,7 @@ static int replay_host_bind_texture_store(NvnNativeReplayHost* host, uint32_t st
     host->texture_handle[stage][slot] = handle;
     host->texture_bound[stage][slot] = 1;
     host->texture_plural[stage][slot] = (uint8_t)plural;
-    host->texture_dirty[stage][slot] = NVN_BIND_DIRTY;
+    nvn_dirty_mark(&host->texture_dirty[stage][slot], &host->texture_dirty_n[stage]);
     return 1;
 }
 static int replay_host_bind_texture(void* ctx, uint32_t stage, uint32_t slot, uint64_t handle) {
@@ -5262,21 +5268,25 @@ static int replay_host_bind_buffer(void* ctx, const NvnOpBindBuffer* op) {
     NvnNativeReplayHost* host = ctx;
     NvnBindEntry* entry;
     uint8_t* dirty = NULL;
+    uint16_t* dirty_n = NULL;
     switch ((NvnBindKind)op->kind) {
     case NVN_BIND_UNIFORM:
         if (op->stage > NVN_BIND_STAGE_MAX || op->slot >= NVN_UNIFORM_SLOT_MAX) return 0;
         entry = &host->uniform[op->stage][op->slot];
         dirty = &host->uniform_dirty[op->stage][op->slot];
+        dirty_n = &host->uniform_dirty_n[op->stage];
         break;
     case NVN_BIND_STORAGE:
         if (op->stage > NVN_BIND_STAGE_MAX || op->slot >= NVN_STORAGE_SLOT_MAX) return 0;
         entry = &host->storage[op->stage][op->slot];
         dirty = &host->storage_dirty[op->stage][op->slot];
+        dirty_n = &host->storage_dirty_n[op->stage];
         break;
     case NVN_BIND_VERTEX:
         if (op->slot >= NVN_VERTEX_SLOT_MAX) return 0;
         entry = &host->vertex[op->slot];
         dirty = &host->vertex_dirty[op->slot];
+        dirty_n = &host->vertex_dirty_n;
         break;
     case NVN_BIND_TRANSFORM_FEEDBACK:
         if (op->slot >= NVN_XFB_SLOT_MAX) return 0;
@@ -5289,7 +5299,7 @@ static int replay_host_bind_buffer(void* ctx, const NvnOpBindBuffer* op) {
     entry->size = op->size;
     entry->bound = (uint8_t)nvn_bind_buffer_active((NvnBindKind)op->kind, op->addr, op->size);
     entry->plural = (uint8_t)(op->plural != 0);
-    if (dirty) *dirty = NVN_BIND_DIRTY;
+    if (dirty) nvn_dirty_mark(dirty, dirty_n);
     if (op->kind == NVN_BIND_TRANSFORM_FEEDBACK) return replay_host_send_xfb_bind(host, op);
     return 1;
 }
@@ -5320,14 +5330,22 @@ static void replay_bind_refuse(NvnNativeReplayHost* host, const char* group, int
 }
 /* One method of a host built stream, routed as gpu.c's method_call does: a puller method (below 0x40) of any
    subchannel goes to the puller, and the other methods of subchannel 0 go to the 3D engine. */
+/* SNX_ARCEUS_PERF_PROBES (PERF-30's count): which part of a draw is being sent (1 its binds, 2 its draw words, 0
+   none), and its 3D register methods, all and those writing the value held. The replay thread's, flushed a draw */
+static int g_replay_part;
+static uint64_t g_replay_regs[2], g_replay_same[2];
 static void replay_stream_method(GpuChannel* ch, uint32_t subchannel, uint32_t method, uint32_t value, int last) {
+    if (g_replay_part && !subchannel && method >= PULLER_NON_PULLER_METHODS && method < MAXWELL3D_NUM_REGS) {
+        g_replay_regs[g_replay_part - 1]++;
+        g_replay_same[g_replay_part - 1] += ch->r3d[method] == value;
+    }
     if (subchannel || method < PULLER_NON_PULLER_METHODS)
         gpu_channel_method(ch, subchannel, method, value, last);
     else
         maxwell3d_method(ch, method, value, last);
 }
 /* Sends the builder words of one bind group. A damaged stream is a refusal, and the words sent before it stay. */
-static int replay_bind_send(NvnNativeReplayHost* host, const uint32_t* words, uint32_t count) {
+static int replay_bind_words(NvnNativeReplayHost* host, const uint32_t* words, uint32_t count) {
     NvnWordStream stream = {0};
     for (uint32_t i = 0; i < count; i++) {
         uint32_t method, value;
@@ -5340,6 +5358,35 @@ static int replay_bind_send(NvnNativeReplayHost* host, const uint32_t* words, ui
         }
     }
     return nvn_word_stream_complete(&stream);
+}
+/* SNX_ARCEUS_PERF_PROBES (PERF-29): set by replay_host_draw for one draw in PERF_REPLAY_SAMPLE, whose sends are timed,
+   each after a decode-only pass over its words (the decoder only changes its own stream). The replay thread's */
+static int g_replay_timed;
+static uint64_t g_replay_draws;
+/* SNX_ARCEUS_PERF_REPLAY=2 (PERF-30): the replay thread's sink, which the builders' words reach as they are written */
+static NvnWordSink g_replay_sink;
+static void replay_sink_method(void* ctx, uint32_t subchannel, uint32_t method, uint32_t value, int last) {
+    NvnNativeReplayHost* host = ctx;
+    replay_stream_method(host->channel, subchannel, method, value, last);
+    host->bind_methods++;
+}
+static int replay_bind_send(NvnNativeReplayHost* host, const uint32_t* words, uint32_t count) {
+    if (nvn_word_sink) return nvn_word_sink_take(nvn_word_sink); /* the words went to the engine as they were built */
+    if (!g_replay_timed) return replay_bind_words(host, words, count);
+    NvnWordStream probe = {0};
+    const uint64_t t0 = plat_ns(), methods0 = host->bind_methods;
+    for (uint32_t i = 0; i < count; i++) {
+        uint32_t method, value;
+        int last;
+        if (nvn_word_stream_next(&probe, words[i], &method, &value, &last) < 0) break;
+    }
+    const uint64_t t1 = plat_ns();
+    const int ok = replay_bind_words(host, words, count);
+    perf_replay_add(&g_perf_p29, PRP_SEND_NS, plat_ns() - t1);
+    perf_replay_add(&g_perf_p29, PRP_DECODE_NS, t1 - t0);
+    perf_replay_add(&g_perf_p29, PRP_WORDS, count);
+    perf_replay_add(&g_perf_p29, PRP_METHODS, host->bind_methods - methods0);
+    return ok;
 }
 /* SNX_ARCEUS_NVN_BLEND_TARGETS: each target's blend bind since the last draw, in the order the game bound them */
 static void replay_bind_send_blend_slots(NvnNativeReplayHost* host) {
@@ -5428,9 +5475,8 @@ static void replay_bind_send_vertex_stream(NvnNativeReplayHost* host) {
 }
 /* Decision 7: only a bound slot is sent. A later size 0 bind disables the slot in the host table but sends nothing. */
 static void replay_bind_send_vertex_buffers(NvnNativeReplayHost* host) {
-    for (uint32_t i = 0; i < NVN_VERTEX_SLOT_MAX; i++) {
-        if (!host->vertex_dirty[i]) continue;
-        host->vertex_dirty[i] = 0;
+    for (uint32_t i = 0;
+         nvn_dirty_take(host->vertex_dirty, &host->vertex_dirty_n, NVN_VERTEX_SLOT_MAX, &i, g_perf_replay); i++) {
         if (!host->vertex[i].bound) continue;
         uint32_t out[NVN_BIND_VERTEX_BUFFER_WORDS_MAX];
         uint32_t words =
@@ -5442,9 +5488,9 @@ static void replay_bind_send_vertex_buffers(NvnNativeReplayHost* host) {
 /* A size 0 uniform bind is sent too: the builder writes the invalid bind word for it. */
 static void replay_bind_send_uniforms(NvnNativeReplayHost* host) {
     for (uint32_t stage = 0; stage < NVN_BIND_STAGE_COMPUTE; stage++) {
-        for (uint32_t slot = 0; slot < NVN_UNIFORM_SLOT_MAX; slot++) {
-            if (!host->uniform_dirty[stage][slot]) continue;
-            host->uniform_dirty[stage][slot] = 0;
+        for (uint32_t slot = 0; nvn_dirty_take(host->uniform_dirty[stage], &host->uniform_dirty_n[stage],
+                                               NVN_UNIFORM_SLOT_MAX, &slot, g_perf_replay);
+             slot++) {
             const NvnBindEntry* entry = &host->uniform[stage][slot];
             if (entry->size > UINT32_MAX) {
                 replay_bind_refuse(host, "uniform buffer", (int32_t)stage, (int32_t)slot, (uint32_t)entry->addr);
@@ -5462,9 +5508,9 @@ static void replay_bind_send_uniforms(NvnNativeReplayHost* host) {
    from BindStorageBuffers keeps the plural mode 3 form. */
 static void replay_bind_send_storages(NvnNativeReplayHost* host) {
     for (uint32_t stage = 0; stage < NVN_BIND_STAGE_COMPUTE; stage++) {
-        for (uint32_t slot = 0; slot < NVN_STORAGE_SLOT_MAX; slot++) {
-            if (!host->storage_dirty[stage][slot]) continue;
-            host->storage_dirty[stage][slot] = 0;
+        for (uint32_t slot = 0; nvn_dirty_take(host->storage_dirty[stage], &host->storage_dirty_n[stage],
+                                               NVN_STORAGE_SLOT_MAX, &slot, g_perf_replay);
+             slot++) {
             const NvnBindEntry* entry = &host->storage[stage][slot];
             if (entry->size > UINT32_MAX) {
                 replay_bind_refuse(host, "storage buffer", (int32_t)stage, (int32_t)slot, (uint32_t)entry->addr);
@@ -5485,9 +5531,9 @@ static void replay_bind_send_storages(NvnNativeReplayHost* host) {
 }
 static void replay_bind_send_textures(NvnNativeReplayHost* host) {
     for (uint32_t stage = 0; stage < NVN_BIND_STAGE_COMPUTE; stage++) {
-        for (uint32_t slot = 0; slot < NVN_BIND_SLOT_MAX; slot++) {
-            if (!host->texture_dirty[stage][slot]) continue;
-            host->texture_dirty[stage][slot] = 0;
+        for (uint32_t slot = 0; nvn_dirty_take(host->texture_dirty[stage], &host->texture_dirty_n[stage],
+                                               NVN_BIND_SLOT_MAX, &slot, g_perf_replay);
+             slot++) {
             uint64_t handle = host->texture_handle[stage][slot];
             uint32_t out[NVN_BIND_TEXTURES_WORDS_MAX];
             uint32_t words = host->texture_plural[stage][slot]
@@ -5521,23 +5567,39 @@ static void replay_bind_send_all(NvnNativeReplayHost* host) {
 #define NVN_MME_DRIVER_CONSTANTS_REGISTER 0xD18u
 
 /* The replay thread writes these without a lock. The first draw and the first dispatch of the run get one log line. */
-static int replay_host_draw(void* ctx, const NvnOpDraw* op) {
+static int replay_host_draw_sent(void* ctx, const NvnOpDraw* op) {
     NvnNativeReplayHost* host = ctx;
     if (op->kind >= (uint32_t)NVN_DRAW_KIND_COUNT) return 0;
+    /* SNX_ARCEUS_PERF_REPLAY=2: the words go to the engine as they are built, but not a timed draw's (PERF-29 times
+       the stored ones), and not the draw's own words while 0xD18 is 0, which the check below refuses after the build */
+    NvnWordSink* const sink = g_perf_replay >= 2 && !g_replay_timed ? &g_replay_sink : NULL;
+    if (sink) {
+        g_replay_sink.method = replay_sink_method, g_replay_sink.ctx = host;
+        g_replay_sink.direct = g_perf_replay >= 3;
+    }
+    if (g_perf_probes) g_replay_part = 1;
+    nvn_word_sink = sink;
     replay_bind_send_all(host);
+    nvn_word_sink = NULL;
+    if (g_perf_probes) g_replay_part = 2; /* the draw's own words, sent below or refused */
     uint32_t words[NVN_DRAW_WORDS_MAX];
     int uses_constants = 0;
+    /* read once before the build, as the check below read it before any send (reviewer N1 on b542467a) */
+    const uint32_t constants = host->channel->r3d[NVN_MME_DRIVER_CONSTANTS_REGISTER];
+    NvnWordSink* const draw_sink = sink && constants ? sink : NULL;
+    nvn_word_sink = draw_sink;
     uint32_t count = nvn_draw_words(op->kind, op->mode, op->type, op->count, op->address, op->first,
                                     op->base_vertex, op->base_instance, op->instances, words, &uses_constants);
+    nvn_word_sink = NULL;
     if (!count) {
         replay_bind_refuse(host, "draw", -1, -1, op->kind);
         return 1;
     }
-    if (uses_constants && host->channel->r3d[NVN_MME_DRIVER_CONSTANTS_REGISTER] == 0) {
+    if (uses_constants && constants == 0) {
         replay_bind_refuse(host, "draw constants", -1, -1, op->kind);
         return 1;
     }
-    if (!replay_bind_send(host, words, count)) {
+    if (!(draw_sink ? nvn_word_sink_take(draw_sink) : replay_bind_send(host, words, count))) {
         replay_bind_refuse(host, "draw words", -1, -1, op->kind);
         return 1;
     }
@@ -5550,6 +5612,24 @@ static int replay_host_draw(void* ctx, const NvnOpDraw* op) {
             host->bind_methods, host->bind_refusals, host->channel->r3d[NVN_MME_DRIVER_CONSTANTS_REGISTER]);
     }
     return 1;
+}
+/* SNX_ARCEUS_PERF_PROBES (PERF-29): every draw counted, one in PERF_REPLAY_SAMPLE timed whole and by its sends */
+static int replay_host_draw(void* ctx, const NvnOpDraw* op) {
+    if (!g_perf_probes) return replay_host_draw_sent(ctx, op);
+    const int timed = ++g_replay_draws % PERF_REPLAY_SAMPLE == 0;
+    const uint64_t t0 = plat_ns();
+    g_replay_timed = timed;
+    const int r = replay_host_draw_sent(ctx, op);
+    g_replay_timed = 0, g_replay_part = 0;
+    perf_replay_add(&g_perf_p29, PRP_DRAWS, 1);
+    perf_replay_add(&g_perf_p29, PRP_BIND_REGS, g_replay_regs[0]);
+    perf_replay_add(&g_perf_p29, PRP_BIND_SAME, g_replay_same[0]);
+    perf_replay_add(&g_perf_p29, PRP_DRAW_REGS, g_replay_regs[1]);
+    perf_replay_add(&g_perf_p29, PRP_DRAW_SAME, g_replay_same[1]);
+    g_replay_regs[0] = g_replay_regs[1] = g_replay_same[0] = g_replay_same[1] = 0;
+    if (timed) perf_replay_add(&g_perf_p29, PRP_SAMPLED, 1), perf_replay_add(&g_perf_p29, PRP_ALL_NS, plat_ns() - t0);
+    else perf_replay_add(&g_perf_p29, PRP_PLAIN_NS, plat_ns() - t0);
+    return r;
 }
 /* The dispatch arena: one guest page that holds the QMD and the driver constant block of every dispatch, mapped once
    at the first dispatch and kept for the run. vk_dispatch reads both during the launch call, so one slot is enough. */
@@ -5626,12 +5706,10 @@ static void replay_dispatch_binds(const NvnNativeReplayHost* host, NvnComputeBin
 
 /* Clears the stage 5 binds that the dispatch sent. */
 static void replay_dispatch_clear_dirty(NvnNativeReplayHost* host) {
-    for (uint32_t slot = 0; slot < NVN_UNIFORM_SLOT_MAX; slot++)
-        host->uniform_dirty[NVN_BIND_STAGE_COMPUTE][slot] = 0;
-    for (uint32_t slot = 0; slot < NVN_STORAGE_SLOT_MAX; slot++)
-        host->storage_dirty[NVN_BIND_STAGE_COMPUTE][slot] = 0;
-    for (uint32_t slot = 0; slot < NVN_BIND_SLOT_MAX; slot++)
-        host->texture_dirty[NVN_BIND_STAGE_COMPUTE][slot] = 0;
+    const uint32_t c = NVN_BIND_STAGE_COMPUTE;
+    nvn_dirty_clear(host->uniform_dirty[c], &host->uniform_dirty_n[c], NVN_UNIFORM_SLOT_MAX);
+    nvn_dirty_clear(host->storage_dirty[c], &host->storage_dirty_n[c], NVN_STORAGE_SLOT_MAX);
+    nvn_dirty_clear(host->texture_dirty[c], &host->texture_dirty_n[c], NVN_BIND_SLOT_MAX);
 }
 
 static int replay_host_dispatch(void* ctx, const NvnOpDispatch* op) {
@@ -6448,6 +6526,12 @@ static void handler_wait_end(u64 start_ns) {
     if (g_settings.nvn_measure) t_handler_wait_ns += plat_ns() - start_ns;
 }
 
+/* SNX_ARCEUS_LATENCY_PROBE: the acquire call's start on this thread, and each window image's last acquire wait, kept
+   under objs_lock for the present that shows the image */
+#define LAT_ACQUIRE_IMAGES 16u
+static _Thread_local u64 t_lat_acquire0;
+static u64 lat_acquire_ns[LAT_ACQUIRE_IMAGES];
+
 static void window_acquire_failed(CPU* c, const char* operation, u64 queue_addr, u64 window_addr, u64 sync_addr,
                                   u64 index_addr, const char* reason) {
     LOG("nvn-native: %s failed: %s (queue=%llx window=%llx sync=%llx index=%llx)\n", operation, reason,
@@ -6517,6 +6601,7 @@ static void window_acquire_texture(CPU* c, u64 queue_addr, u64 window_addr, u64 
         return;
     }
     nvn_window_acquire_take(window->states, &window->last_index, index);
+    if (t_lat_acquire0 && (uint32_t)index < LAT_ACQUIRE_IMAGES) lat_acquire_ns[index] = plat_ns() - t_lat_acquire0;
     /* A free image means its previous frame job has finished. */
     if (sync) sync->state = NVN_SYNC_SIGNALED;
     gw32(index_addr, (uint32_t)index);
@@ -6526,11 +6611,17 @@ static void window_acquire_texture(CPU* c, u64 queue_addr, u64 window_addr, u64 
 }
 static void h_window_acquire_texture(CPU* c, u64 entry) {
     (void)entry;
+    const u64 t0 = g_perf_times ? plat_ns() : 0;
+    if (g_latency_probe) t_lat_acquire0 = t0 ? t0 : plat_ns();
     window_acquire_texture(c, 0, c->x[0], c->x[1], c->x[2], "nvnWindowAcquireTexture");
+    if (t0) perf_time_add(&g_perf, PT_ACQUIRE, plat_ns() - t0);
 }
 static void h_queue_acquire_texture(CPU* c, u64 entry) {
     (void)entry;
+    const u64 t0 = g_perf_times ? plat_ns() : 0;
+    if (g_latency_probe) t_lat_acquire0 = t0 ? t0 : plat_ns();
     window_acquire_texture(c, c->x[0], c->x[1], 0, c->x[2], "nvnQueueAcquireTexture");
+    if (t0) perf_time_add(&g_perf, PT_ACQUIRE, plat_ns() - t0);
 }
 /* 1 when the syncpoint has reached value, across the 32-bit wrap (the look of syncpt_wait with a 0 timeout). */
 static int syncpoint_reached(u32 id, u32 value) { return (int32_t)(syncpt_read(id) - value) >= 0; }
@@ -6538,6 +6629,7 @@ static int syncpoint_reached(u32 id, u32 value) { return (int32_t)(syncpt_read(i
    runs without objs_lock, so the GPU thread can post and finish jobs meanwhile. */
 static void h_sync_wait(CPU* c, u64 entry) {
     (void)entry;
+    const u64 perf_t0 = g_perf_times ? plat_ns() : 0;
     const u64 sync_addr = c->x[0];
     const NvnWaitDeadline limit = nvn_wait_deadline(c->x[1], plat_ns());
     objs_lock_take();
@@ -6593,6 +6685,11 @@ static void h_sync_wait(CPU* c, u64 entry) {
     }
     c->x[0] = result;
     pm_unlock(&objs_lock);
+    if (perf_t0) {
+        const u64 now = plat_ns();
+        perf_time_add(&g_perf, PT_SYNC_WAIT, now - perf_t0);
+        perf_tail_woke(&g_perf, now);
+    }
 }
 
 /* The frame that Present, a flush, a finish or a fenced flush closes (decisions 8 and 10). The GPU thread replays it
@@ -6607,6 +6704,7 @@ typedef struct {
     GpuChannel* channel; /* the private channel of the queue, used on the GPU thread only */
     uint32_t* init_words; /* the queue's macro code, copied so that it outlives the record */
     uint32_t init_word_count;
+    uint32_t post_ns; /* SNX_ARCEUS_PERF_TIMES: the low 32 bits of its post time, in the tail padding */
 } FrameJob;
 /* What a post takes from the caller; a flush leaves the window fields zero. */
 typedef struct {
@@ -6756,6 +6854,10 @@ static void frame_end(const FrameJob* job) {
     r3d_const_flush(job->channel);
     r3d_pending_flush();
     /* The job's syncpoint increment follows the releases of its reports, as the console's fence does. */
+    if (g_perf_times && job->kind == NVN_FRAME_PRESENT) { /* its tail, from this increment */
+        perf_tail_arm(&g_perf);
+        perf_sub_frame_end(&g_perf, plat_ns());
+    }
     gpu_stream_incr(job->channel->id);
     if (g_renderer->stream_end) g_renderer->stream_end();
     if (g_renderer->stream_run) g_renderer->stream_run(0);
@@ -6790,7 +6892,9 @@ static void frame_finish(FrameJob* job) {
             window->states[job->index] = NVN_IMAGE_FREE;
     }
     pm_lock(&lists_lock);
+    const uint64_t u0 = g_perf_probes ? plat_ns() : 0; /* PERF-34: the lists' unref walk, on this thread */
     nvn_frame_release(&job->frame, &lists);
+    if (u0) perf_wait_note(PW_UNREF, NULL, plat_ns() - u0);
     pm_unlock(&lists_lock);
     frames_in_flight--;
     pc_broadcast(&frame_done_cv); /* the image and the syncs are up to date */
@@ -6884,12 +6988,98 @@ static void frame_replay_init(const FrameJob* job) {
 }
 
 /* Runs on the GPU thread: it frees the job that a post made. A flush has no window: it replays the lists and ends. */
+/* SNX_ARCEUS_PERF_TIMES: the post and the end of the last present job, for the cycle (perf_times.h) */
+static u64 perf_last_post, perf_last_end;
+/* A present's post: the period from the last one, and the time from the last present job's end, or an overlap when
+   that job has not ended. The clock is read after the end, so an end published meanwhile counts as an overlap and
+   never comes after now. Caller holds objs_lock, so posts come one at a time. The post time */
+static u64 perf_present_posted(void) {
+    const u64 last_post = __atomic_load_n(&perf_last_post, __ATOMIC_RELAXED);
+    const u64 last_end = __atomic_load_n(&perf_last_end, __ATOMIC_ACQUIRE);
+    const u64 now = plat_ns();
+    if (last_post) perf_time_add(&g_perf, PT_PERIOD, now - last_post);
+    if (last_post && last_end < last_post)
+        __atomic_fetch_add(&g_perf.overlaps, 1, __ATOMIC_RELAXED);
+    else if (last_end)
+        perf_time_add(&g_perf, PT_END_POST, now - last_end);
+    __atomic_store_n(&perf_last_post, now, __ATOMIC_RELAXED);
+    return now;
+}
+/* DAILY-LT (gpu/frame_log.h): a present's post, numbered, with the jobs already in flight and its image's acquire
+   wait. Caller holds objs_lock */
+static void daily_present_posted(const FrameJob* job) {
+    static u64 presents;
+    const u64 now = plat_ns(), no = ++presents;
+    if (g_frame_log) frame_log_present(&g_frame_log_buf, no, now);
+    if (g_latency_probe) {
+        const LatPresent p = {.no = no, .post_ns = now, .jobs = frames_in_flight, .diff = -1,
+                              .acquire_ns = job->index < LAT_ACQUIRE_IMAGES ? lat_acquire_ns[job->index] : 0};
+        latency_posted(&g_latency, &p);
+    }
+}
+/* the GPU thread: a full buffer of intervals, as its lines */
+static void frame_log_flush(void) {
+    const int buffer = frame_log_ready(&g_frame_log_buf);
+    if (!buffer) return;
+    char line[2048];
+    for (unsigned part = 0; part < FRAME_LOG_WINDOW / FRAME_LOG_PART; part++) {
+        frame_log_line(&g_frame_log_buf, buffer - 1, part, line, sizeof line);
+        LOG("%s\n", line);
+    }
+    frame_log_done(&g_frame_log_buf);
+}
+static void perf_line(void) {
+    static uint32_t presents; /* GPU thread only */
+    char line[3072];
+    if (++presents % PERF_TIMES_WINDOW) return;
+    perf_times_line(&g_perf, PERF_TIMES_WINDOW, line, sizeof line);
+    LOG("%s\n", line);
+    perf_inplace_line(&g_perf_cp, PERF_TIMES_WINDOW, line, PERF_COPIES_LINE); /* the same window, before its reset */
+    LOG("%s\n", line);
+    perf_writable_line(&g_perf_cp, PERF_TIMES_WINDOW, line, PERF_COPIES_LINE);
+    LOG("%s\n", line);
+    perf_own_line(&g_perf_cp, PERF_TIMES_WINDOW, line, PERF_COPIES_LINE);
+    LOG("%s\n", line);
+    const u64 c0 = plat_ns(); /* PERF-23: what a clock read costs, from 256 */
+    u64 c1 = c0;
+    for (int k = 0; k < 256; k++) c1 = plat_ns();
+    perf_same_line(&g_perf_cp, &g_perf_stamps, g_perf_times > 1 ? &g_perf_real : NULL, PERF_TIMES_WINDOW,
+                   (double)(c1 - c0) / 256, line, PERF_COPIES_LINE);
+    LOG("%s\n", line);
+    perf_landed_line(&g_perf_cp, PERF_TIMES_WINDOW, line, PERF_COPIES_LINE); /* PERF-25 */
+    LOG("%s\n", line);
+    perf_caps_line(&g_perf_caps, PERF_TIMES_WINDOW, line, PERF_COPIES_LINE); /* PERF-27 */
+    LOG("%s\n", line);
+    if (g_perf_probes) { /* PERF-29, and PERF-31 with the GPU thread's own time read now */
+        perf_p29_line(&g_perf_p29, PERF_TIMES_WINDOW, line, PERF_COPIES_LINE);
+        LOG("%s\n", line);
+        u64 kernel, user;
+        plat_thread_cpu(&kernel, &user);
+        perf_mem_thread(&g_perf_mem, PTH_GPU, (uintptr_t)&presents, kernel, user); /* presents: the GPU thread's */
+        perf_mem_line(&g_perf_mem, PERF_TIMES_WINDOW, plat_page_faults(), line, PERF_COPIES_LINE);
+        LOG("%s\n", line);
+        perf_waits_line(&g_perf_waits, PERF_TIMES_WINDOW, line, PERF_COPIES_LINE); /* PERF-32 */
+        LOG("%s\n", line);
+        perf_handoff_line(&g_perf_handoff, PERF_TIMES_WINDOW, line, PERF_COPIES_LINE); /* PERF-33 */
+        LOG("%s\n", line);
+        perf_land_line(&g_perf_handoff, PERF_TIMES_WINDOW, line, PERF_COPIES_LINE); /* PERF-35 */
+        LOG("%s\n", line);
+        perf_vklock_line(&g_perf_vklock, &g_perf_vkx, PERF_TIMES_WINDOW, line, PERF_COPIES_LINE); /* PERF-36G */
+        LOG("%s\n", line);
+    }
+    perf_copies_line(&g_perf_cp, PERF_TIMES_WINDOW, line, PERF_COPIES_LINE);
+    LOG("%s\n", line);
+}
+
 static void frame_run(void* arg) {
     FrameJob* job = arg;
     static uint32_t frame_jobs, flush_jobs; /* only the GPU thread runs the frame jobs */
     const int flush = job->kind == NVN_FRAME_FLUSH;
     const int measure = g_settings.nvn_measure;
     u64 measure_t0 = measure ? plat_ns() : 0;
+    const u64 perf_start = g_perf_times ? plat_ns() : 0;
+    if (g_perf_probes) perf_who_set(PTH_GPU); /* PERF-32's label for the GPU thread */
+    if (perf_start) perf_time_add(&g_perf, PT_POST_START, (uint32_t)((uint32_t)perf_start - job->post_ns));
     frame_begin();
     FrameParts parts = {0};
     if (!flush) {
@@ -6903,13 +7093,23 @@ static void frame_run(void* arg) {
     uint32_t dispatch_refusals = 0;
     frame_replay_lists(job, &stats, &dispatches, &dispatch_refusals);
     frame_end(job);
+    if (perf_start) {
+        const u64 end = plat_ns();
+        perf_time_add(&g_perf, PT_START_END, end - perf_start);
+        if (!flush) __atomic_store_n(&perf_last_end, end, __ATOMIC_RELEASE);
+    }
     if (measure) nvn_measure_native_gpu(plat_ns() - measure_t0);
+    const u64 perf_show = perf_start && !flush ? plat_ns() : 0;
+    if (g_latency_probe && !flush && !latency_take(&g_latency, &g_lat_next)) g_lat_next.no = 0;
     int shown = flush ? 0 : frame_show(job, &parts);
+    if (perf_show) perf_time_add(&g_perf, PT_SHOW, plat_ns() - perf_show);
     uint32_t list_count = job->frame.handle_count;
     uint32_t fences = job->frame.token_count;
     uint32_t frame_number = flush ? ++flush_jobs : ++frame_jobs;
     frame_finish(job);
     frame_line(job, &stats, shown, fences, list_count, frame_number, dispatches, dispatch_refusals);
+    if (perf_start && !flush) perf_line();
+    if (g_frame_log && !flush) frame_log_flush();
     free(job->init_words);
     free(job);
 }
@@ -6942,6 +7142,10 @@ static FrameJob* queue_post_frame(u64 queue_addr, QueueRec* q, const FrameTarget
     job->index = target->index;
     job->window_origin_flip = target->kind == NVN_FRAME_PRESENT ? target->window_origin_flip : queue_origin_flip(q);
     job->channel = q->channel;
+    if (g_perf_times) /* a 32-bit stamp: the post to start interval is far below its 4 s wrap */
+        job->post_ns = (uint32_t)(target->kind == NVN_FRAME_PRESENT ? perf_present_posted() : plat_ns());
+    if (target->kind == NVN_FRAME_PRESENT) perf_thread_sample(PTH_GUEST); /* PERF-31, the presenting guest thread */
+    if ((g_frame_log || g_latency_probe) && target->kind == NVN_FRAME_PRESENT) daily_present_posted(job);
     if (!q->init_replayed) {
         if (q->init_word_count) {
             job->init_words = malloc((size_t)q->init_word_count * sizeof *job->init_words);
@@ -6974,78 +7178,102 @@ static FrameJob* queue_post_frame(u64 queue_addr, QueueRec* q, const FrameTarget
    serial of that sync, so a newer fence replaces it. Its signal is at the end of the frame job, later than in the
    library: a waiter waits longer, never shorter. A wait only checks what the serial order has reached. *flush is set
    to 1 when a fence token has FLUSH_FOR_CPU. Caller holds objs_lock and lists_lock, after the lists were added. */
+static uint64_t scan_ops, scan_marked; /* PERF-33: the ops walked whole and read by mark, under lists_lock */
+static void queue_scan_list(u64 queue_addr, QueueRec* q, const char* name, const NvnOpList* list, uint64_t list_handle,
+                            uint32_t depth, int* flush);
+/* one op of a list as the submit's scan handles it, from the walk or from a mark: a fence's token, a wait's check, a
+   call's target scanned in place */
+static void queue_scan_op(u64 queue_addr, QueueRec* q, const char* name, uint64_t list_handle, uint32_t depth,
+                          int* flush, const NvnOpHeader header, const void* payload) {
+    if (header.code == NVN_OP_FENCE_SYNC) {
+        const NvnOpFenceSync* op = payload;
+        NvnObj* so = nvn_objtab_valid(&objs, op->sync, op->generation) ? nvn_objtab_find(&objs, op->sync) : NULL;
+        if (!so || so->kind != NVN_OBJ_SYNC) {
+            LOG_LIMIT(QUEUE_LOG_LIMIT, "nvn-native: %s queue=%llx list=%llx sync=%llx generation=%u is gone\n",
+                      name, (unsigned long long)queue_addr, (unsigned long long)list_handle,
+                      (unsigned long long)op->sync, op->generation);
+        } else {
+            SyncRec* sync = so->data;
+            const uint32_t serial = fence_serial_next(sync);
+            if (!nvn_frame_add_token(&q->pending, op->sync, op->generation, serial)) {
+                LOG_LIMIT(QUEUE_LOG_LIMIT,
+                          "nvn-native: %s queue=%llx list=%llx sync=%llx does not fit in the pending frame\n", name,
+                          (unsigned long long)queue_addr, (unsigned long long)list_handle,
+                          (unsigned long long)op->sync);
+            } else {
+                sync->serial = serial;
+                sync->syncpoint = q->channel_id;
+                sync->state = NVN_SYNC_PENDING;
+                if (op->flags & NVN_QUEUE_FENCE_FLUSH_FOR_CPU) *flush = 1;
+            }
+        }
+    } else if (header.code == NVN_OP_WAIT_SYNC) {
+        const NvnOpWaitSync* op = payload;
+        NvnObj* so = nvn_objtab_valid(&objs, op->sync, op->generation) ? nvn_objtab_find(&objs, op->sync) : NULL;
+        const SyncRec* sync = so && so->kind == NVN_OBJ_SYNC ? so->data : NULL;
+        if (!sync) {
+            LOG_LIMIT(QUEUE_LOG_LIMIT, "nvn-native: %s queue=%llx list=%llx sync=%llx generation=%u is gone\n",
+                      name, (unsigned long long)queue_addr, (unsigned long long)list_handle,
+                      (unsigned long long)op->sync, op->generation);
+        } else if (sync->state == NVN_SYNC_UNSIGNALED ||
+                   (sync->state == NVN_SYNC_PENDING && sync->syncpoint != q->channel_id)) {
+            /* a PENDING fence of this queue is earlier in the same pending frame, so it is in order */
+            LOG_LIMIT(QUEUE_LOG_LIMIT,
+                      "nvn-native: %s queue=%llx list=%llx sync=%llx is not reached before the wait\n", name,
+                      (unsigned long long)queue_addr, (unsigned long long)list_handle,
+                      (unsigned long long)op->sync);
+        }
+    } else if (header.code == NVN_OP_CALL) {
+        const NvnOpCall* op = payload;
+        if (depth >= NVN_CALL_DEPTH_MAX) {
+            LOG_LIMIT(QUEUE_LOG_LIMIT, "nvn-native: %s queue=%llx list=%llx call=%llx is deeper than %u\n", name,
+                      (unsigned long long)queue_addr, (unsigned long long)list_handle,
+                      (unsigned long long)op->handle, NVN_CALL_DEPTH_MAX);
+            return; /* the next op, as the walk's continue */
+        }
+        const NvnOpList* target = nvn_list_find(&lists, op->handle);
+        if (!target) {
+            LOG_LIMIT(QUEUE_LOG_LIMIT, "nvn-native: %s queue=%llx list=%llx call=%llx is not a live list\n", name,
+                      (unsigned long long)queue_addr, (unsigned long long)list_handle,
+                      (unsigned long long)op->handle);
+            return; /* the next op, as the walk's continue */
+        }
+        queue_scan_list(queue_addr, q, name, target, op->handle, depth + 1, flush);
+    }
+}
+/* SNX_ARCEUS_PERF_SCAN=1 (PERF-33 part 2): a list with all its marks is read at them, in list order, as the walk would
+   reach them. Any other list, and a call's target without its marks, is walked whole as before */
 static void queue_scan_list(u64 queue_addr, QueueRec* q, const char* name, const NvnOpList* list, uint64_t list_handle,
                             uint32_t depth, int* flush) {
     size_t pos = 0;
     NvnOpHeader header;
     const void* payload;
-    while (nvn_oplist_next(list, &pos, &header, &payload)) {
-        if (header.code == NVN_OP_FENCE_SYNC) {
-            const NvnOpFenceSync* op = payload;
-            NvnObj* so = nvn_objtab_valid(&objs, op->sync, op->generation) ? nvn_objtab_find(&objs, op->sync) : NULL;
-            if (!so || so->kind != NVN_OBJ_SYNC) {
-                LOG_LIMIT(QUEUE_LOG_LIMIT, "nvn-native: %s queue=%llx list=%llx sync=%llx generation=%u is gone\n",
-                          name, (unsigned long long)queue_addr, (unsigned long long)list_handle,
-                          (unsigned long long)op->sync, op->generation);
-            } else {
-                SyncRec* sync = so->data;
-                const uint32_t serial = fence_serial_next(sync);
-                if (!nvn_frame_add_token(&q->pending, op->sync, op->generation, serial)) {
-                    LOG_LIMIT(QUEUE_LOG_LIMIT,
-                              "nvn-native: %s queue=%llx list=%llx sync=%llx does not fit in the pending frame\n", name,
-                              (unsigned long long)queue_addr, (unsigned long long)list_handle,
-                              (unsigned long long)op->sync);
-                } else {
-                    sync->serial = serial;
-                    sync->syncpoint = q->channel_id;
-                    sync->state = NVN_SYNC_PENDING;
-                    if (op->flags & NVN_QUEUE_FENCE_FLUSH_FOR_CPU) *flush = 1;
-                }
-            }
-        } else if (header.code == NVN_OP_WAIT_SYNC) {
-            const NvnOpWaitSync* op = payload;
-            NvnObj* so = nvn_objtab_valid(&objs, op->sync, op->generation) ? nvn_objtab_find(&objs, op->sync) : NULL;
-            const SyncRec* sync = so && so->kind == NVN_OBJ_SYNC ? so->data : NULL;
-            if (!sync) {
-                LOG_LIMIT(QUEUE_LOG_LIMIT, "nvn-native: %s queue=%llx list=%llx sync=%llx generation=%u is gone\n",
-                          name, (unsigned long long)queue_addr, (unsigned long long)list_handle,
-                          (unsigned long long)op->sync, op->generation);
-            } else if (sync->state == NVN_SYNC_UNSIGNALED ||
-                       (sync->state == NVN_SYNC_PENDING && sync->syncpoint != q->channel_id)) {
-                /* a PENDING fence of this queue is earlier in the same pending frame, so it is in order */
-                LOG_LIMIT(QUEUE_LOG_LIMIT,
-                          "nvn-native: %s queue=%llx list=%llx sync=%llx is not reached before the wait\n", name,
-                          (unsigned long long)queue_addr, (unsigned long long)list_handle,
-                          (unsigned long long)op->sync);
-            }
-        } else if (header.code == NVN_OP_CALL) {
-            const NvnOpCall* op = payload;
-            if (depth >= NVN_CALL_DEPTH_MAX) {
-                LOG_LIMIT(QUEUE_LOG_LIMIT, "nvn-native: %s queue=%llx list=%llx call=%llx is deeper than %u\n", name,
-                          (unsigned long long)queue_addr, (unsigned long long)list_handle,
-                          (unsigned long long)op->handle, NVN_CALL_DEPTH_MAX);
-                continue;
-            }
-            const NvnOpList* target = nvn_list_find(&lists, op->handle);
-            if (!target) {
-                LOG_LIMIT(QUEUE_LOG_LIMIT, "nvn-native: %s queue=%llx list=%llx call=%llx is not a live list\n", name,
-                          (unsigned long long)queue_addr, (unsigned long long)list_handle,
-                          (unsigned long long)op->handle);
-                continue;
-            }
-            queue_scan_list(queue_addr, q, name, target, op->handle, depth + 1, flush);
+    if (nvn_oplist_marked(list)) {
+        for (uint32_t i = 0; i < list->nmarks; i++) {
+            pos = list->marks[i];
+            if (!nvn_oplist_next(list, &pos, &header, &payload)) break;
+            if (g_perf_probes) scan_marked++;
+            queue_scan_op(queue_addr, q, name, list_handle, depth, flush, header, payload);
         }
+        return;
+    }
+    while (nvn_oplist_next(list, &pos, &header, &payload)) {
+        if (g_perf_probes) scan_ops++;
+        queue_scan_op(queue_addr, q, name, list_handle, depth, flush, header, payload);
     }
 }
 
 /* nvnQueueSubmitCommands(queue, count, handles): copies the handle array at once and adds the lists to the pending
    frame (decision 8). The game alternates two arrays and reuses them, so the copy is not optional. A fence op with
    FLUSH_FOR_CPU posts the frame after the scan. */
-static void h_queue_submit_commands(CPU* c, u64 entry) {
+static void queue_submit_commands(CPU* c, u64 entry) {
     (void)entry;
     static const char* const name = "nvnQueueSubmitCommands";
+    const uint64_t t0 = g_perf_probes ? plat_ns() : 0; /* PERF-33: the lock's wait, the add and the scan apart */
     FrameJob* job = NULL;
     objs_lock_take();
+    const uint64_t t1 = t0 ? plat_ns() : 0;
+    if (t0) perf_handoff_time(&g_perf_handoff, PH_SUBMIT_LOCK, t1 - t0, 0, 0);
     QueueRec* q = queue_rec(c->x[0], name);
     int32_t count = (int32_t)c->x[1];
     if (!q || count <= 0) {
@@ -7071,7 +7299,10 @@ static void h_queue_submit_commands(CPU* c, u64 entry) {
     uint32_t skipped = 0;
     int flush = 0;
     pm_lock(&lists_lock);
+    const uint64_t t2 = t0 ? plat_ns() : 0;
     int result = nvn_frame_add_lists(&q->pending, &lists, handles, handle_count, &skipped);
+    const uint64_t t3 = t0 ? plat_ns() : 0;
+    if (t0) perf_handoff_time(&g_perf_handoff, PH_SUBMIT_ADD, t3 - t2, 0, 0);
     if (result == NVN_FRAME_MEMORY) {
         free(handles);
         fatal("nvn-native: out of memory for the pending frame of a queue\n");
@@ -7083,10 +7314,13 @@ static void h_queue_submit_commands(CPU* c, u64 entry) {
         if (skipped)
             LOG_LIMIT(QUEUE_LOG_LIMIT, "nvn-native: %s queue=%llx skipped %u handles that are not live lists\n",
                       name, (unsigned long long)c->x[0], skipped);
+        const uint64_t ops0 = scan_ops, marked0 = scan_marked;
         for (uint32_t i = 0; i < handle_count; i++) {
             const NvnOpList* list = nvn_list_find(&lists, handles[i]);
             if (list) queue_scan_list(c->x[0], q, name, list, handles[i], 0, &flush);
         }
+        if (t0)
+            perf_handoff_time(&g_perf_handoff, PH_SUBMIT_SCAN, plat_ns() - t3, scan_ops - ops0, scan_marked - marked0);
         frame_submitted_lists += handle_count - skipped;
         frame_skipped_lists += skipped;
     }
@@ -7102,7 +7336,7 @@ static void h_queue_submit_commands(CPU* c, u64 entry) {
 
 /* nvnQueueFenceSync(queue, sync, condition, flags): a token in the pending frame, or the syncpoint value of the
    queue when it has no pending list (decisions 8 and 10). Bit 0 also posts the pending frame. */
-static void h_queue_fence_sync(CPU* c, u64 entry) {
+static void queue_fence_sync(CPU* c, u64 entry) {
     (void)entry;
     static const char* const name = "nvnQueueFenceSync";
     const uint32_t flags = (uint32_t)c->x[3];
@@ -7259,7 +7493,7 @@ QUEUE_USAGE_REFUSE_HANDLER(get_total_compute_memory_used, "nvnQueueGetTotalCompu
 
 /* nvnQueuePresentTexture(queue, window, index): closes the pending frame and hands it to the GPU (decision 11). A
    present that names an image that is not ACQUIRED is a fault of the game: nothing is shown and the frame stays. */
-static void h_queue_present_texture(CPU* c, u64 entry) {
+static void queue_present_texture(CPU* c, u64 entry) {
     (void)entry;
     static const char* const name = "nvnQueuePresentTexture";
     const u64 queue_addr = c->x[0], window_addr = c->x[1];
@@ -7291,6 +7525,17 @@ static void h_queue_present_texture(CPU* c, u64 entry) {
     gpu_call(frame_run, job, NULL, 0);
     pm_unlock(&objs_lock);
 }
+
+/* SNX_ARCEUS_PERF_PROBES (PERF-33): the three handlers of the frame hand-off, each timed whole */
+#define QUEUE_TIMED(handler, body, part)                                                                               \
+    static void handler(CPU* c, u64 entry) {                                                                           \
+        const uint64_t t0 = g_perf_probes ? plat_ns() : 0;                                                             \
+        body(c, entry);                                                                                                \
+        if (t0) perf_handoff_time(&g_perf_handoff, part, plat_ns() - t0, 0, 0);                                        \
+    }
+QUEUE_TIMED(h_queue_submit_commands, queue_submit_commands, PH_SUBMIT)
+QUEUE_TIMED(h_queue_fence_sync, queue_fence_sync, PH_FENCE)
+QUEUE_TIMED(h_queue_present_texture, queue_present_texture, PH_PRESENT)
 
 /* The host handlers by NVN function name. Later steps add their entries here (G2 to G5 of nvn-design.md, 2-6). */
 typedef struct {
@@ -8130,6 +8375,7 @@ void nvn_native_init(void) {
 }
 
 int nvn_native_active(void) { return active; }
+int g_perf_replay;
 int g_nvn_blend_targets;
 
 GuestFn nvn_native_handler(const char* name) {

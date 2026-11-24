@@ -100,6 +100,8 @@ void ipc_out_overflow(IpcCtx* c) {
     (void)c;
     test_fail("IPC output overflow", __LINE__);
 }
+/* hid.c's latency probe (SNX_ARCEUS_LATENCY_PROBE, gpu/frame_log.c) reads the scripted buttons: none here */
+u64 unattended_last_buttons(void) { return 0; }
 /* sf's InvalidCmifRequest, for a request that doesn't send what its command declares */
 int ipc_bad_request(SvcObj* o, IpcCtx* c) {
     (void)o, (void)c;

@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/gpuprof_tail.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
@@ -25,6 +26,7 @@ typedef struct {
     u32 kind[3];
     u64 bytes;
     u16 q0, q1; /* the Tracy query ids its begin and end went out with, 0 when it emitted none */
+    u64 sub;    /* the graphics submission it was recorded in */
     u64 ep; /* the connection the begin went out on: an end or a time from another one is dropped */
 } GpPass;
 typedef struct {
@@ -53,6 +55,11 @@ static u64 g_x_at_end, g_b_at_end, g_d_at_end, g_k_at_end[3], g_bytes_at_end;
 static const char* const g_mix_name[3] = {"buffer copies only", "with buffer-image copies", "with image copies"};
 static u64 g_mix_ns[3], g_mixes[3], g_mix_bytes[3], g_mix_n[3];
 static int g_in_pass;
+/* the last GP_TAIL_NS before a frame's last pass ends, on the GPU's clock (PERF-15, research 22:50): the time in passes
+   by target, in the gaps by kind, the gaps whose two passes are in different submissions and the largest gap */
+#define GP_TAIL_NS 4000000.0
+static GpKey g_tkey[GP_KEYS];
+static GpTail g_tail;
 static int g_dead; /* the query pool was refused once: stop asking */
 
 #if defined(SNX_TRACY)
@@ -122,6 +129,7 @@ void vk_gpuprof_pass_begin(VkCommandBuffer cb, const Surf* rt, const Surf* zt) {
     p->dispatches = (u32)(g_vk_dispatches - g_d_at_end);
     for (int i = 0; i < 3; i++) p->kind[i] = (u32)(g_rec_xfer_kind[i] - g_k_at_end[i]);
     p->bytes = g_rec_buf_bytes - g_bytes_at_end;
+    p->sub = vk_submit_number();
     rec_CmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, g->pool, g->used);
     g_draws_at_begin = g_vk_drawn;
     g_in_pass = 1;
@@ -156,10 +164,10 @@ void vk_gpuprof_pass_end(VkCommandBuffer cb) {
 #endif
 }
 static void gp_report(void);
-static GpKey* gp_key(const GpPass* p) {
+static GpKey* gp_key_in(GpKey* table, const GpPass* p) {
     u64 h = (p->gva >> 8) ^ ((u64)p->w << 40) ^ ((u64)p->h << 20) ^ p->fmt;
     for (u32 i = 0; i < GP_KEYS; i++) {
-        GpKey* k = &g_key[(h + i) & (GP_KEYS - 1)];
+        GpKey* k = &table[(h + i) & (GP_KEYS - 1)];
         if (!k->passes) {
             k->gva = p->gva, k->w = p->w, k->h = p->h, k->fmt = p->fmt;
             return k;
@@ -167,6 +175,31 @@ static GpKey* gp_key(const GpPass* p) {
         if (k->gva == p->gva && k->w == p->w && k->h == p->h && k->fmt == p->fmt) return k;
     }
     return NULL;
+}
+static GpKey* gp_key(const GpPass* p) { return gp_key_in(g_key, p); }
+/* the frame's last GP_TAIL_NS: passes by target, gaps by kind, cross-submission gaps, the largest gap */
+static void gp_tail(const GpSlot* g, const u64* ts, double period) {
+    const double end = (double)(ts[g->used - 1] - ts[0]) * period, from = end - GP_TAIL_NS;
+    for (u32 i = 0; i + 1 < g->used; i += 2) {
+        const double a = (double)(ts[i] - ts[0]) * period, b = (double)(ts[i + 1] - ts[0]) * period;
+        const double in = gp_tail_pass(&g_tail, a, b, from);
+        if (in <= 0) continue;
+        GpKey* k = gp_key_in(g_tkey, &g->pass[i / 2]);
+        if (!k) continue;
+        k->ns += (u64)in;
+        k->passes++;
+        k->draws += g->pass[i / 2].draws;
+    }
+    for (u32 i = 2; i + 1 < g->used; i += 2) {
+        const GpPass* p = &g->pass[i / 2];
+        const double a = (double)(ts[i - 1] - ts[0]) * period, b = (double)(ts[i] - ts[0]) * period;
+        const int c = p->dispatches ? GP_GAP_DISPATCH
+                      : p->xfers    ? GP_GAP_COPY
+                      : p->barriers ? GP_GAP_BARRIER
+                                    : GP_GAP_NOTHING;
+        /* only a gap between two submissions can hold the GPU waiting for the next one */
+        gp_tail_gap(&g_tail, a, b, from, c, p->sub != g->pass[i / 2 - 1].sub);
+    }
 }
 /* the slot's work is done (frame_recycle, before the slot records again): its times into the sums */
 void vk_gpuprof_frame_done(u32 slot) {
@@ -242,6 +275,7 @@ void vk_gpuprof_frame_done(u32 slot) {
         }
     }
     g_span_ns += (u64)((double)(ts[g->used - 1] - ts[0]) * period);
+    gp_tail(g, ts, period);
     g_frames++;
     static u64 last;
     u64 now = plat_ns();
@@ -301,6 +335,24 @@ static void gp_report(void) {
             (double)sorted[i].ns / 1e6 / (double)g_frames, (unsigned long long)sorted[i].passes,
             (unsigned long long)sorted[i].draws, (unsigned long long)sorted[i].gva, sorted[i].w, sorted[i].h,
             sorted[i].fmt);
+    const double f = (double)g_frames;
+    LOG("vulkan: GPU   last %.0f ms before a frame's last pass ends: %.2f ms a frame in passes, gaps with "
+        "dispatches %.2f ms (%llu), with copies %.2f (%llu), with barriers only %.2f (%llu), with nothing %.2f (%llu), "
+        "of the gaps %llu across a submission (%.2f ms a frame), the largest gap %.3f ms\n",
+        GP_TAIL_NS / 1e6, (double)g_tail.pass_ns / 1e6 / f, (double)g_tail.gap_ns[0] / 1e6 / f,
+        (unsigned long long)g_tail.gaps[0], (double)g_tail.gap_ns[1] / 1e6 / f, (unsigned long long)g_tail.gaps[1],
+        (double)g_tail.gap_ns[2] / 1e6 / f, (unsigned long long)g_tail.gaps[2], (double)g_tail.gap_ns[3] / 1e6 / f,
+        (unsigned long long)g_tail.gaps[3], (unsigned long long)g_tail.cross, (double)g_tail.cross_ns / 1e6 / f,
+        (double)g_tail.largest / 1e6);
+    memcpy(sorted, g_tkey, sizeof sorted);
+    qsort(sorted, GP_KEYS, sizeof *sorted, key_cmp);
+    for (int i = 0; i < 6 && sorted[i].passes; i++)
+        LOG("vulkan: GPU     last %.0f ms: %.2f ms a frame: %llu passes, %llu draws, target %llx %ux%u format %u\n",
+            GP_TAIL_NS / 1e6, (double)sorted[i].ns / 1e6 / f, (unsigned long long)sorted[i].passes,
+            (unsigned long long)sorted[i].draws, (unsigned long long)sorted[i].gva, sorted[i].w, sorted[i].h,
+            sorted[i].fmt);
+    memset(g_tkey, 0, sizeof g_tkey);
+    memset(&g_tail, 0, sizeof g_tail);
     memset(g_key, 0, sizeof g_key);
     g_pass_ns = g_span_ns = g_frames = g_lost = 0;
 }

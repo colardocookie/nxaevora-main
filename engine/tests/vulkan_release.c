@@ -33,6 +33,7 @@ int vk_buf_pending_unsubmitted(void);
 void vk_submit(u64, u64, u64);
 u64 vk_last_submit(void);
 u64 vk_submit_number(void);
+void vk_submit_progress(u64*, u64*);
 void vk_rt_before_write(u64, u64);
 u64 vk_query_value(u32, u64, u64);
 #define VK_PRED_EQUAL 0x80000000u
@@ -45,6 +46,7 @@ void vk_query_pred_hold(u32);
 void vk_query_pred_drop(u32);
 int vk_render_predicate(u64 a, int equal, u32* pred);
 void vk_render_predicate_drop(u32 pred);
+static u64 g_vk_drawn; /* vk.h is stood in: release.c reads the draw count with the probes (PERF-33) */
 #include "nx/gpu/vk/release.c"
 #include "nx/gpu/vk/writeback.c"
 
@@ -62,6 +64,7 @@ static u64 mapping = 4096;
 static int writeback_direct;
 void pm_lock(PMutex* m) { (void)m; }
 void pm_unlock(PMutex* m) { (void)m; }
+u64 plat_ns(void) { return 0; } /* release.c times its holds only with SNX_ARCEUS_PERF_TIMES */
 void pc_init(PCond* c) { (void)c; }
 void pc_broadcast(PCond* c) { (void)c; }
 int pc_wait(PCond* c, PMutex* m, i64 n) {
@@ -90,7 +93,15 @@ void vk_unlock(void) {
     assert(lock_depth);
     if (!--lock_depth) vk_release_events();
 }
+/* check_release_walks' GPU pages 0x100000 to 0x140000: each page's guest page, 0 for an unmapped one */
+#define WALK_PAGES 64
+static u64 walk_map[WALK_PAGES];
+static int walk_on;
 u64 gmmu_translate(u64 address) {
+    if (walk_on) {
+        u64 p = (address >> 12) - 0x100;
+        return address >= 0x100000 && p < WALK_PAGES && walk_map[p] ? (walk_map[p] << 12) + (address & 4095) : 0;
+    }
     if (address >= 0x10000 && address < 0x11000) return mapping + (address & 4095);
     if (address >= 0x20000 && address < 0x21000) return 4096 + (address & 4095);
     if (address >= 0x30004 && address < 0x38000) return address - 0x30000; /* all of memory, for the index's homes */
@@ -132,13 +143,31 @@ void syncpt_events(void) {
     events_due = 0;
     events_signaled++;
 }
-int gmem_write(u64 address, const void* data, u64 size) {
+/* gmem_write's three steps, as gpu.c makes it of them: perform calls them one by one with the probes on (PERF-32) */
+static unsigned hook_calls, written_calls;
+void gmem_before_write(u64 address, u64 size) {
     assert(lock_depth && vk_result_landing());
+    hook_calls++;
     vk_release_need(address, size); /* the real memory layer reenters here */
+}
+int g_own_any; /* memory/own.c's: a range owned (PERF-36G counts the holds that find one) */
+/* PERF-36G: the hold phases release_through's parts ran in, a bit each (only set with the probes) */
+static unsigned phase_compute, phase_graphics, phase_write;
+void gmem_write_raw(u64 address, const void* data, u64 size) {
+    phase_write |= 1u << g_vk_hold_phase; /* every guest write, a payload's included */
     u64 physical = gmmu_translate(address);
     assert(physical && physical + size <= sizeof memory);
     memcpy(memory + physical, data, size);
     payload_writes++;
+}
+void gpu_mem_written(u64 address, u64 size) {
+    (void)address, (void)size;
+    written_calls++;
+}
+int gmem_write(u64 address, const void* data, u64 size) {
+    gmem_before_write(address, size);
+    gmem_write_raw(address, data, size);
+    gpu_mem_written(address, size);
     return 1;
 }
 u8* gmem_ptr(u64 address, u64 size) {
@@ -154,11 +183,19 @@ void gpu_mem_written_shader(u64 address, u64 size) {
     (void)address;
     (void)size;
 }
+static u8 landed[200]; /* PERF-23: the bytes from 0x31000 writeback reported to the record as written */
+static unsigned landed_calls;
+void gpu_mem_landed(u64 address, u64 size) {
+    landed_calls++;
+    for (u64 i = address; i < address + size; i++)
+        if (i >= 0x31000 && i < 0x31000 + sizeof landed) landed[i - 0x31000] = 1;
+}
 void vk_rt_before_write(u64 address, u64 size) {
     (void)address;
     (void)size;
 }
 void vk_compute_land_through(u64 gate) {
+    phase_compute |= 1u << g_vk_hold_phase;
     assert(lock_depth && vk_result_landing());
     assert(waited_compute >= gate);
     landing_calls++;
@@ -169,7 +206,10 @@ void vk_compute_land_through(u64 gate) {
         assert(completed[3] == 0); /* release follows all output reconciliation */
     }
 }
-void vk_land_through(u64 gate) { assert(waited_graphics >= gate); }
+void vk_land_through(u64 gate) {
+    phase_graphics |= 1u << g_vk_hold_phase;
+    assert(waited_graphics >= gate);
+}
 void vk_wait_submit(u64 gate) {
     if (gate > waited_graphics) waited_graphics = gate;
 }
@@ -248,6 +288,29 @@ void vk_query_pred_drop(u32 slot) {
 }
 u64 vk_last_submit(void) { return next_graphics; }
 u64 vk_submit_number(void) { return next_graphics + 1; }
+void vk_submit_progress(u64* submitted, u64* done) {
+    *submitted = next_graphics;
+    *done = 0;
+}
+int gpu_on_gpu_thread(void) { return 1; }
+/* SNX_ARCEUS_PERF_TIMES' tail through the real queue: an increment no work holds starts it when armed, is performed
+   at the stream's end, and the game's wake closes it (the clock is 0 here, so only the counts are checked) */
+static void check_tail(void) {
+    g_perf_times = 1;
+    pending = 0;
+    perf_tail_arm(&g_perf);
+    vk_release_incr(7);
+    const PerfTail* t = &g_perf.tail[0];
+    assert(t->armed && !t->gate && t->seq == g_rhead - 1 && !t->t_incr);
+    vk_release_incr(8); /* not armed: no tail */
+    assert(g_perf.tail_next == 1);
+    vk_release_submit();
+    assert(t->t_incr && t->t_free && t->closes == 1 && g_rhead == g_rtail);
+    perf_tail_woke(&g_perf, 5);
+    assert(!t->armed && g_perf.site[PT_TAIL_INCR].count == 1 && g_perf.site[PT_TAIL_WAKE].count == 1);
+    assert(g_perf.count[PC_TAIL_UNGATED] == 1 && !g_perf.site[PT_TAIL_SUBMIT].count && !g_perf.count[PC_TAIL_PARTIAL]);
+    g_perf_times = 0;
+}
 
 /* Compare both mapping paths against the byte merge rule, including chunk
  * boundaries, dense writes, unchanged output and intervening CPU writes.
@@ -287,7 +350,119 @@ static void check_writeback_merge(void)
 	writeback_direct = 0;
 }
 
+/* SNX_ARCEUS_PERF_TIMES (PERF-23, reviewer 20:18): a result's changed bytes reach the record as written, byte 7 of
+   the first 64-byte step and byte 128 in the tail, by the byte loop, landing_runs and, where the CPU has AVX-512BW,
+   landing_masked's step, through both mapping paths. Its unchanged bytes don't, nor anything with the switch unset */
+static void check_landed_record(void) {
+    u8 original[130] = {0}, result[130] = {0};
+    result[7] = 1, result[128] = 2;
+    mapping = 4096;
+    for (int direct = 0; direct < 2; direct++)
+        for (int level = 0; level < 3; level++) {
+            writeback_direct = direct;
+            g_perf_landing = level ? 3 : 0;
+            g_landing_masked = level == 2 && landing_masked_supported();
+            for (int on = 0; on < 3; on++) { /* PERF_TIMES unset, 1, 2: the record as written only at 2 */
+                g_perf_times = on;
+                memset(memory + mapping, 0, sizeof original);
+                memset(landed, 0, sizeof landed);
+                landed_calls = 0;
+                vk_lock();
+                vk_write_changed(0x31000, result, original, sizeof original);
+                vk_unlock();
+                assert(memory[mapping + 7] == 1 && memory[mapping + 128] == 2);
+                if (on < 2) {
+                    assert(!landed_calls);
+                    continue;
+                }
+                for (unsigned i = 0; i < sizeof landed; i++) assert(landed[i] == (i == 7 || i == 128));
+            }
+        }
+    g_perf_times = 0, g_perf_landing = 0, g_landing_masked = 0, writeback_direct = 0;
+}
+
+/* SNX_ARCEUS_PERF_STORAGE's queue walks against the old ones on random mappings: guest pages 1 to 7 behind 64 GPU
+   pages, so GPU pages alias often, a quarter unmapped. Each queue is searched by several ranges, some long enough to
+   take release_overlaps itself (more runs than QueryRuns holds). Every answer must be the old walk's: each overlap,
+   release_match's latest match with its gate and cgate, and vk_release_read's state */
+static u32 walk_rand(u32* s) {
+    *s = *s * 1103515245u + 12345u;
+    return *s >> 8;
+}
+static void check_release_walks(void) {
+    u32 seed = 0x5eed1234u;
+    u64 tail0 = g_rtail, head0 = g_rhead;
+    unsigned many_one = 0, one_many = 0, latest_not_first = 0, overflowed = 0, matched = 0;
+    walk_on = 1;
+    for (int trial = 0; trial < 4000; trial++) {
+        for (int p = 0; p < WALK_PAGES; p++) walk_map[p] = walk_rand(&seed) % 4 ? 1 + walk_rand(&seed) % 7 : 0;
+        u32 n = walk_rand(&seed) % 40;
+        g_rtail = g_rhead = walk_rand(&seed) % (3 * RQ_N); /* a queue that wraps */
+        u64 gate = 0, cgate = 0;
+        for (u32 i = 0; i < n; i++) {
+            Release* r = &g_rq[g_rhead % RQ_N];
+            memset(r, 0, sizeof *r);
+            gate += walk_rand(&seed) % 3;
+            cgate += walk_rand(&seed) % 2;
+            r->gate = gate;
+            r->cgate = cgate;
+            r->id = walk_rand(&seed) % 4;
+            r->samples = walk_rand(&seed) % 5 == 0;
+            if (walk_rand(&seed) % 6) { /* a payload, some across a page end, else a syncpoint increment */
+                r->len = 4 * (1 + walk_rand(&seed) % 4);
+                r->gva = 0x100000 + (walk_rand(&seed) % (WALK_PAGES * 4096 - 16));
+            }
+            g_rhead++;
+        }
+        u32 hits_of[40] = {0};
+        for (int k = 0; k < 6; k++) {
+            u64 len = walk_rand(&seed) % 3 == 0 ? 1 + walk_rand(&seed) % (40 * 4096) : 1 + walk_rand(&seed) % 9000;
+            u64 gva = 0x100000 + walk_rand(&seed) % (WALK_PAGES * 4096);
+            QueryRuns q;
+            query_runs(gva, len, &q);
+            overflowed += q.all;
+            u32 hits = 0;
+            for (u64 i = g_rtail; i < g_rhead; i++) {
+                const Release* r = &g_rq[i % RQ_N];
+                int old = release_overlaps(r, gva, len);
+                assert(old == release_overlaps_runs(r, &q));
+                if (old) hits_of[i - g_rtail]++, hits++;
+            }
+            if (hits >= 2) many_one++;
+            u64 g0 = 0, c0 = 0, g1 = 0, c1 = 0;
+            int f0 = release_find(gva, len, 0, 0, &g0, &c0), f1 = release_find_runs(gva, len, 0, 0, &g1, &c1);
+            assert(f0 == f1 && g0 == g1 && c0 == c1);
+            matched += f0;
+            /* the latest match is not the first one the old walk met: the newest-first walk had to find it */
+            if (hits >= 2) {
+                u64 first = 0;
+                for (u64 i = g_rtail; i < g_rhead && !first; i++)
+                    if (release_overlaps(&g_rq[i % RQ_N], gva, len)) first = i + 1;
+                if (g_rq[(first - 1) % RQ_N].gate != g0) latest_not_first++;
+            }
+            assert(release_read_state(gva, len) == release_read_runs(gva, len));
+        }
+        for (u32 i = 0; i < n; i++) one_many += hits_of[i] >= 2;
+        /* a syncpoint's latest increment, and the latest release of all */
+        for (u32 id = 0; id < 4; id++) {
+            u64 g0 = 0, c0 = 0, g1 = 0, c1 = 0;
+            int f0 = release_find(0, 0, id, 0, &g0, &c0), f1 = release_find_runs(0, 0, id, 0, &g1, &c1);
+            assert(f0 == f1 && g0 == g1 && c0 == c1);
+        }
+        u64 g0 = 0, c0 = 0, g1 = 0, c1 = 0;
+        int f0 = release_find(0, 0, 0, 1, &g0, &c0), f1 = release_find_runs(0, 0, 0, 1, &g1, &c1);
+        assert(f0 == f1 && g0 == g1 && c0 == c1 && f0 == (n != 0));
+    }
+    /* the cases the walk had to get right, each met many times */
+    assert(many_one > 1000 && one_many > 1000 && latest_not_first > 300 && overflowed > 100 && matched > 3000);
+    walk_on = 0;
+    g_rtail = tail0;
+    g_rhead = head0;
+}
+
 int main(void) {
+    g_perf_probes = getenv("SNX_TEST_PROBES") != NULL; /* the same checks again with perform's split (PERF-32) */
+    if (g_perf_probes) g_perf.sub[0].carry_v = PERF_SUBS; /* slot 0 as in a long run: a gate 0 would show (PERF-33) */
     pending = 1;
     next_compute = 9;
     vk_release_incr(3);
@@ -425,5 +600,36 @@ int main(void) {
     assert(!g_rix[home].word && !g_rix[(home + 1) & (RIX_N - 1)].word && count_queued(0x37ab4) == -1);
     assert(lock_depth == 0 && events_signaled == 3 && !events_due); /* payload writes signal nothing */
 	check_writeback_merge();
+    check_landed_record();
+    check_release_walks();
+    check_tail();
+    assert(hook_calls == payload_writes && written_calls == payload_writes); /* each copy has both, split or not */
+    if (g_perf_probes) { /* each payload write noted its three steps once each, and the samples reports' sums */
+        char line[PERF_COPIES_LINE];
+        perf_waits_line(&g_perf_waits, 1, line, sizeof line);
+        const char *h = strstr(line, " other.hooks="), *c = strstr(line, " other.copy="),
+                   *w = strstr(line, " other.written=");
+        assert(h && c && w && strstr(line, " other.query="));
+        const double nh = atof(h + 13), nc = atof(c + 12), nw = atof(w + 15);
+        assert(nh >= 1 && nh == nc && nc == nw && nc < payload_writes); /* the landings write without the split */
+        perf_handoff_line(&g_perf_handoff, 1, line, sizeof line); /* PERF-33: every gated release was registered */
+        assert(strstr(line, " unregistered=0 "));
+    }
+    /* PERF-36G: with the probes the hold's parts ran in their phases, and the phase is given back after each hold.
+       Without them the phase is never written */
+    const unsigned c = 1u << (g_perf_probes ? VKH_COMPUTE : VKH_OTHER), g = 1u << (g_perf_probes ? VKH_GRAPHICS : 0);
+    assert(phase_compute == c && (phase_graphics & g) && (phase_write & (1u << (g_perf_probes ? VKH_RELEASES : 0))));
+    assert(g_perf_probes || (phase_graphics == 1 && phase_write == 1));
+    assert(g_vk_hold_phase == VKH_OTHER);
+    /* and the holds counted with the probes only, those that find a range owned apart */
+    const u64 holds = g_perf_vkx.holds;
+    assert(g_perf_probes ? holds && !g_perf_vkx.holds_owned : !holds);
+    g_own_any = 1;
+    value = 23;
+    vk_release_write(0x10000, &value, 1);
+    vk_release_drain();
+    g_own_any = 0;
+    assert(g_perf_probes ? g_perf_vkx.holds > holds && g_perf_vkx.holds_owned == g_perf_vkx.holds - holds
+                         : !g_perf_vkx.holds && !g_perf_vkx.holds_owned);
     return 0;
 }
