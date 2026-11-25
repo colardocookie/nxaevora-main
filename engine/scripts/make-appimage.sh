@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-# Makes dist/ScarletNX-linux-<arch>.AppImage from the runtime installed in /usr, with pkgforge's quick-sharun
+# Makes NXAevora's Linux AppImage from the runtime installed in /usr, with pkgforge's quick-sharun
 # (https://github.com/pkgforge-dev/Anylinux-AppImages): it bundles the runtime with every library it loads, SDL3, the
 # Vulkan loader and Mesa's Vulkan drivers included. CI runs it in pkgforge's Arch container of the architecture, after
 # `cmake --install` into /usr (.github/workflows/build.yml), and quick-sharun has to be on PATH.

@@ -1,3 +1,6 @@
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- Copyright 2026 the NXAevora contributors -->
+
 # In-game settings UI with Dear ImGui: plan
 
 Status: old plan, replaced. Phase 7.5 replaces Dear ImGui completely with a new UI base (decision of the user,

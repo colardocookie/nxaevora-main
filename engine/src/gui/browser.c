@@ -591,7 +591,3 @@ bool gui_has_folders(const char* directory, int kinds) {
     snx_free_strings(names, count);
     return found;
 }
-bool gui_games_scan(GuiGames* games, const char* directory, char* error, size_t size) {
-    gui_games_free(games);
-    return gui_games_add(games, directory, GUI_GAMES_RUN, error, size);
-}

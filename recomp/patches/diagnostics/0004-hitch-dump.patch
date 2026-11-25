@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the NXAevora contributors
 diff --git a/src/nx/runtime/main.c b/src/nx/runtime/main.c
 index 6641536..f3cd485 100644
 --- a/src/nx/runtime/main.c

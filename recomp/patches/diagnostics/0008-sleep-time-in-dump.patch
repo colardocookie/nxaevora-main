@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the NXAevora contributors
 diff --git a/src/nx/hle/kernel/debug.c b/src/nx/hle/kernel/debug.c
 index 394d666..edbf747 100644
 --- a/src/nx/hle/kernel/debug.c

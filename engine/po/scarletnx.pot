@@ -1020,7 +1020,7 @@ msgid "out of memory"
 msgstr ""
 
 #: src/gui/main.c
-msgid "Dump"
+msgid "Game folder"
 msgstr ""
 
 #: src/gui/main.c
@@ -1036,7 +1036,7 @@ msgid "Settings"
 msgstr ""
 
 #: src/gui/main.c
-msgid "its dump is not known: the game was made before the recompile named it"
+msgid "its game folder is not known: the game was made before the recompile named it"
 msgstr ""
 
 #: src/gui/main.c
@@ -1051,7 +1051,7 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
-msgid "Delete the caches of %s? The shader cache, %s (%s), and the code cache, %s (%s). The game makes them again as it runs; its saves, settings and dump stay."
+msgid "Delete the caches of %s? The shader cache, %s (%s), and the code cache, %s (%s). The game makes them again as it runs; its saves, settings and game folder stay."
 msgstr ""
 
 #: src/gui/main.c

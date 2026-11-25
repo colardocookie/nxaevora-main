@@ -518,8 +518,7 @@ typedef struct App {
     char* room_file; /* a run asked about (GUI_ASK_ROOM): its file, its load and whether it was prepared */
     int room_item;
     bool room_prepared, room_recompile;
-    bool room_ok;    /* asked and answered: the run goes */
-    GuiChoice dests; /* Recompile: which of the recompiled library's folders a dump's game goes in */
+    GuiChoice dests; /* Recompile: which of the recompiled library's folders a game folder's game goes in */
     bool dests_shown;
     bool picks_shown; /* a box of a few choices over the screen (picks_open): Share Log's, a Folders row's */
     GuiPicksOf picks_of;
@@ -3318,7 +3317,8 @@ static int addons_cheat(const App* app, int item) {
 /* a cheat cheats_off= cannot name (a | in it), which runs whatever its box says */
 static bool cheat_kept(const App* app, int cheat) { return strchr(app->cheats[cheat], SNX_CHEATS_SEPARATOR) != NULL; }
 /* Open Folder's rows, GUI_FOLDER_*'s order */
-static const char* const game_folder_names[GUI_GAME_FOLDERS] = {SNX_TR_NOOP("Dump"),  SNX_TR_NOOP("Game"),
+static const char* const game_folder_names[GUI_GAME_FOLDERS] = {SNX_TR_NOOP("Game folder"),
+                                                                SNX_TR_NOOP("Game"),
                                                                 SNX_TR_NOOP("Saves"), SNX_TR_NOOP("Settings"),
                                                                 SNX_TR_NOOP("Logs"),  SNX_TR_NOOP("Caches")};
 static void addons_folders_free(App* app) {
@@ -3334,7 +3334,8 @@ static void addons_folder_off(const App* app, int i, char* out, size_t size) {
     const char* path = app->addons_folders[i];
     out[0] = 0;
     if (!path)
-        snprintf(out, size, "%s", snx_tr("its dump is not known: the game was made before the recompile named it"));
+        snprintf(out, size, "%s",
+                 snx_tr("its game folder is not known: the game was made before the recompile named it"));
     else if (!snx_is_dir(path))
         snprintf(out, size, snx_tr("%s is not there yet"), path);
 }
@@ -3378,7 +3379,7 @@ static void addons_folder_press(App* app, int i) {
 }
 /* ---- Clean Cache: the game's shader cache (its cache folder's shader_cache/: the pipeline cache, the translated
    shaders and those prepared ahead of time) and its code cache (<name>.jitcache), deleted when asked, each with its
-   size. The game makes both again as it runs; its saves, settings and dump stay ---- */
+   size. The game makes both again as it runs; its saves, settings and game folder stay ---- */
 /* the bytes of the files under path, a folder whole, links not followed */
 static uint64_t tree_bytes(const char* path) {
     SDL_PathInfo info;
@@ -3431,7 +3432,7 @@ static void caches_ask(App* app) {
         gui_size_text(code, sizeof code, there[1] ? tree_bytes(caches[1]) : 0);
         snprintf(app->ask_line, sizeof app->ask_line,
                  snx_tr("Delete the caches of %s? The shader cache, %s (%s), and the code cache, %s (%s). The game "
-                        "makes them again as it runs; its saves, settings and dump stay."),
+                        "makes them again as it runs; its saves, settings and game folder stay."),
                  app->addons_title, there[0] ? shader : snx_tr("none"), caches[0] ? caches[0] : "shader_cache/",
                  there[1] ? code : snx_tr("none"), caches[1] ? caches[1] : ".jitcache");
         gui_confirm_open(&app->confirm, GUI_ASK_CACHE, false);
@@ -7068,8 +7069,8 @@ static bool places_fit(const App* app, char* out, size_t size) {
     }
     return true;
 }
-/* the games of recompiled/ made from a dump: each one's program, as Games lists it, and the dump its .ini's source=
-   names, else its folder's <name>.source, the link an older version made (snx_game_source) */
+/* the games of recompiled/ made from a game folder: each one's program, as Games lists it, and the game folder its
+   .ini's source= names, else its folder's <name>.source, the link an older version made (snx_game_source) */
 typedef struct {
     char* program;
     char* dump;
@@ -7078,7 +7079,8 @@ typedef struct {
     MadeGame* game;
     size_t count;
 } MadeGames;
-/* the games made in dir (recompiled/ or a folder of the Library's recompiled ones), each with the dump it names */
+/* the games made in dir (recompiled/ or a folder of the Library's recompiled ones), each with the game folder it
+   names */
 static void made_read_dir(MadeGames* made, const char* dir) {
     char** names = NULL;
     size_t count = 0, i;
@@ -7679,7 +7681,7 @@ static void text_left(App* app) {
              (int)((app->size_until - now + 999) / 1000));
 }
 /* Move Old Files and Clean Old Settings move or rewrite what a recompile of the queue may use (a game's folder, its
-   .ini, where the driver records its dump): what (English) waits while the queue has one to run, the note saying
+   .ini, where the driver records its game folder): what (English) waits while the queue has one to run, the note saying
    which; true then */
 static bool queue_waits(App* app, const char* what) {
     int run = gui_queue_running(&app->queue);
@@ -10875,12 +10877,10 @@ static void room_answer(App* app, bool taken) {
         app->dest_out = NULL;
         return;
     }
-    app->room_ok = true;
     app->recompile = app->room_recompile;
     app->menu.selected = app->room_item;
     launch(app, file, app->room_prepared);
     app->menu.selected = item;
-    app->room_ok = false;
     app->recompile = false;
 }
 /* ---- the queue's runner: a recompile started when none runs, read each frame, the next one started as it ends ---- */

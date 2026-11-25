@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- Copyright 2026 the NXAevora contributors -->
 # NVN survey (phase 6, stage 1)
 
 Status: started on 2026-11-02. This file grows with the substeps of `docs/records/graphics/nvn-plan.md`. A line marked "verified" was read
