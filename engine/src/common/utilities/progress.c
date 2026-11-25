@@ -24,6 +24,7 @@
 #define progress_fdopen _fdopen
 #define progress_fileno _fileno
 #else
+#include <fcntl.h>
 #include <pthread.h>
 #include <unistd.h>
 #define progress_dup dup
@@ -37,8 +38,8 @@
 #define SNX_PROGRESS_VERSION 1
 #define SNX_PROGRESS_ERROR_SIZE 1024
 
-/* The process-wide state: the stream (NULL off), its mode, the open stage, the last closed stage, the last error text
-   and the private fd of the stream (-1 off) */
+/* The process-wide state: the stream (NULL off), its mode, the open stage, the last closed stage, the last error text,
+   the private fd of the stream (-1 off) and the stream's fd for the crash writer (-1 off) */
 static struct {
     FILE* stream;
     int mode;
@@ -46,7 +47,8 @@ static struct {
     const char* last_stage;
     char last_error[SNX_PROGRESS_ERROR_SIZE];
     int private_fd;
-} g_progress = {NULL, SNX_PROGRESS_OFF, NULL, NULL, "", -1};
+    int stream_fd;
+} g_progress = {NULL, SNX_PROGRESS_OFF, NULL, NULL, "", -1, -1};
 
 #ifdef _WIN32
 static CRITICAL_SECTION g_progress_lock;
@@ -98,6 +100,16 @@ static void line_put(ProgressLine* line, const char* text, size_t size) {
 }
 
 static void line_puts(ProgressLine* line, const char* text) { line_put(line, text, strlen(text)); }
+
+/* appends the closing text of the crash line: the tail room is its, and one byte stays for the newline */
+static void line_put_close(ProgressLine* line, const char* text, size_t size) {
+    if (line->len + size > line->size - 1) return;
+    memcpy(line->buf + line->len, text, size);
+    line->len += size;
+    line->buf[line->len] = 0;
+}
+
+static void line_puts_close(ProgressLine* line, const char* text) { line_put_close(line, text, strlen(text)); }
 
 static void line_addf(ProgressLine* line, const char* fmt, ...) {
     va_list ap;
@@ -258,6 +270,20 @@ int snx_progress_parse(const char* arg) {
     return -1;
 }
 
+int snx_progress_is_option(const char* arg) {
+    if (!arg) return 0;
+    return !strcmp(arg, "--progress") || !strncmp(arg, "--progress=", 11);
+}
+
+int snx_progress_open_stage(int argc, char** argv) {
+    int i;
+    if (!argv) return 0;
+    for (i = 1; i < argc && strcmp(argv[i], "--"); ++i)
+        if (snx_progress_parse(argv[i]) == SNX_PROGRESS_JSONL_STAGE)
+            return snx_progress_open(SNX_PROGRESS_JSONL_STAGE);
+    return 0;
+}
+
 int snx_progress_open(int mode) {
     int fd;
     FILE* stream;
@@ -280,6 +306,15 @@ int snx_progress_open(int mode) {
         progress_close(fd);
         snx_error("progress: cannot make the JSON Lines stream inheritable (%s)", why);
         return SNX_EXIT_INTERNAL;
+    }
+#endif
+#ifndef _WIN32
+    /* the child stage gets this fd as its stdout through dup2, which drops the flag on the new fd 1 */
+    if (fcntl(fd, F_SETFD, FD_CLOEXEC) < 0) {
+        int error = errno;
+        progress_close(fd);
+        errno = error;
+        return open_failed("cannot set close-on-exec on the JSON Lines stream");
     }
 #endif
 #ifdef _WIN32
@@ -313,6 +348,7 @@ int snx_progress_open(int mode) {
     g_progress.mode = mode;
     g_progress.open_stage = NULL;
     g_progress.private_fd = fd;
+    g_progress.stream_fd = fd;
     g_progress.last_error[0] = 0;
     progress_unlock();
     return 0;
@@ -417,28 +453,57 @@ void snx_progress_note_error(const char* text) {
     progress_unlock();
 }
 
+/* appends the decimal text of value: no stdio formatting, for the crash writer. 0u - value is the magnitude of INT_MIN
+   too, whose negation does not fit an int */
+static void line_put_int(ProgressLine* line, int value) {
+    char digits[12]; /* -2147483648 and its NUL */
+    char* p = digits + sizeof digits;
+    unsigned int magnitude = value < 0 ? 0u - (unsigned int)value : (unsigned int)value;
+    *--p = 0;
+    do {
+        *--p = (char)('0' + magnitude % 10);
+        magnitude /= 10;
+    } while (magnitude);
+    if (value < 0) *--p = '-';
+    line_puts_close(line, p);
+}
+
 /* Crash mode: the crashed thread may hold g_progress_lock and the stdio locks, so this path reads without the lock
-   and writes one prepared line with a raw write; the race with a normal writer is accepted for a process that ends */
+   and writes one prepared line with a raw write; the race with a normal writer is accepted for a process that ends.
+   fatal_code calls logf_ before this writer, so this path is not fully async-signal-safe */
 void snx_progress_crash_error(const char* message, int code) {
     ProgressLine line;
     char buf[SNX_PROGRESS_LINE_SIZE];
     FILE* stream = g_progress.stream;
     const char* stage = g_progress.open_stage;
-    int fd;
-    if (!stream || !stage) return;
-    fd = progress_fileno(stream);
-    if (fd < 0) return;
+    int fd = g_progress.stream_fd;
+    size_t done = 0;
+    if (!stream || !stage || fd < 0) return;
     line_init(&line, buf, sizeof buf);
     line_prefix(&line, stage, "error");
     line_puts(&line, ",\"message\":\"");
     line_message(&line, message ? message : "");
-    line_addf(&line, "\",\"code\":%d}", code);
+    line_puts_close(&line, "\",\"code\":");
+    line_put_int(&line, code);
+    line_puts_close(&line, "}");
     buf[line.len++] = '\n';
+    while (done < line.len) {
+        long written;
 #ifdef _WIN32
-    _write(fd, buf, (unsigned)line.len);
+        written = _write(fd, buf + done, (unsigned)(line.len - done));
 #else
-    write(fd, buf, line.len);
+        written = (long)write(fd, buf + done, line.len - done);
 #endif
+        if (written > 0) {
+            done += (size_t)written;
+            continue;
+        }
+        if (written == 0) break;
+#ifndef _WIN32
+        if (errno == EINTR) continue;
+#endif
+        break;
+    }
 }
 
 void snx_progress_finish(int code) {
@@ -457,31 +522,41 @@ void snx_progress_finish(int code) {
     progress_unlock();
 }
 
-void snx_progress_child_redirect(void) {
+int snx_progress_child_redirect(void) {
+    int error = 0;
     progress_lock();
     if (progress_on() && g_progress.private_fd >= 0) {
         fflush(stdout);
-        progress_dup2(g_progress.private_fd, progress_fileno(stdout));
+        if (progress_dup2(g_progress.private_fd, progress_fileno(stdout)) < 0) {
+            error = errno ? errno : 1;
+        } else {
 #ifdef _WIN32
-        progress_set_std(STD_OUTPUT_HANDLE, g_progress.private_fd);
-        progress_set_std(STD_ERROR_HANDLE, progress_fileno(stderr));
+            progress_set_std(STD_OUTPUT_HANDLE, g_progress.private_fd);
+            progress_set_std(STD_ERROR_HANDLE, progress_fileno(stderr));
 #endif
+        }
     }
     progress_unlock();
+    return error;
 }
 
-void snx_progress_child_restore(int child_result) {
+int snx_progress_child_restore(int child_result) {
+    int error = 0;
     progress_lock();
     /* a child that ended by itself with a nonzero code wrote its own error line: a second one would be wrong */
     if (child_result == SNX_CHILD_EXITED_ERROR) g_progress.last_error[0] = 0;
     if (progress_on() && g_progress.private_fd >= 0) {
         fflush(stdout);
-        progress_dup2(progress_fileno(stderr), progress_fileno(stdout));
+        if (progress_dup2(progress_fileno(stderr), progress_fileno(stdout)) < 0) {
+            error = errno ? errno : 1;
+        } else {
 #ifdef _WIN32
-        progress_set_std(STD_OUTPUT_HANDLE, progress_fileno(stderr));
+            progress_set_std(STD_OUTPUT_HANDLE, progress_fileno(stderr));
 #endif
+        }
     }
     progress_unlock();
+    return error;
 }
 
 void snx_progress_test_attach(FILE* out, int mode) {
@@ -491,6 +566,7 @@ void snx_progress_test_attach(FILE* out, int mode) {
     g_progress.open_stage = NULL;
     g_progress.last_stage = NULL;
     g_progress.private_fd = -1;
+    g_progress.stream_fd = g_progress.stream ? progress_fileno(out) : -1;
     g_progress.last_error[0] = 0;
     progress_unlock();
 }

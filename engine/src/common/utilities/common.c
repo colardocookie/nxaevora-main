@@ -1778,6 +1778,8 @@ static wchar_t* child_environment(const char* home) {
     return out;
 }
 #endif
+/* a child that cannot set up its own stdio exits with process.c's setup code, before its program runs */
+#define SNX_CHILD_EXIT_SETUP 126
 /* tick(data) once a second has gone by since the last one */
 static void tick_due(double* ticked, void (*tick)(void*), void* data) {
     if (snx_seconds() - *ticked < 1) return;
@@ -1897,6 +1899,8 @@ int snx_run_ticking(const char* const* argv, const char* cwd, const char* home, 
     int fds[2] = {-1, -1}, status;
     pid_t waited;
     ssize_t got;
+    /* after fork the child may call only async-signal-safe functions: one fixed write, no perror */
+    static const char setup_failed[] = "scarletnx: sending the child's output to the pipe\n";
     if (output) {
         *output = snx_strdup("");
         if (pipe(fds)) return 1;
@@ -1907,8 +1911,10 @@ int snx_run_ticking(const char* const* argv, const char* cwd, const char* home, 
     if (!pid) {
         if (output) {
             close(fds[0]);
-            dup2(fds[1], 1);
-            dup2(fds[1], 2);
+            if (dup2(fds[1], 1) < 0 || dup2(fds[1], 2) < 0) {
+                (void)!write(2, setup_failed, sizeof setup_failed - 1); /* a child that cannot report further */
+                _exit(SNX_CHILD_EXIT_SETUP);
+            }
             close(fds[1]);
         }
         if (cwd && chdir(cwd)) _exit(126);

@@ -53,6 +53,39 @@ static int count(const char* text, const char* what) {
     for (; (text = strstr(text, what)) != NULL; text++) n++;
     return n;
 }
+/* the progress stream's length in bytes */
+static long stream_length(FILE* f) {
+    long length;
+    fflush(f);
+    CHECK(!fseek(f, 0, SEEK_END), "the progress stream cannot seek");
+    length = ftell(f);
+    CHECK(length >= 0, "the progress stream has no length");
+    return length;
+}
+/* the error line that a fatal form added after offset at: the input stage's message and code */
+static void check_stream_code(FILE* f, long at, const char* message, int code) {
+    char text[1024], wanted[1200];
+    long length;
+    size_t got;
+    fflush(f);
+    if (fseek(f, 0, SEEK_END) || (length = ftell(f)) < at || fseek(f, at, SEEK_SET)) {
+        CHECK(0, "the progress stream cannot be read");
+        return;
+    }
+    got = fread(text, 1, sizeof text - 1, f);
+    if (got != (size_t)(length - at)) {
+        CHECK(0, "the progress stream line is over the test's buffer");
+        return;
+    }
+    text[got] = 0;
+    snprintf(wanted, sizeof wanted,
+             "{\"v\":1,\"stage\":\"input\",\"event\":\"error\",\"message\":\"%s\",\"code\":%d}\n", message, code);
+    {
+        char why[1200];
+        snprintf(why, sizeof why, "fatal wrote the wrong error line: %s", text);
+        CHECK(!strcmp(text, wanted), why);
+    }
+}
 
 int main(int argc, char** argv) {
     static SnxModule mod;
@@ -212,6 +245,35 @@ int main(int argc, char** argv) {
         g_settings.log_size_limit = 16;
     }
 
+    /* Each fatal form's stream error line before the window: the form's own code */
+    {
+        FILE* stream = tmpfile();
+        long at;
+        int result;
+        if (!stream) {
+            CHECK(0, "the fatal code test's stream file was not made");
+        } else {
+            snx_progress_test_attach(stream, SNX_PROGRESS_JSONL);
+            snx_progress_stage(SNX_PROGRESS_STAGE_INPUT);
+            at = stream_length(stream);
+            result = setjmp(g_exit_jump);
+            if (!result) fatal("fatal before the window");
+            check_stream_code(stream, at, "fatal before the window", SNX_EXIT_START);
+            snx_progress_stage(SNX_PROGRESS_STAGE_INPUT);
+            at = stream_length(stream);
+            result = setjmp(g_exit_jump);
+            if (!result) fatal_game_files("game files before the window");
+            check_stream_code(stream, at, "game files before the window", SNX_EXIT_GAME_FILES);
+            snx_progress_stage(SNX_PROGRESS_STAGE_INPUT);
+            at = stream_length(stream);
+            result = setjmp(g_exit_jump);
+            if (!result) fatal_internal("internal before the window");
+            check_stream_code(stream, at, "internal before the window", SNX_EXIT_INTERNAL);
+            snx_progress_test_attach(NULL, SNX_PROGRESS_OFF);
+            fclose(stream);
+        }
+    }
+
     /* Before the window, fatal exits with 5 and does not show a box; win_fatal_log writes the early error file once */
     g_fatal_calls = 0;
     g_early_error[0] = g_box[0] = 0;
@@ -234,6 +296,35 @@ int main(int argc, char** argv) {
     CHECK(!strcmp(g_box, "boom 42"), "fatal did not show its box");
     CHECK(g_fatal_calls == 1, "a fatal after the window wrote the early error file twice");
     CHECK(strstr(slurp(log), "] FATAL: boom 42\n") != NULL, "fatal's line is not in the log");
+    /* After the window, each fatal form's stream error line has SNX_EXIT_CRASH */
+    {
+        FILE* stream = tmpfile();
+        long at;
+        int result;
+        tls_log_redirect = NULL;
+        if (!stream) {
+            CHECK(0, "the fatal code test's stream file was not made");
+        } else {
+            snx_progress_test_attach(stream, SNX_PROGRESS_JSONL);
+            snx_progress_stage(SNX_PROGRESS_STAGE_INPUT);
+            at = stream_length(stream);
+            result = setjmp(g_exit_jump);
+            if (!result) fatal("fatal after the window");
+            check_stream_code(stream, at, "fatal after the window", SNX_EXIT_CRASH);
+            snx_progress_stage(SNX_PROGRESS_STAGE_INPUT);
+            at = stream_length(stream);
+            result = setjmp(g_exit_jump);
+            if (!result) fatal_game_files("game files after the window");
+            check_stream_code(stream, at, "game files after the window", SNX_EXIT_CRASH);
+            snx_progress_stage(SNX_PROGRESS_STAGE_INPUT);
+            at = stream_length(stream);
+            result = setjmp(g_exit_jump);
+            if (!result) fatal_internal("internal after the window");
+            check_stream_code(stream, at, "internal after the window", SNX_EXIT_CRASH);
+            snx_progress_test_attach(NULL, SNX_PROGRESS_OFF);
+            fclose(stream);
+        }
+    }
 
     log_crash_mode();
     LOG("in crash mode\n");

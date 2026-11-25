@@ -141,16 +141,30 @@ static int run_split(const char* const* argv, const char* cwd, char** out_text, 
     char** quoted;
     char* previous = NULL;
     /* the stdout file is text mode, as a cmd redirect gives the child: the stream must keep its LF */
-    ofd = _open(out, _O_CREAT | _O_TRUNC | _O_WRONLY | _O_TEXT, _S_IREAD | _S_IWRITE);
-    efd = _open(err, _O_CREAT | _O_TRUNC | _O_WRONLY | _O_BINARY, _S_IREAD | _S_IWRITE);
-    if (ofd < 0 || efd < 0) goto done;
+    ofd = _open(out, _O_CREAT | _O_TRUNC | _O_WRONLY | _O_TEXT | _O_NOINHERIT, _S_IREAD | _S_IWRITE);
+    efd = _open(err, _O_CREAT | _O_TRUNC | _O_WRONLY | _O_BINARY | _O_NOINHERIT, _S_IREAD | _S_IWRITE);
+    if (ofd < 0 || efd < 0) {
+        check(0, "run_split: cannot open its output files");
+        goto done;
+    }
     fflush(NULL);
     old_out = GetStdHandle(STD_OUTPUT_HANDLE);
     old_err = GetStdHandle(STD_ERROR_HANDLE);
     saved_out = _dup(1);
     saved_err = _dup(2);
-    if (saved_out < 0 || saved_err < 0) goto restore;
-    if (_dup2(ofd, 1) || _dup2(efd, 2)) goto restore;
+    if (saved_out < 0 || saved_err < 0) {
+        check(0, "run_split: cannot duplicate stdout and stderr");
+        goto restore;
+    }
+    if (!SetHandleInformation((HANDLE)_get_osfhandle(saved_out), HANDLE_FLAG_INHERIT, 0) ||
+        !SetHandleInformation((HANDLE)_get_osfhandle(saved_err), HANDLE_FLAG_INHERIT, 0)) {
+        check(0, "run_split: cannot clear the inherited flag of the saved handles");
+        goto restore;
+    }
+    if (_dup2(ofd, 1) || _dup2(efd, 2)) {
+        check(0, "run_split: cannot send stdout and stderr to its files");
+        goto restore;
+    }
     SetStdHandle(STD_OUTPUT_HANDLE, (HANDLE)_get_osfhandle(ofd));
     SetStdHandle(STD_ERROR_HANDLE, (HANDLE)_get_osfhandle(efd));
     /* the child runs in cwd, as snx_run's CreateProcessW does with its directory */

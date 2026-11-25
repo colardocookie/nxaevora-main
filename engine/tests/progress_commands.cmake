@@ -72,6 +72,23 @@ foreach(command recompile run)
         message(FATAL_ERROR "${command} --progress=bad: stderr has no usage message:\n${${command}_bad_err}")
     endif()
 endforeach()
+# a usage error found while the options are read: exit 2 and no stream line on stdout
+engine(recompile_unknown recompile --progress=jsonl --bogus missing.nro)
+if(NOT recompile_unknown_code EQUAL 2)
+    message(FATAL_ERROR "recompile --progress=jsonl --bogus ended with ${recompile_unknown_code}, not 2")
+endif()
+if(NOT recompile_unknown_out STREQUAL "")
+    message(FATAL_ERROR "recompile --progress=jsonl --bogus wrote to stdout:\n${recompile_unknown_out}")
+endif()
+# run keeps --progress=jsonl for the driver, which opens the stream after its own checks: the same usage error writes
+# no stream line
+engine(run_unknown run missing.nro --progress=jsonl --bogus=1)
+if(NOT run_unknown_code EQUAL 2)
+    message(FATAL_ERROR "run --progress=jsonl --bogus=1 ended with ${run_unknown_code}, not 2")
+endif()
+if(NOT run_unknown_out STREQUAL "")
+    message(FATAL_ERROR "run --progress=jsonl --bogus=1 wrote to stdout:\n${run_unknown_out}")
+endif()
 # the internal stage mode is not a public value: exit 2
 foreach(command recompile run)
     engine(${command}_stage ${command} missing.nro --progress=jsonl-stage)

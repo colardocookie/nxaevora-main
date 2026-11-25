@@ -4,16 +4,19 @@
    then, one at present N ("Nf") from the first ask at or after that present, however late it comes, and both mix */
 #define plat_ns test_ns
 #include "nx/runtime/platform/unattended.c"
+#include "common/utilities/common.h"
+#include <setjmp.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 
 static u64 g_now;
+static jmp_buf g_exit_jump;
 u64 test_ns(void) { return g_now; }
 int g_frames;
 void snx_save_before_exit(void) {}
 void ini_poll(int final) { (void) final; }
-void plat_exit_now(int code) { exit(code); }
+void plat_exit_now(int code) { longjmp(g_exit_jump, code + 1); }
 void logf_(int lvl, const char* fmt, ...) {
     va_list ap;
     (void)lvl;
@@ -39,6 +42,45 @@ static u64 at(u64 ms, int frames) {
     g_now = 1000000000ull + ms * 1000000ull;
     g_frames = frames;
     return unattended_buttons();
+}
+
+/* a file's whole text, read from its start in text mode as stderr wrote it; a missing file gives an empty text */
+static void read_text_file(const char* path, char* text, size_t size) {
+    FILE* f = fopen(path, "r");
+    size_t got = f ? fread(text, 1, size - 1, f) : 0;
+    if (f) fclose(f);
+    text[got] = 0;
+}
+
+/* unattended_exit with w and h: the stream's run done line and stderr's form */
+static void check_run_exit(int w, int h, const char* stderr_wanted, const char* err_path) {
+    FILE* stream = tmpfile();
+    char text[512];
+    int code;
+    if (!stream || !freopen(err_path, "w", stderr)) {
+        CHECK(0, "the run done test's files were not made");
+    } else {
+        snx_progress_test_attach(stream, SNX_PROGRESS_JSONL);
+        snx_progress_stage(SNX_PROGRESS_STAGE_RUN);
+        code = setjmp(g_exit_jump);
+        if (!code) unattended_exit(0x0123456789abcdefull, w, h);
+        CHECK(code == 1, "unattended_exit did not exit with 0");
+        fflush(stream);
+        if (fseek(stream, 0, SEEK_SET)) {
+            CHECK(0, "the progress stream cannot be read");
+        } else {
+            size_t got = fread(text, 1, sizeof text - 1, stream);
+            text[got] = 0;
+            CHECK(!strcmp(text, "{\"v\":1,\"stage\":\"run\",\"event\":\"start\"}\n"
+                               "{\"v\":1,\"stage\":\"run\",\"event\":\"done\"}\n"),
+                  "the run done line is wrong: %s", text);
+        }
+        fflush(stderr);
+        read_text_file(err_path, text, sizeof text);
+        CHECK(!strcmp(text, stderr_wanted), "stderr's run end is wrong: %s", text);
+    }
+    snx_progress_test_attach(NULL, SNX_PROGRESS_OFF);
+    if (stream) fclose(stream);
 }
 
 int main(void) {
@@ -124,6 +166,32 @@ int main(void) {
     g_now = 1000000000ull + 30000ull * 1000000ull;
     unattended_start();
     CHECK(at(30000, 703) == 4, "703f pressed again after unattended_start: %llx", (unsigned long long)at(30000, 703));
+
+    /* unattended_exit: the stream's run done line and stderr's two forms */
+    {
+        char* dir = snx_temp_dir(NULL);
+        char* err = dir ? snx_path_join(dir, "unattended-exit.stderr") : NULL;
+        CHECK(dir && err, "the run done test's folder was not made");
+        if (dir && err) {
+            g_frames = 700;
+            check_run_exit(800, 600, "\nframes=700 hash=0123456789abcdef 800x600\n", err);
+            check_run_exit(0, 0, "\nframes=700 hash=0123456789abcdef\n", err);
+        }
+#ifdef _WIN32
+        {
+            FILE* sink = freopen("NUL", "w", stderr);
+            (void)sink;
+        }
+#else
+        {
+            FILE* sink = freopen("/dev/null", "w", stderr);
+            (void)sink;
+        }
+#endif
+        if (dir) snx_remove_tree(dir);
+        free(err);
+        free(dir);
+    }
     printf("%u checks, %u failed\n", checks, failures);
     return failures != 0;
 }

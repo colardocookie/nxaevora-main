@@ -4,6 +4,7 @@
    a long message, the exit line's modes and the game_code field */
 #include "common/utilities/progress.h"
 #include <assert.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -58,6 +59,14 @@ static void error_message(const char* message, const char* body) {
 
 int main(void) {
     FILE* out;
+    /* the progress option's two forms, and the arguments that are not it */
+    assert(snx_progress_is_option("--progress"));
+    assert(snx_progress_is_option("--progress=jsonl"));
+    assert(snx_progress_is_option("--progress=x"));
+    assert(!snx_progress_is_option("--progressx"));
+    assert(!snx_progress_is_option("--prog"));
+    assert(!snx_progress_is_option("-progress=jsonl"));
+    assert(!snx_progress_is_option(NULL));
     /* start, progress, done and error, with a quote, a backslash, a newline and byte 0x01 escaped */
     out = attach(SNX_PROGRESS_JSONL);
     snx_progress_stage(SNX_PROGRESS_STAGE_INPUT);
@@ -121,6 +130,13 @@ int main(void) {
     error_message("\xc0\xaf", "\xEF\xBF\xBD\xEF\xBF\xBD");
     /* a valid 4-byte character passes as it is */
     error_message("\xf0\x9f\x98\x80", "\xf0\x9f\x98\x80");
+    /* a valid 2-byte and a valid 3-byte character pass as they are */
+    error_message("\xc3\xa9", "\xc3\xa9");
+    error_message("\xe2\x82\xac", "\xe2\x82\xac");
+    /* the overlong and past U+10FFFF forms: one U+FFFD for each byte, as the rule above says */
+    error_message("\xe0\x80\x80", "\xEF\xBF\xBD\xEF\xBF\xBD\xEF\xBF\xBD");
+    error_message("\xf0\x80\x80\x80", "\xEF\xBF\xBD\xEF\xBF\xBD\xEF\xBF\xBD\xEF\xBF\xBD");
+    error_message("\xf4\x90\x80\x80", "\xEF\xBF\xBD\xEF\xBF\xBD\xEF\xBF\xBD\xEF\xBF\xBD");
     /* a message over the line's room is cut at a UTF-8 boundary, never in an escape */
     {
         static const char euro[] = "\xE2\x82\xAC";
@@ -275,6 +291,52 @@ int main(void) {
                 "{\"v\":1,\"stage\":\"run\",\"event\":\"error\",\"message\":\"a crash of the game\",\"code\":6}\n");
     snx_progress_test_attach(NULL, SNX_PROGRESS_OFF);
     fclose(out);
+    /* the crash line's code: a negative one, the smallest int, and 6 */
+    out = attach(SNX_PROGRESS_JSONL);
+    snx_progress_stage(SNX_PROGRESS_STAGE_RUN);
+    snx_progress_crash_error("a negative code", -3);
+    snx_progress_crash_error("the smallest int", INT_MIN);
+    snx_progress_crash_error("a crash code", 6);
+    expect(out, "{\"v\":1,\"stage\":\"run\",\"event\":\"start\"}\n"
+                "{\"v\":1,\"stage\":\"run\",\"event\":\"error\",\"message\":\"a negative code\",\"code\":-3}\n"
+                "{\"v\":1,\"stage\":\"run\",\"event\":\"error\",\"message\":\"the smallest int\","
+                "\"code\":-2147483648}\n"
+                "{\"v\":1,\"stage\":\"run\",\"event\":\"error\",\"message\":\"a crash code\",\"code\":6}\n");
+    snx_progress_test_attach(NULL, SNX_PROGRESS_OFF);
+    fclose(out);
+    /* a crash message that fills the line's tail room: the closing fields stay, and the line stays one valid line */
+    {
+        static const char prefix_text[] = "{\"v\":1,\"stage\":\"run\",\"event\":\"error\",\"message\":\"";
+        static const char suffix_text[] = "\",\"code\":6}\n";
+        char message[3001];
+        char text[EXPECTED_SIZE];
+        char* line;
+        size_t i, prefix, suffix, length, body;
+        out = attach(SNX_PROGRESS_JSONL);
+        snx_progress_stage(SNX_PROGRESS_STAGE_RUN);
+        memset(message, '"', sizeof message - 1);
+        message[sizeof message - 1] = 0;
+        snx_progress_crash_error(message, 6);
+        read_stream(out, text, sizeof text);
+        line = strstr(text, prefix_text);
+        assert(line);
+        assert(!strstr(line + 1, prefix_text)); /* one error line */
+        prefix = sizeof prefix_text - 1;
+        suffix = sizeof suffix_text - 1;
+        length = strlen(line);
+        assert(length > prefix + suffix);
+        assert(line[length - 1] == '\n');
+        assert(!memchr(line, '\n', length - 1)); /* one line: the newline is its last byte */
+        assert(!memcmp(line, prefix_text, prefix));
+        assert(!memcmp(line + length - suffix, suffix_text, suffix));
+        body = length - prefix - suffix;
+        assert(body == SNX_PROGRESS_LINE_SIZE - SNX_PROGRESS_LINE_TAIL - prefix); /* the message filled the room */
+        assert(body % 2 == 0);
+        for (i = 0; i < body; i += 2) assert(line[prefix + i] == '\\' && line[prefix + i + 1] == '"');
+        assert(length + 1 <= SNX_PROGRESS_LINE_SIZE);
+        snx_progress_test_attach(NULL, SNX_PROGRESS_OFF);
+        fclose(out);
+    }
     /* no open stage: the crash writer writes nothing */
     out = attach(SNX_PROGRESS_JSONL);
     snx_progress_stage(SNX_PROGRESS_STAGE_INPUT);
