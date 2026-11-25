@@ -169,6 +169,17 @@ class MainTest(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("git ls-files", errors.getvalue())
 
+    def test_missing_file_returns_two(self):
+        output = io.StringIO()
+        errors = io.StringIO()
+        with mock.patch.object(check_spdx, "list_tracked_files", return_value=["src/missing.py"]), \
+                mock.patch("builtins.open", side_effect=FileNotFoundError("gone")), \
+                contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+            code = check_spdx.main()
+        self.assertEqual(code, 2)
+        self.assertIn("src/missing.py", errors.getvalue())
+        self.assertIn("tracked file is missing from the working tree", errors.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()

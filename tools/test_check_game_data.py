@@ -60,8 +60,18 @@ class ForbiddenPathTest(unittest.TestCase):
     def test_engine_source_passes(self):
         self.assertEqual(guard.classify_path("engine/src/fs/romfs.c"), [])
 
+    def test_forbidden_names_exact_reason(self):
+        for name in ("prod.keys", "main.npdm"):
+            for path in ("keys/" + name, "keys/" + name.upper()):
+                with self.subTest(path=path):
+                    self.assertIn("forbidden file name " + path.rsplit("/", 1)[-1],
+                                  guard.classify_path(path))
+
     def test_python_cache(self):
         self.assertNotEqual(guard.classify_path("__pycache__/x.pyc"), [])
+
+    def test_python_cache_outside_pycache(self):
+        self.assertIn("python cache file", guard.classify_path("tools/x.pyc"))
 
 
 class MagicTest(unittest.TestCase):
@@ -79,13 +89,69 @@ class MagicTest(unittest.TestCase):
 
 class KeyTest(unittest.TestCase):
 
-    def test_key_line_with_32_digits_fails(self):
-        data = b"header_key = " + b"0" * 32
+    KEY_NAMES = (
+        "header_key",
+        "key_area_key_application_00",
+        "titlekek_00",
+        "master_key_00",
+        "package2_key_00",
+        "eticket_rsa_kek",
+        "bis_key_00",
+        "keyblob_key_00",
+        "tsec_root_key_00",
+        "aes_kek_generation_source",
+        "header_kek_source",
+    )
+
+    def test_each_key_name_with_32_digits_fails(self):
+        for name in self.KEY_NAMES:
+            with self.subTest(name=name):
+                data = (name + " = " + "0" * 32).encode("ascii")
+                self.assertNotEqual(guard.classify_keys(data), [])
+
+    def test_upper_case_name_fails(self):
+        data = b"HEADER_KEY = " + b"0" * 32
         self.assertNotEqual(guard.classify_keys(data), [])
+
+    def test_indented_line_fails(self):
+        data = b"    header_key = " + b"0" * 32
+        self.assertNotEqual(guard.classify_keys(data), [])
+
+    def test_name_without_key_or_kek_passes(self):
+        data = b"build_id = " + b"0" * 32
+        self.assertEqual(guard.classify_keys(data), [])
 
     def test_key_line_with_31_digits_passes(self):
         data = b"header_key = " + b"0" * 31
         self.assertEqual(guard.classify_keys(data), [])
+
+
+class BinaryRangeTest(unittest.TestCase):
+
+    def test_text_is_not_binary(self):
+        self.assertFalse(guard.is_binary(b"plain text"))
+
+    def test_nul_is_binary(self):
+        self.assertTrue(guard.is_binary(b"text\0more"))
+
+    def test_invalid_utf8_is_binary(self):
+        self.assertTrue(guard.is_binary(b"\xff\xff"))
+
+
+class XciHeadTest(unittest.TestCase):
+
+    def test_text_with_head_at_0x100_passes(self):
+        data = bytearray(b"a" * HEADER_LENGTH)
+        data[0x100:0x104] = b"HEAD"
+        self.assertEqual(guard.classify_magic(bytes(data)), [])
+
+    def test_zeros_with_head_at_0x100_fail(self):
+        self.assertNotEqual(guard.classify_magic(magic_header(0x100, b"HEAD")), [])
+
+    def test_invalid_utf8_with_head_at_0x100_fails(self):
+        data = bytearray(b"\xff" * HEADER_LENGTH)
+        data[0x100:0x104] = b"HEAD"
+        self.assertNotEqual(guard.classify_magic(bytes(data)), [])
 
 
 class SizeTest(unittest.TestCase):
@@ -140,6 +206,17 @@ class MainTest(unittest.TestCase):
             code = guard.main()
         self.assertEqual(code, 2)
         self.assertIn("git ls-files", errors.getvalue())
+
+    def test_missing_file_returns_two(self):
+        output = io.StringIO()
+        errors = io.StringIO()
+        with mock.patch.object(guard, "list_tracked_files", return_value=["tools/missing.txt"]), \
+                mock.patch.object(guard.os.path, "getsize", side_effect=FileNotFoundError("gone")), \
+                contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+            code = guard.main()
+        self.assertEqual(code, 2)
+        self.assertIn("tools/missing.txt", errors.getvalue())
+        self.assertIn("tracked file is missing from the working tree", errors.getvalue())
 
 
 if __name__ == "__main__":

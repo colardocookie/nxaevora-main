@@ -38,15 +38,20 @@ jobs:
           python-version: "3.12"
 
       # Compile only. Some scripts need engine/tools or the extracted game folder, so an import would fail.
+      # A failed step still lets the other checks report their result.
       - name: Compile the tools scripts
+        if: ${{ !cancelled() }}
         run: python -m py_compile tools/*.py
 
       # A run with no test exits with code 5 on Python 3.12, so this step fails when the tests are gone.
       - name: Run the tools tests
+        if: ${{ !cancelled() }}
         run: python -m unittest discover -s tools -p "test_*.py" -v
 
       - name: Check the license headers
+        if: ${{ !cancelled() }}
         run: python tools/check_spdx.py
 
       - name: Guard against game data
+        if: ${{ !cancelled() }}
         run: python tools/check_game_data.py

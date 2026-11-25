@@ -35,6 +35,10 @@ class ReportTest(unittest.TestCase):
         self.assertIn("1 files checked, 1 violations", text)
 
 
+def git_entry(mode, path):
+    return ("%s %s 0\t%s" % (mode, "0" * 40, path)).encode("utf-8")
+
+
 class ListTrackedFilesTest(unittest.TestCase):
 
     def test_non_zero_exit(self):
@@ -50,10 +54,22 @@ class ListTrackedFilesTest(unittest.TestCase):
                 repo_files.list_tracked_files()
         self.assertEqual(caught.exception.stage, "git ls-files")
 
-    def test_splits_nul_output(self):
-        result = mock.Mock(returncode=0, stdout=b"a\0b/c\0", stderr=b"")
+    def test_keeps_file_modes_and_skips_gitlinks(self):
+        stdout = b"\0".join([
+            git_entry("100644", "a"),
+            git_entry("100755", "b"),
+            git_entry("120000", "c"),
+            git_entry("160000", "d"),
+        ]) + b"\0"
+        result = mock.Mock(returncode=0, stdout=stdout, stderr=b"")
         with mock.patch.object(repo_files.subprocess, "run", return_value=result):
-            self.assertEqual(repo_files.list_tracked_files(), ["a", "b/c"])
+            self.assertEqual(repo_files.list_tracked_files(), ["a", "b", "c"])
+
+    def test_keeps_space_and_tab_in_name(self):
+        path = "dir/with space\tand tab.txt"
+        result = mock.Mock(returncode=0, stdout=git_entry("100644", path) + b"\0", stderr=b"")
+        with mock.patch.object(repo_files.subprocess, "run", return_value=result):
+            self.assertEqual(repo_files.list_tracked_files(), [path])
 
 
 if __name__ == "__main__":

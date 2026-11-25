@@ -13,6 +13,9 @@ EXIT_CLEAN = 0
 EXIT_VIOLATION = 1
 EXIT_ERROR = 2
 
+# A gitlink stores the commit of another repository, so its path is not a file in this tree.
+GITLINK_MODE = "160000"
+
 
 class CheckError(Exception):
     """An internal error of the check, with the stage that failed."""
@@ -26,7 +29,7 @@ class CheckError(Exception):
 def list_tracked_files():
     try:
         result = subprocess.run(
-            ["git", "ls-files", "-z"],
+            ["git", "ls-files", "-s", "-z"],
             capture_output=True,
             check=False,
         )
@@ -36,7 +39,27 @@ def list_tracked_files():
         detail = result.stderr.decode("utf-8", "replace").strip()
         raise CheckError("git ls-files", detail or "exit code %d" % result.returncode)
     text = result.stdout.decode("utf-8", "replace")
-    return [path for path in text.split("\0") if path]
+    paths = []
+    for entry in text.split("\0"):
+        if not entry:
+            continue
+        metadata, _, path = entry.partition("\t")
+        if not path:
+            continue
+        mode = metadata.split(" ", 1)[0]
+        if mode == GITLINK_MODE:
+            continue
+        paths.append(path)
+    return paths
+
+
+def read_file_error(path, exc):
+    """Build the error for a tracked file that cannot be read."""
+    if isinstance(exc, FileNotFoundError):
+        detail = "tracked file is missing from the working tree (commit the deletion or restore the file)"
+    else:
+        detail = str(exc)
+    return CheckError("read " + path, detail)
 
 
 def file_name(path):

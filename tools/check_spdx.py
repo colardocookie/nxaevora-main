@@ -20,6 +20,7 @@ from repo_files import (
     file_name,
     file_suffix,
     list_tracked_files,
+    read_file_error,
     report,
 )
 
@@ -123,7 +124,7 @@ def read_file(path):
         with open(path, "rb") as handle:
             return handle.read()
     except OSError as exc:
-        raise CheckError("read " + path, str(exc)) from exc
+        raise read_file_error(path, exc) from exc
 
 
 def run():
