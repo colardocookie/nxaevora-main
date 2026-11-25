@@ -235,8 +235,10 @@ typedef struct {
 typedef struct {
     VkDevice dev;
     VkQueue gfx;
+    VkSwapchainKHR swapchain; /* the WSI lock's acquire (vk_wsi_acquire_locked), which no scenario calls */
 } VkState;
 extern VkState g_vk;
+int gpu_on_gpu_thread(void); /* gpu/gpu.h's, which the perf notes ask */
 void vk_lock(void);
 void vk_unlock(void);
 int vk_ok_(VkResult r, const char* what, const char* file, int line);
@@ -283,6 +285,8 @@ VkResult vkEndCommandBuffer(VkCommandBuffer cb);
 VkResult vkQueueSubmit2(VkQueue queue, u32 n, const VkSubmitInfo2* submits, VkFence fence);
 VkResult vkSignalSemaphore(VkDevice dev, const VkSemaphoreSignalInfo* info);
 VkResult vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* info);
+VkResult vkAcquireNextImageKHR(VkDevice dev, VkSwapchainKHR sc, uint64_t timeout, VkSemaphore sem, VkFence fence,
+                               u32* idx);
 VkResult vkAllocateDescriptorSets(VkDevice dev, const VkDescriptorSetAllocateInfo* info, VkDescriptorSet* sets);
 VkResult vkResetDescriptorPool(VkDevice dev, VkDescriptorPool pool, VkFlags flags);
 void vkUpdateDescriptorSets(VkDevice dev, u32 n, const VkWriteDescriptorSet* writes, u32 copies, const void* none);

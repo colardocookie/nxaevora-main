@@ -730,6 +730,10 @@ add_test(NAME nvn_rt COMMAND snx-test-nvn-rt)
 add_executable(snx-test-draw-record nvn/draw_record.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/diag/draw_record_sig.c")
 snx_test_target(snx-test-draw-record 11)
 add_test(NAME draw_record COMMAND snx-test-draw-record)
+if(UNIX AND NOT CMAKE_CROSSCOMPILING AND Python3_Interpreter_FOUND)
+    add_test(NAME vulkan_wsi COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/vulkan_wsi.py"
+             "${CMAKE_C_COMPILER}")
+endif()
 
 add_executable(snx-test-nvn-dirty nvn/nvn_dirty.c)
 snx_test_target(snx-test-nvn-dirty 11)

@@ -87,6 +87,7 @@ The `SNX_ARCEUS_*` switches are environment variables, read with `getenv`. No `.
 | `SNX_ARCEUS_DEMO_PROBE` | off | `=0` keeps the read-only demo clock probe off. |
 | `SNX_ARCEUS_TEXT_PROBE` | off | `=0` keeps the read-only text reveal probe off. |
 | `SNX_ARCEUS_SCENE_SCALE` | off | Not a boolean: a number from 0.5 to below 1.0, or `p/q` such as `2/3` (also written `2of3`), the game's own 3D buffer scale. Unset, or 1.0 and above, changes nothing. Needs the fixed resolution, which is on unless `SNX_ARCEUS_FIXED_RESOLUTION` is set to a value other than `1`. See "Scene scale". |
+| `SNX_ARCEUS_WSI_LOCK` | on | Not a timing fix. It is on unless set to a value other than `1`, and then the acquire and the present run without it, as upstream. On, the renderer holds one lock across each swapchain present and each image acquire, which upstream runs on two threads at once. Its start line is `wsi-lock: serializing swapchain acquire and present`. |
 
 The default movement mask selects bits 2 through 8, the seven player movement sites, and bit 10, the player's horizontal position step. Bits 0 and 1 remain off. An explicit mask such as `7fc` adds bit 9's capped-fall selection while preserving the same sites. `1fc` leaves bit 10 out.
 

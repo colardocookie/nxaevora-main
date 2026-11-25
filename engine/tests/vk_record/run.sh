@@ -9,7 +9,8 @@ here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
 out=${1:-$(mktemp -d)}
 cc=${CC:-gcc}
-sources="$root/src/nx/gpu/vk/record.c $root/src/common/filesystem/host.c $here/fixture.c"
+sources="$root/src/nx/gpu/vk/record.c $root/src/nx/gpu/perf_times.c $root/src/common/filesystem/host.c
+    $here/fixture.c"
 # record.c needs only the upscalers' answers of upscaler.h, whose Vulkan header clashes with the fixture's stand-ins:
 # the answers' enum, taken from the real header so its values cannot drift
 mkdir -p "$out/include/nx/gpu/vk"

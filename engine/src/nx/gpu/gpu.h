@@ -379,6 +379,9 @@ extern void (*g_gpu_mem_changed)(u64 cpu_addr, u64 len); /* the renderer's side 
 /* the renderer lands pending shader results before the stream goes on past them: before a write of memory those
    results overlap (size > 0), and before anything the game can observe (gpu_signal_point, size 0) */
 extern void (*g_gpu_before_write)(u64 gva, u64 size);
+/* SNX_ARCEUS_WSI_LOCK, on by default (=0 off), serializes host access to the swapchain, read once before workers
+   start */
+extern int g_vk_wsi_lock;
 /* SNX_ARCEUS_VK_VALIDATION=2: the validation layer's synchronization checks too (gpu/vk/device.c), read once */
 extern int g_vk_sync_validation;
 extern int g_gpu_releases; /* the renderer holds releases waiting to happen (renderer.h release_need) */
