@@ -1,0 +1,38 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the NXAevora contributors
+#
+# Fail a pull request to main that does not have one type label, one size label and one priority label. The labels
+# are checked again on each push and each label change of the pull request.
+name: Label check
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, reopened, synchronize, labeled, unlabeled, ready_for_review]
+
+permissions:
+  contents: read
+
+# A new push or label change on a pull request cancels its older run.
+concurrency:
+  group: >-
+    label-check-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  labels:
+    name: Label check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Check the labels
+        run: python tools/check_labels.py --check

@@ -51,6 +51,24 @@ You cannot port code that is GPL-2.0-only. Atmosphere is GPL-2.0-only. You can r
 but do not port it. The main references are Switchbrew and the behavior of the SDK, which you can read from the
 disassembly of the game.
 
+## Labels
+
+Each issue and each pull request has labels from three groups.
+
+- Type: at least one of `bug`, `enhancement`, `graphics`, `documentation`, `accessibility` and `question`.
+- Size: exactly one of `size: small`, `size: medium` and `size: large`.
+- Priority: exactly one of `priority: low`, `priority: medium` and `priority: high`.
+
+`size: small` changes one place. It has no design decision, no recompile and no game run. `size: medium` changes
+several files in one pull request. It needs a review by the maintainers or one game scene. `size: large` needs several
+pull requests, a design decision, a recompile or several game scenes.
+
+`priority: high` is a crash, a blocker for play or a broken CI. `priority: medium` is a visible bug or work of the
+current roadmap phase. `priority: low` is an optional improvement or a clean-up.
+
+The workflow `Label check` fails a pull request that lacks a label of a group, or has more than one size or priority
+label. An issue without these labels gets `needs-triage` until a maintainer labels it.
+
 ## Checks
 
 The workflow `Repository checks` runs these commands for each pull request and each push to `main`:
