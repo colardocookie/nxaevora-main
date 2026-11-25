@@ -646,9 +646,10 @@ int snx_driver(int argc, char** argv) {
                 ++i; /* its value */
                 continue;
             }
-            /* the runtime's own, which it reads after: the settings' list and the game to play; as a game's copy is
-               started, a setting it knows and -v too */
+            /* the runtime's own, which it reads after: the settings' list, the Arceus page's capabilities and the game
+               to play; as a game's copy is started, a setting it knows and -v too */
             if (!strcmp(rest[i], "--settings") || !strncmp(rest[i], "--settings=", 11) ||
+                !strcmp(rest[i], "--arceus-capabilities") ||
                 !strncmp(rest[i], "--game=", 7) || !strncmp(rest[i], "--progress=", 11) ||
                 !strcmp(rest[i], "--progress"))
                 continue;

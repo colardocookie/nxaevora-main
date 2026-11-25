@@ -30,6 +30,15 @@ if(NOT new_scope_code EQUAL 0 OR NOT "${new_scope_err}" STREQUAL ""
    OR NOT "${new_scope_out}" STREQUAL "${old_scope_out}")
     message(FATAL_ERROR "settings list --scope=recompile is not --settings=recompile: exit ${new_scope_code}, stderr \"${new_scope_err}\"")
 endif()
+# --arceus-capabilities reaches the runtime through the driver (the Arceus graphics page's check): exit 0 and one line
+# for each of fsr, dlss and xess, available or not, also on a machine with no Vulkan or no card
+engine(caps --arceus-capabilities)
+foreach(name fsr dlss xess)
+    if(NOT caps_code EQUAL 0 OR NOT "${caps_out}" MATCHES "arceus-capabilities: ${name}: (available|not available) on ")
+        message(FATAL_ERROR
+                "--arceus-capabilities ended with ${caps_code}, without a line for ${name}:\n${caps_out}\n${caps_err}")
+    endif()
+endforeach()
 # a bad word is exit 2, stdout is empty, and stderr is the full refusal line, not a part of it (a wrong line then fails
 # here)
 foreach(case "settings list extra|settings list: extra: unexpected argument"
