@@ -39,8 +39,6 @@ char* gui_game_log(const char* path);
 bool gui_games_by_last_opened(GuiGames* games);
 /* whether directory holds a folder that is no game and not hidden: one whose games a deep add would list */
 bool gui_has_folders(const char* directory, int kinds);
-/* games/'s alone: its executable files and game folders. Never recurse into data/save directories. */
-bool gui_games_scan(GuiGames* games, const char* directory, char* error, size_t size);
 void gui_games_free(GuiGames* games);
 /* The bytes of the files under path, in its folders too, links not followed: 0 for no such folder, or "". It stops,
    with what it counted, once *stop is set by another thread */

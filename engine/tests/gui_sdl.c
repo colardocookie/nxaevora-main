@@ -7429,13 +7429,13 @@ int main(int argc, char** argv) {
                 info = (UiRowInfo){0};
                 assert(ui_addons_rows_get_row_info(&app, GUI_FOLDER_SAVES, 0, &info) && (info.attr & UI_ATTR_OFF));
                 render(&app);
-                assert(find_text(&app, "Dump", rgb(app.theme.soft), 1, &nx, &ny)); /* in focus, greyed all the same */
+                assert(find_text(&app, "Game folder", rgb(app.theme.soft), 1, &nx, &ny)); /* in focus, greyed all the same */
                 assert(find_text(&app, "Game", rgb(app.theme.ink), 1, &nx, &ny));
                 assert(find_text(&app, "Saves", rgb(app.theme.soft), 1, &nx, &ny));
                 app.message[0] = 0;
-                key(&app, SDLK_RETURN); /* Dump */
+                key(&app, SDLK_RETURN); /* Game folder */
                 assert(!strcmp(app.message,
-                               "Dump: its dump is not known: the game was made before the recompile named it"));
+                               "Game folder: its game folder is not known: the game was made before the recompile named it"));
                 app.addons_focus = GUI_FOLDER_SAVES;
                 key(&app, SDLK_RETURN);
                 snprintf(want, sizeof want, "Saves: %s is not there yet", saves);
@@ -7473,7 +7473,7 @@ int main(int argc, char** argv) {
                 gui_size_text(size, sizeof size, sizeof bytes);
                 assert(app.confirm.shown && app.confirm.ask == GUI_ASK_CACHE && strstr(app.ask_line, size) &&
                        strstr(app.ask_line, caches[0]) && strstr(app.ask_line, caches[1]) &&
-                       strstr(app.ask_line, "its saves, settings and dump stay"));
+                       strstr(app.ask_line, "its saves, settings and game folder stay"));
                 key(&app, SDLK_ESCAPE);
                 assert(!app.confirm.shown && app.addons_shown && snx_is_file(shader) && snx_is_file(caches[1]));
                 key(&app, SDLK_RETURN);

@@ -1410,25 +1410,6 @@ int snx_refuse_encrypted_dump(const char* path) {
                              path);
     return 0;
 }
-char* snx_dump_name(const char* input) {
-    const char *base = input, *p;
-    size_t n = 0;
-    for (p = input; *p; ++p)
-        if (*p == '/' || *p == '\\') base = p + 1;
-    const char* end = strrchr(base, '.');
-    if (!end || end == base) end = base + strlen(base);
-    char* name = (char*)snx_alloc((size_t)(end - base) + 1);
-    for (p = base; p < end; ++p)
-        if ((unsigned char)*p >= 128 || snx_is_alnum(*p) || *p == '-' || *p == '_' || *p == ' ')
-            name[n++] = *p;
-    while (n && name[n - 1] == ' ') --n;
-    name[n] = 0;
-    if (!n) {
-        free(name);
-        return snx_strdup("Game");
-    }
-    return name;
-}
 const char* snx_folder_unfit(const char* folder, int run) {
     char* probe;
 #if defined(ST_NOEXEC)
