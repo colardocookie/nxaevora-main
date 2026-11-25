@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the NXAevora contributors
 diff --git a/src/nx/hle/filesystem/fs.c b/src/nx/hle/filesystem/fs.c
 index 4af27e59..89f9c7b5 100644
 --- a/src/nx/hle/filesystem/fs.c

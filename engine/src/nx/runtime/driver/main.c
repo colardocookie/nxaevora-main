@@ -12,13 +12,6 @@
 #include <string.h>
 /* The Switch driver of a build of the host tools (SNX_TOOLS_ONLY), in the program as entry.c's is in the runtime's
    (src/multicall). The full runtime uses the same driver */
-static int open_stage_stream(int argc, char** argv) {
-    int i;
-    for (i = 1; i < argc && strcmp(argv[i], "--"); ++i)
-        if (snx_progress_parse(argv[i]) == SNX_PROGRESS_JSONL_STAGE)
-            return snx_progress_open(SNX_PROGRESS_JSONL_STAGE);
-    return 0;
-}
 int snx_switch_main(int argc, char** argv) {
     char why[160];
     int result;
@@ -33,7 +26,7 @@ int snx_switch_main(int argc, char** argv) {
         snx_progress_finish(result);
         return result;
     }
-    if (open_stage_stream(argc, argv)) return SNX_EXIT_INTERNAL;
+    if (snx_progress_open_stage(argc, argv)) return SNX_EXIT_INTERNAL;
     if (argc > 1 && !strcmp(argv[1], "--mcp")) return snx_mcp(argc, argv);
     result = snx_driver(argc, argv);
     if (result >= 0) {

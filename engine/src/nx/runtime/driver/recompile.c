@@ -287,11 +287,6 @@ static int patch_modules(SnxProgram* program, const char* mods, const char* off,
     snx_free_strings(patches, count);
     return rc;
 }
-/* 1 for --progress=value, the option of the JSON Lines stream (progress.h) */
-static int is_progress_option(const char* arg) {
-    return !strncmp(arg, "--progress=", 11) || !strcmp(arg, "--progress");
-}
-
 int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
     const char *input = NULL, *name = NULL, *outdir = NULL, *runtime = NULL, *target = "auto", *jit_cache = NULL, *arg,
                *value;
@@ -306,7 +301,7 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
     char error[1024], option[64], why[256];
     const char* equal;
     size_t option_size;
-    int i, rc = SNX_EXIT_RECOMPILE, no_build = 0, keep_c = 0, host_win = 0, positional = 0;
+    int i, rc = SNX_EXIT_RECOMPILE, no_build = 0, keep_c = 0, host_win = 0, positional = 0, mode = SNX_PROGRESS_OFF;
     memset(&compile, 0, sizeof(compile));
     memset(&gen, 0, sizeof(gen));
     memset(&program, 0, sizeof(program));
@@ -350,13 +345,12 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
         } else if (!strcmp(arg, "--quiet") || !strcmp(arg, "-q"))
             compile.quiet = gen.quiet = 1;
         else if (arg[0] == '-') {
-            if (is_progress_option(arg)) {
-                int mode = snx_progress_parse(arg);
+            if (snx_progress_is_option(arg)) {
+                mode = snx_progress_parse(arg);
                 if (mode < 0) {
                     snx_error("%s: not jsonl", arg);
                     return SNX_EXIT_USAGE;
                 }
-                if (snx_progress_open(mode)) return SNX_EXIT_INTERNAL;
                 continue;
             }
             value = NULL;
@@ -444,6 +438,7 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
         usage();
         return SNX_EXIT_USAGE;
     }
+    if (mode != SNX_PROGRESS_OFF && snx_progress_open(mode)) return SNX_EXIT_INTERNAL;
     snx_progress_stage(SNX_PROGRESS_STAGE_INPUT);
     /* opt's value was checked as it was read: -O's own check, or --opt's snx_recompile_value_taken */
     compile.opt = g_settings.optimization_level;

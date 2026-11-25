@@ -1,3 +1,6 @@
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- Copyright 2026 the NXAevora contributors -->
+
 # JIT miss analysis
 
 Subject: Pokemon Legends Arceus, recompiled with ScarletNX `8efbf9c`. Base game and update 1.1.1

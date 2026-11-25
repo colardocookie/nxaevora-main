@@ -402,7 +402,8 @@ A child stage that ends by itself with a nonzero code writes its own error line,
 second one. After an interrupt of the parent (Ctrl+C), after a signal ends the child and after a child that does not
 start, the parent writes its own error line. An error after a stage has closed gets that stage's name: the stage of
 the parent's next work, which is the stage that the child writes its start and done lines for. A test reads the
-stream of a recompile.
+stream of a recompile. A usage error that the command finds while it reads the command line gives exit 2, a message
+on stderr and no stream line: the stream opens after the option checks and before the first stage.
 
 `--progress=jsonl-stage` is internal: the driver gives it to its child stages, which write stage and error lines and
 no exit line.

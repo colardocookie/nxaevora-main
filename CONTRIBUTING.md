@@ -51,6 +51,18 @@ You cannot port code that is GPL-2.0-only. Atmosphere is GPL-2.0-only. You can r
 but do not port it. The main references are Switchbrew and the behavior of the SDK, which you can read from the
 disassembly of the game.
 
+## Checks
+
+The workflow `Repository checks` runs these commands for each pull request and each push to `main`:
+
+- `python -m py_compile tools/*.py` compiles the tools scripts.
+- `python -m unittest discover -s tools -p "test_*.py"` runs the tests of the tools.
+- `python tools/check_spdx.py` fails when a tracked file has no license header. Each of the two header lines must be
+  one complete comment line, so a multi-line block comment is not accepted.
+- `python tools/check_game_data.py` fails when a tracked file is game data or holds a key.
+
+Run the same commands before you send a pull request.
+
 ## Changing the engine
 
 `engine` is a copy of the upstream project (commit 8efbf9c4), kept in this repository. Edit it like any other source.

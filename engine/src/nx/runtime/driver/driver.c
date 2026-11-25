@@ -347,9 +347,21 @@ made:
             if (named) command[n++] = name;
             command[n] = NULL;
             snx_progress_stage_name(SNX_PROGRESS_STAGE_BUILD);
-            snx_progress_child_redirect();
+            rc = snx_progress_child_redirect();
+            if (rc) {
+                snx_error("Recompilation: cannot send the progress stream to the child: %s", strerror(rc));
+                rc = SNX_EXIT_INTERNAL;
+                goto done;
+            }
             rc = snx_run_stage(command, NULL, "Recompilation", &child_result);
-            snx_progress_child_restore(child_result);
+            {
+                int restore_error = snx_progress_child_restore(child_result);
+                if (restore_error) {
+                    snx_error("Recompilation: cannot restore the progress stream after the child: %s",
+                              strerror(restore_error));
+                    if (rc == 0) rc = SNX_EXIT_INTERNAL;
+                }
+            }
             if (rc) goto done;
             if (!snx_is_file(game)) {
                 snx_progress_stage_name(SNX_PROGRESS_STAGE_BUILD);
@@ -388,10 +400,21 @@ made:
     for (j = 0; j < game_argc; ++j) command[n++] = game_argv[j];
     command[n] = NULL;
     snx_progress_stage_name(SNX_PROGRESS_STAGE_RUN);
-    snx_progress_child_redirect();
+    rc = snx_progress_child_redirect();
+    if (rc) {
+        snx_error("Game: cannot send the progress stream to the child: %s", strerror(rc));
+        rc = SNX_EXIT_INTERNAL;
+        goto done;
+    }
     rc = (flags & SNX_GDB) ? snx_run_debug_stage(command, folder, "Game", &child_result)
                            : snx_run_stage(command, folder, "Game", &child_result);
-    snx_progress_child_restore(child_result);
+    {
+        int restore_error = snx_progress_child_restore(child_result);
+        if (restore_error) {
+            snx_error("Game: cannot restore the progress stream after the child: %s", strerror(restore_error));
+            if (rc == 0) rc = SNX_EXIT_INTERNAL;
+        }
+    }
 done:
     free(name);
     free(games);
@@ -467,7 +490,7 @@ int snx_driver(int argc, char** argv) {
     char *r = NULL, *b = NULL, *exe = NULL, **rest = NULL, **setting, **recompile, *self, *data = NULL, *source = NULL;
     unsigned flags = 0;
     int i, n = 0, separator = argc, result = -1, tool_paths = 0, help = 0, parsed, automatic;
-    int repo_given = 0, settings = 0, recompiling = 0, taken = 0;
+    int repo_given = 0, settings = 0, recompiling = 0, taken = 0, progress_mode = SNX_PROGRESS_OFF;
     if (argc <= 1 && snx_setup_again) {
         result = setup_run(argv[0], 1); /* scarletnx --setup */
         goto done;
@@ -559,6 +582,16 @@ int snx_driver(int argc, char** argv) {
         if (!strncmp(rest[i], "--", 2) && strchr(rest[i], '=')) {
             char key[64];
             size_t length = (size_t)(strchr(rest[i], '=') - rest[i] - 2);
+            if (snx_progress_is_option(rest[i])) {
+                progress_mode = snx_progress_parse(rest[i]);
+                if (progress_mode != SNX_PROGRESS_JSONL) {
+                    snx_error("%s: not jsonl", rest[i]);
+                    result = SNX_EXIT_USAGE;
+                    goto done;
+                }
+                ++taken;
+                continue;
+            }
             if (length < sizeof key) {
                 memcpy(key, rest[i] + 2, length);
                 key[length] = 0;
@@ -650,8 +683,7 @@ int snx_driver(int argc, char** argv) {
                to play; as a game's copy is started, a setting it knows and -v too */
             if (!strcmp(rest[i], "--settings") || !strncmp(rest[i], "--settings=", 11) ||
                 !strcmp(rest[i], "--arceus-capabilities") ||
-                !strncmp(rest[i], "--game=", 7) || !strncmp(rest[i], "--progress=", 11) ||
-                !strcmp(rest[i], "--progress"))
+                !strncmp(rest[i], "--game=", 7) || snx_progress_is_option(rest[i]))
                 continue;
             if (!input && (!strcmp(rest[i], "-v") ||
                            (!strncmp(rest[i], "--", 2) && strchr(rest[i], '=') && setting_known(rest[i] + 2))))
@@ -699,6 +731,11 @@ int snx_driver(int argc, char** argv) {
     if (!automatic)
         for (i = separator; i < argc; ++i) rest[n++] = argv[i];
     rest[n] = NULL;
+    /* the automatic path opens the stream after its option checks and before the first stage of play_dump */
+    if (automatic && progress_mode != SNX_PROGRESS_OFF && snx_progress_open(progress_mode)) {
+        result = SNX_EXIT_INTERNAL;
+        goto done;
+    }
     /* work/ and recompiled/ are in the data folder (snx_data_dir), unless --repo names one (the menu does), for a
        build tree's driver as for an installed one. Not the current folder: a desktop entry or Explorer start the
        driver wherever they happen to be, often somewhere read-only (/, the AppImage's mount, Program Files) */

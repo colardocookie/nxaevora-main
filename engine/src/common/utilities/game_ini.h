@@ -14,13 +14,13 @@ char* snx_ini_value(const char* path, const char* key);
 /* key=value in [Game] of the .ini at path, every older key= taken out and the file made when there is none, left as
    it is when it has the value already. value has no line break. 0, or nonzero with a line saying why */
 int snx_ini_record(const char* path, const char* key, const char* value);
-/* the dump the game was made from, owned: what a game made from its dump without extracting it reads its ExeFS and
-   RomFS from. source= in the game's .ini (snx_game_ini's, else the one in its folder), else <folder>/<name>.source,
-   the link an older version made (Windows makes links only with the right to); NULL when that path does not fit (said).
-   recorded, when not NULL: 1 when either names a dump, there or not */
+/* the decrypted game folder the game was made from, owned: what a game made from it without extracting it reads its
+   ExeFS and RomFS from. source= in the game's .ini (snx_game_ini's, else the one in its folder), else
+   <folder>/<name>.source, the link an older version made (Windows makes links only with the right to); NULL when that
+   path does not fit (said). recorded, when not NULL: 1 when either names a folder, there or not */
 char* snx_game_source(const char* folder, const char* name, int* recorded);
-/* dump, absolute, as source= in [Game] of the game's .ini, the file made when there is none and left as it is when it
-   names dump already. 0, or nonzero with a line saying why */
+/* The game folder, absolute, as source= in [Game] of the game's .ini, the file made when there is none and left as it
+   is when it names it already. 0, or nonzero with a line saying why */
 int snx_record_source(const char* folder, const char* name, const char* dump);
 /* romfs, absolute, as romfs= in [Game] of the game's .ini, the folder of the game's RomFS which the runtime reads it
    from with no copy: the file made when there is none. 0, or nonzero with a line saying why */

@@ -15,7 +15,7 @@ int snx_startup_options(int argc, char** argv) {
     int i, result;
     for (i = 1; i < argc; ++i) {
         if (!strcmp(argv[i], "--")) break;
-        if (!strncmp(argv[i], "--progress=", 11) || !strcmp(argv[i], "--progress")) {
+        if (snx_progress_is_option(argv[i])) {
             int mode = snx_progress_parse(argv[i]);
             if (mode == SNX_PROGRESS_JSONL) {
                 /* only the driver writes the exit line: a game takes the internal stage mode from it */

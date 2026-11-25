@@ -1,3 +1,6 @@
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- Copyright 2026 the NXAevora contributors -->
+
 # Shader analysis
 
 Subject: the shader programs that ScarletNX does not translate. Data: the four logs of 2026-10-31 (14:19 to 14:31, update

@@ -1410,25 +1410,6 @@ int snx_refuse_encrypted_dump(const char* path) {
                              path);
     return 0;
 }
-char* snx_dump_name(const char* input) {
-    const char *base = input, *p;
-    size_t n = 0;
-    for (p = input; *p; ++p)
-        if (*p == '/' || *p == '\\') base = p + 1;
-    const char* end = strrchr(base, '.');
-    if (!end || end == base) end = base + strlen(base);
-    char* name = (char*)snx_alloc((size_t)(end - base) + 1);
-    for (p = base; p < end; ++p)
-        if ((unsigned char)*p >= 128 || snx_is_alnum(*p) || *p == '-' || *p == '_' || *p == ' ')
-            name[n++] = *p;
-    while (n && name[n - 1] == ' ') --n;
-    name[n] = 0;
-    if (!n) {
-        free(name);
-        return snx_strdup("Game");
-    }
-    return name;
-}
 const char* snx_folder_unfit(const char* folder, int run) {
     char* probe;
 #if defined(ST_NOEXEC)
@@ -1797,6 +1778,8 @@ static wchar_t* child_environment(const char* home) {
     return out;
 }
 #endif
+/* a child that cannot set up its own stdio exits with process.c's setup code, before its program runs */
+#define SNX_CHILD_EXIT_SETUP 126
 /* tick(data) once a second has gone by since the last one */
 static void tick_due(double* ticked, void (*tick)(void*), void* data) {
     if (snx_seconds() - *ticked < 1) return;
@@ -1916,6 +1899,8 @@ int snx_run_ticking(const char* const* argv, const char* cwd, const char* home, 
     int fds[2] = {-1, -1}, status;
     pid_t waited;
     ssize_t got;
+    /* after fork the child may call only async-signal-safe functions: one fixed write, no perror */
+    static const char setup_failed[] = "scarletnx: sending the child's output to the pipe\n";
     if (output) {
         *output = snx_strdup("");
         if (pipe(fds)) return 1;
@@ -1926,8 +1911,10 @@ int snx_run_ticking(const char* const* argv, const char* cwd, const char* home, 
     if (!pid) {
         if (output) {
             close(fds[0]);
-            dup2(fds[1], 1);
-            dup2(fds[1], 2);
+            if (dup2(fds[1], 1) < 0 || dup2(fds[1], 2) < 0) {
+                (void)!write(2, setup_failed, sizeof setup_failed - 1); /* a child that cannot report further */
+                _exit(SNX_CHILD_EXIT_SETUP);
+            }
             close(fds[1]);
         }
         if (cwd && chdir(cwd)) _exit(126);
