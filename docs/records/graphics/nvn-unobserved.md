@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- Copyright 2026 the NXAevora contributors -->
 # NVN unobserved functions: coverage and checks (phase 6, stage 4)
 
 Decided on 2026-11-02. This part was in `docs/records/graphics/nvn-design.md` until 2026-11-11. The design of the host layer

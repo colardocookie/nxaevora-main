@@ -1,3 +1,6 @@
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- Copyright 2026 the NXAevora contributors -->
+
 # ScarletNX build notes (Windows, MSYS2 CLANG64)
 
 This file records how `engine` was built on Windows. For the official steps, see the section

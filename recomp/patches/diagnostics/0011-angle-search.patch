@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the NXAevora contributors
 diff --git a/src/nx/runtime/gtrace.c b/src/nx/runtime/gtrace.c
 --- a/src/nx/runtime/gtrace.c
 +++ b/src/nx/runtime/gtrace.c

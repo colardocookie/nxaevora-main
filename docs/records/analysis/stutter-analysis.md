@@ -1,3 +1,6 @@
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- Copyright 2026 the NXAevora contributors -->
+
 # Stutter analysis
 
 Subject: the short stops that the user sees in the recompiled game. Data: the logs of the runs F to J (see
