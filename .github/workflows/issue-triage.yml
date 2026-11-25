@@ -1,0 +1,55 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the NXAevora contributors
+#
+# Add the label needs-triage to an issue that lacks a type, size or priority label, and remove it when the issue has
+# all three groups. A label change made with the workflow token does not start a new run, so this does not loop.
+name: Issue triage
+
+on:
+  issues:
+    types: [opened, reopened, labeled, unlabeled]
+
+permissions:
+  contents: read
+  issues: write
+
+# One run at a time for each issue, so that a run with an older label list cannot finish after a newer one. GitHub
+# keeps only the newest waiting run.
+concurrency:
+  group: issue-triage-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  triage:
+    name: Issue triage
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: ${{ !github.event.issue.pull_request }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Update the needs-triage label
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          HAS_TRIAGE: ${{ contains(github.event.issue.labels.*.name, 'needs-triage') }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          result="$(python tools/check_labels.py --triage)"
+          if [ "$result" = "needs-triage=true" ]; then
+            if [ "$HAS_TRIAGE" != "true" ]; then
+              gh issue edit "$ISSUE_NUMBER" --add-label needs-triage
+            fi
+          else
+            if [ "$HAS_TRIAGE" = "true" ]; then
+              gh issue edit "$ISSUE_NUMBER" --remove-label needs-triage
+            fi
+          fi

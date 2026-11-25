@@ -25,6 +25,7 @@
 
 ## Checklist
 
+- [ ] This pull request has one type label, one size label and one priority label.
 - [ ] This pull request has no keys, dumps, extracted game files, saves, logs with game data, or shader and texture dumps.
 - [ ] Each new file starts with the `SPDX-License-Identifier: GPL-3.0-or-later` line and the copyright line of the project.
 - [ ] Ported code keeps its copyright lines, names its source and is listed in the credits. It is not GPL-2.0-only (for example Atmosphere).
