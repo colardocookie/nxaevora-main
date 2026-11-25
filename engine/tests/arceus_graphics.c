@@ -49,8 +49,8 @@ static const char* const want_aa[ARCEUS_AA_COUNT][5] = {
     {"taa", "object", "1", "1", "dlss"},
     {"taa", "object", "1", "1", "xess"},
 };
-static const char* const want_scale[ARCEUS_SCALE_COUNT] = {NULL, "3/4", "2/3", "1/2"};
-static const float want_value[ARCEUS_SCALE_COUNT] = {1.0f, 0.75f, (float)(2.0 / 3.0), 0.5f};
+static const char* const want_scale[ARCEUS_SCALE_COUNT] = {NULL, "3/4", "2/3", "3/5", "1/2"};
+static const float want_value[ARCEUS_SCALE_COUNT] = {1.0f, 0.75f, (float)(2.0 / 3.0), (float)(3.0 / 5.0), 0.5f};
 
 static void check_map(int aa, int scale, int fixed) {
     const ArceusGraphicsRows rows = {aa, scale, fixed};
@@ -92,7 +92,7 @@ int main(void) {
     for (int aa = 0; aa < ARCEUS_AA_COUNT; aa++)
         for (int scale = 0; scale < ARCEUS_SCALE_COUNT; scale++)
             for (int fixed = 0; fixed <= 1; fixed++, combinations++) check_map(aa, scale, fixed);
-    assert(combinations == 40);
+    assert(combinations == 50);
     /* the defaults hand the code nothing, and a value out of its range reads as its row's default */
     const char* out[ARCEUS_GFX_NAMES];
     const ArceusGraphicsRows defaults = ARCEUS_GRAPHICS_ROWS_DEFAULT;

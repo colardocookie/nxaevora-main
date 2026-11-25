@@ -1045,21 +1045,23 @@ setting Arceus upscaling
     words Off|TAA (experimental)|FSR (experimental)|DLSS (experimental)|XeSS (experimental)
     help For Pokemon Legends: Arceus only, which other games leave out. Off = the game's own picture. TAA = temporal
     help anti-aliasing over several frames. FSR, DLSS and XeSS = an upscaler, which also smooths edges and can draw the
-    help scene smaller (Scene scale). When an upscaler's library is not beside the program, the run uses TAA at native
+    help scene smaller (Upscaling quality). When an upscaler's library is not beside the program, the run uses TAA at native
     help size, with a line in the log. When the graphics card refuses it later at start, the upscaler is left out and
     help the scene stays at its chosen size, which the game then stretches over the screen.
     help The page is not used for a run whose environment sets SNX_ARCEUS_UPSCALER, _SCENE_SCALE, _FIXED_RESOLUTION,
     help _TEMPORAL, _TEMPORAL_VECTORS, _TEMPORAL_LINKS or _TEMPORAL_RECT, or SNX_ARCEUS_MENU=0
 setting Arceus scene scale
     key arceus_scene_scale
-    label Scene scale
-    int 0 3
+    label Upscaling quality
+    int 0 4
     default 0
     once
     startup
-    words Native|3/4 (experimental)|2/3 (experimental)|1/2 (experimental)
+    words Native|Ultra Quality (experimental)|Quality (experimental)|Balanced (experimental)|Performance (experimental)
     help For Pokemon Legends: Arceus only. The size the game draws its 3D scene at, before the upscaler brings it to
-    help the render resolution. Used only with FSR, DLSS or XeSS
+    help the render resolution, in width and height: Native the full size, Ultra Quality 3/4, Quality 2/3, Balanced
+    help 3/5 and Performance 1/2 of it. For a 3840x2160 picture: 2880x1620, 2560x1440, 2304x1296 and 1920x1080. Used
+    help only with FSR, DLSS or XeSS, with the same words for each
 setting Arceus fixed resolution
     key arceus_fixed_resolution
     label Fixed resolution

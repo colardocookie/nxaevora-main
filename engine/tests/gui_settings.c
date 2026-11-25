@@ -624,7 +624,8 @@ int main(int argc, char** argv) {
         static const char arceus[] =
             "Arceus graphics\tarceus_upscaling\t\tint\t0\t4\tAA\tAnti-aliasing and upscaling\t0=Off|1=TAA|2=FSR|3=DLSS|"
             "4=XeSS\n"
-            "Arceus graphics\tarceus_scene_scale\t\tint\t0\t3\tScale\tScene scale\t0=Native|1=3/4|2=2/3|3=1/2\n"
+            "Arceus graphics\tarceus_scene_scale\t\tint\t0\t4\tQuality\tUpscaling quality\t0=Native|1=Ultra Quality|"
+            "2=Quality|3=Balanced|4=Performance\n"
             "Arceus graphics\tarceus_fixed_resolution\t\tint\t0\t1\tFixed\tFixed resolution\t0=Off|1=On\n";
         static const char taa_four[] = "set SNX_ARCEUS_TEMPORAL=taa\nset SNX_ARCEUS_TEMPORAL_VECTORS=object\n"
                                        "set SNX_ARCEUS_TEMPORAL_LINKS=1\nset SNX_ARCEUS_TEMPORAL_RECT=1\n";
@@ -636,19 +637,24 @@ int main(int argc, char** argv) {
             {"@echo off\r\nset SNX_ARCEUS_TEMPORAL=taa\r\nset SNX_ARCEUS_TEMPORAL_VECTORS=object\r\n"
              "set SNX_ARCEUS_TEMPORAL_LINKS=1\r\nset SNX_ARCEUS_TEMPORAL_RECT=1\r\nset SNX_ARCEUS_UPSCALER=dlss\r\n"
              "set SNX_ARCEUS_SCENE_SCALE=0.5\r\nset SNX_ARCEUS_MOVEMENT_SITES=1ff\r\nscarletnx.exe\r\n",
-             1, "3", "3", "1", "Taken from the file: DLSS, scene scale 1/2, fixed resolution On"},
+             1, "3", "4", "1", "Taken from the file: DLSS, upscaling quality Performance, fixed resolution On"},
             {"$env:SNX_ARCEUS_TEMPORAL = \"taa\"\n$env:SNX_ARCEUS_TEMPORAL_VECTORS='object'\n"
              "export SNX_ARCEUS_TEMPORAL_LINKS=1\nset \"SNX_ARCEUS_TEMPORAL_RECT=1\"\n  set snx_arceus_upscaler=fsr  \n"
              "SNX_ARCEUS_SCENE_SCALE=2of3\n",
-             1, "2", "2", "1", "Taken from the file: FSR, scene scale 2/3, fixed resolution On"},
+             1, "2", "2", "1", "Taken from the file: FSR, upscaling quality Quality, fixed resolution On"},
+            {"set SNX_ARCEUS_TEMPORAL=taa\nset SNX_ARCEUS_TEMPORAL_VECTORS=object\nset SNX_ARCEUS_TEMPORAL_LINKS=1\n"
+             "set SNX_ARCEUS_TEMPORAL_RECT=1\nset SNX_ARCEUS_UPSCALER=xess\nset SNX_ARCEUS_SCENE_SCALE=0.6\n",
+             1, "4", "3", "1", "Taken from the file: XeSS, upscaling quality Balanced, fixed resolution On"},
             {"SNX_ARCEUS_FIXED_RESOLUTION=0\nSNX_ARCEUS_TEMPORAL_VECTORS=object\nSNX_ARCEUS_UPSCALER=off\n", 1,
              "0", "0", "0",
-             "Taken from the file: Off, scene scale Native, fixed resolution Off"},
+             "Taken from the file: Off, upscaling quality Native, fixed resolution Off"},
             {"SNX_ARCEUS_FIXED_RESOLUTION=1\nSNX_ARCEUS_SCENE_SCALE=1\n", 1, "0", "0", "1",
-             "Taken from the file: Off, scene scale Native, fixed resolution On"},
+             "Taken from the file: Off, upscaling quality Native, fixed resolution On"},
             {"set SNX_ARCEUS_UPSCALER=spatial\n", 0, NULL, NULL, NULL,
              "SNX_ARCEUS_UPSCALER=spatial has no choice on this page: nothing changed"},
             {"set SNX_ARCEUS_TEMPORAL=taa\nset SNX_ARCEUS_FIXED_RESOLUTION=0\n", 0, NULL, NULL, NULL,
+             "The file's lines together are no choice of this page: nothing changed"},
+            {"set SNX_ARCEUS_TEMPORAL=taa\nset SNX_ARCEUS_SCENE_SCALE=1/2\n", 0, NULL, NULL, NULL, /* the last scale */
              "The file's lines together are no choice of this page: nothing changed"},
             {"set SNX_ARCEUS_MOVEMENT_SITES=1ff\nREM SNX_ARCEUS_UPSCALER=dlss\n", 0, NULL, NULL, NULL,
              "The file sets none of this page's switches: nothing changed"},

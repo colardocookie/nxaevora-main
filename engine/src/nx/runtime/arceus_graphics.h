@@ -12,7 +12,15 @@
    else the rows' value. */
 
 enum { ARCEUS_AA_OFF, ARCEUS_AA_TAA, ARCEUS_AA_FSR, ARCEUS_AA_DLSS, ARCEUS_AA_XESS, ARCEUS_AA_COUNT };
-enum { ARCEUS_SCALE_NATIVE, ARCEUS_SCALE_3_4, ARCEUS_SCALE_2_3, ARCEUS_SCALE_1_2, ARCEUS_SCALE_COUNT };
+/* the upscaling quality row: Native, Ultra Quality, Quality, Balanced and Performance, by the scale each gives */
+enum {
+    ARCEUS_SCALE_NATIVE,
+    ARCEUS_SCALE_3_4,
+    ARCEUS_SCALE_2_3,
+    ARCEUS_SCALE_3_5,
+    ARCEUS_SCALE_1_2,
+    ARCEUS_SCALE_COUNT
+};
 enum {
     ARCEUS_GFX_TEMPORAL,
     ARCEUS_GFX_VECTORS,
@@ -59,7 +67,7 @@ static inline const char* arceus_graphics_overridden(void) {
 /* the rows to the seven values, each a text or NULL for not set. Inline for the launcher's import as well */
 static inline void arceus_graphics_map(const ArceusGraphicsRows* rows, const char* out[ARCEUS_GFX_NAMES]) {
     static const char* const upscalers[ARCEUS_AA_COUNT] = {NULL, NULL, "fsr", "dlss", "xess"};
-    static const char* const scales[ARCEUS_SCALE_COUNT] = {NULL, "3/4", "2/3", "1/2"};
+    static const char* const scales[ARCEUS_SCALE_COUNT] = {NULL, "3/4", "2/3", "3/5", "1/2"};
     const int aa = rows->aa >= 0 && rows->aa < ARCEUS_AA_COUNT ? rows->aa : ARCEUS_AA_OFF;
     const int scale = rows->scale >= 0 && rows->scale < ARCEUS_SCALE_COUNT ? rows->scale : ARCEUS_SCALE_NATIVE;
     const int temporal = aa != ARCEUS_AA_OFF;

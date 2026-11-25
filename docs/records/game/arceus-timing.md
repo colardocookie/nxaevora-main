@@ -576,15 +576,17 @@ count those frames.
 ## Graphics page
 
 The Settings have a page for this game, Arceus graphics, with three rows: anti-aliasing and upscaling (Off, TAA,
-FSR, DLSS, XeSS), scene scale (Native, 3/4, 2/3, 1/2) and fixed resolution (On, Off). The launcher shows it for every
-game, since its Settings have no game of their own, and each row's help says it is for this game alone. The in-game
-window shows it only while this game runs. All three are startup rows and are written to the `.ini` only once set.
+FSR, DLSS, XeSS), upscaling quality (Native, Ultra Quality, Quality, Balanced, Performance: the scene at 1, 3/4,
+2/3, 3/5 and 1/2 of the size in width and height, the same words for each upscaler) and fixed resolution (On, Off).
+The launcher shows it for every game, since its Settings have no game of their own, and each row's help says it is
+for this game alone. The in-game window shows it only while this game runs. All three are startup rows and are
+written to the `.ini` only once set.
 
 `runtime/arceus_graphics.c` maps the rows to seven switches: `SNX_ARCEUS_TEMPORAL`, `_TEMPORAL_VECTORS`,
 `_TEMPORAL_LINKS`, `_TEMPORAL_RECT`, `_UPSCALER`, `_SCENE_SCALE` and `_FIXED_RESOLUTION`. The rows hand out only the
 sets that were played. Off sets nothing but `SNX_ARCEUS_FIXED_RESOLUTION=0` when its row is Off. TAA sets `taa`,
-`object`, `1` and `1`. FSR, DLSS and XeSS set the same four and their upscaler, and the scene scale's text when it is
-not Native. The fixed resolution stays at its default, on, with TAA and with every upscaler. At their defaults the
+`object`, `1` and `1`. FSR, DLSS and XeSS set the same four and their upscaler, and the quality's scale as `p/q` when
+it is not Native. The fixed resolution stays at its default, on, with TAA and with every upscaler. At their defaults the
 rows set nothing, so a run with the page untouched is the run without it.
 
 The readers of the seven call `arceus_graphics()` in place of `getenv`. It gives the environment's value for all

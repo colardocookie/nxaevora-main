@@ -516,7 +516,7 @@ static const char* arceus_line_value(const char* line, const char* name, char* o
 /* a switch's value as its reader takes it: one that reads as unset is NULL, and a scale is written as the rows
    write it */
 static const char* arceus_as_read(int i, const char* v, const char* temporal) {
-    static const char* const fractions[3] = {"3/4", "2/3", "1/2"};
+    static const char* const fractions[ARCEUS_SCALE_COUNT - 1] = {"3/4", "2/3", "3/5", "1/2"};
     if (!v) return NULL;
     switch (i) {
     case ARCEUS_GFX_TEMPORAL: return strcmp(v, "taa") && strcmp(v, "probe") ? NULL : v; /* temporal.c temporal_on */
@@ -528,7 +528,7 @@ static const char* arceus_as_read(int i, const char* v, const char* temporal) {
     case ARCEUS_GFX_SCENE_SCALE: {
         float scale, each;
         if (arceus_scene_scale_parse(v, &scale) == ARCEUS_SCENE_SCALE_OFF) return NULL;
-        for (int k = 0; k < 3; ++k)
+        for (int k = 0; k < ARCEUS_SCALE_COUNT - 1; ++k)
             if (arceus_scene_scale_parse(fractions[k], &each) == ARCEUS_SCENE_SCALE_USED && each == scale)
                 return fractions[k];
         return v;
@@ -540,7 +540,8 @@ static int arceus_same(const char* a, const char* b) { return a == b || (a && b 
 
 int gui_settings_arceus_import(GuiSettings* s, const char* text, char* said, size_t size) {
     static const char* const aa_words[ARCEUS_AA_COUNT] = {"Off", "TAA", "FSR", "DLSS", "XeSS"};
-    static const char* const scale_words[ARCEUS_SCALE_COUNT] = {"Native", "3/4", "2/3", "1/2"};
+    static const char* const scale_words[ARCEUS_SCALE_COUNT] = {"Native", "Ultra Quality", "Quality", "Balanced",
+                                                                 "Performance"};
     char raw[ARCEUS_GFX_NAMES][256], value[64];
     const char* file[ARCEUS_GFX_NAMES] = {NULL};
     const char* read[ARCEUS_GFX_NAMES];
@@ -577,15 +578,15 @@ int gui_settings_arceus_import(GuiSettings* s, const char* text, char* said, siz
                     snprintf(said, size, "These Settings have no Arceus graphics page to take them");
                     return 0;
                 }
-                snprintf(said, size, "Taken from the file: %s, scene scale %s, fixed resolution %s", aa_words[aa],
+                snprintf(said, size, "Taken from the file: %s, upscaling quality %s, fixed resolution %s", aa_words[aa],
                          scale_words[scale], fixed ? "On" : "Off");
                 return 1;
             }
     /* none: the first line whose value no choice gives, else the lines together */
     for (int i = 0; i < ARCEUS_GFX_NAMES; ++i) {
         int found = !read[i];
-        for (int k = 0; k < 40 && !found; ++k) {
-            const ArceusGraphicsRows rows = {k / 8, k / 2 % 4, k % 2};
+        for (int k = 0; k < ARCEUS_AA_COUNT * ARCEUS_SCALE_COUNT * 2 && !found; ++k) {
+            const ArceusGraphicsRows rows = {k / (2 * ARCEUS_SCALE_COUNT), k / 2 % ARCEUS_SCALE_COUNT, k % 2};
             const char* mapped[ARCEUS_GFX_NAMES];
             arceus_graphics_map(&rows, mapped);
             found = arceus_same(mapped[i], read[i]);
