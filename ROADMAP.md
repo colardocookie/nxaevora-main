@@ -213,7 +213,7 @@ The work has five reviewable units:
 3. CLI: the commands, the settings file, the paths, the exit codes, and a progress and error stream that the launcher
    reads. A normal run needs no dialog. An error before the window shows on stderr and in the log. One settings
    definition serves the CLI, the launcher and the in-game UI.
-4. New UI base: a small prototype with RmlUi and with Flutter in the game decides the base. Then the needed in-game
+4. New UI base: RmlUi (user decision 2026-11-25). A small prototype in the game checks it. Then the needed in-game
    functions move to it, with shared MD3 design values.
 5. Removal of Dear ImGui and the old UIs, with their code, settings and build dependencies.
 
