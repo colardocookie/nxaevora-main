@@ -66,8 +66,8 @@ pull requests, a design decision, a recompile or several game scenes.
 `priority: high` is a crash, a blocker for play or a broken CI. `priority: medium` is a visible bug or work of the
 current roadmap phase. `priority: low` is an optional improvement or a clean-up.
 
-The workflow `Label check` fails a pull request that lacks a label of a group, or has more than one size or priority
-label. An issue without these labels gets `needs-triage` until a maintainer labels it.
+A maintainer checks the labels of a pull request in the review. An issue without these labels gets `needs-triage`
+until a maintainer labels it.
 
 ## Checks
 
