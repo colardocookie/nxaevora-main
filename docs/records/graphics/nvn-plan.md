@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- Copyright 2026 the NXAevora contributors -->
 # Phase 6 plan: NVN on the host, drawn with Vulkan
 
 This is the plan for phase 6 of `ROADMAP.md`. It has five stages. A stage ends when its exit condition is true. The next

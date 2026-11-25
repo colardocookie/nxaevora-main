@@ -193,9 +193,6 @@ char* snx_checkout(const char* checkout, const char* build, const char* program_
 extern const char* const snx_checkout_files[SNX_CHECKOUT_FILES];
 char* snx_checkout_now(const char* data, int file);
 void snx_checkout_left(const char* checkout, const char* data);
-/* A dump file's name without its extension, kept to letters, digits, UTF-8, spaces, '-' and '_', trailing spaces cut;
-   "Game" when nothing is left (the launcher names its games by it) */
-char* snx_dump_name(const char* input);
 /* 0 for a name that is not an encrypted Switch dump (.nsp, .xci, .dnsp, .dxci, any case), else 1 with the line that
    says so: such a dump is no longer read, the decrypted game folder is (-r <folder>) */
 int snx_refuse_encrypted_dump(const char* path);

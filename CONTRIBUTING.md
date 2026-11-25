@@ -51,6 +51,36 @@ You cannot port code that is GPL-2.0-only. Atmosphere is GPL-2.0-only. You can r
 but do not port it. The main references are Switchbrew and the behavior of the SDK, which you can read from the
 disassembly of the game.
 
+## Labels
+
+Each issue and each pull request has labels from three groups.
+
+- Type: at least one of `bug`, `enhancement`, `graphics`, `documentation`, `accessibility` and `question`.
+- Size: exactly one of `size: small`, `size: medium` and `size: large`.
+- Priority: exactly one of `priority: low`, `priority: medium` and `priority: high`.
+
+`size: small` changes one place. It has no design decision, no recompile and no game run. `size: medium` changes
+several files in one pull request. It needs a review by the maintainers or one game scene. `size: large` needs several
+pull requests, a design decision, a recompile or several game scenes.
+
+`priority: high` is a crash, a blocker for play or a broken CI. `priority: medium` is a visible bug or work of the
+current roadmap phase. `priority: low` is an optional improvement or a clean-up.
+
+A maintainer checks the labels of a pull request in the review. An issue without these labels gets `needs-triage`
+until a maintainer labels it.
+
+## Checks
+
+The workflow `Repository checks` runs these commands for each pull request and each push to `main`:
+
+- `python -m py_compile tools/*.py` compiles the tools scripts.
+- `python -m unittest discover -s tools -p "test_*.py"` runs the tests of the tools.
+- `python tools/check_spdx.py` fails when a tracked file has no license header. Each of the two header lines must be
+  one complete comment line, so a multi-line block comment is not accepted.
+- `python tools/check_game_data.py` fails when a tracked file is game data or holds a key.
+
+Run the same commands before you send a pull request.
+
 ## Changing the engine
 
 `engine` is a copy of the upstream project (commit 8efbf9c4), kept in this repository. Edit it like any other source.

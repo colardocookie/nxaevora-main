@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- Copyright 2026 the NXAevora contributors -->
 # NVN design: the choice of the way (phase 6, stage 2)
 
 This file compares the two ways of `docs/records/graphics/nvn-plan.md` and holds the design of the chosen way. The input is

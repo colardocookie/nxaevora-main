@@ -420,9 +420,14 @@ exit code and a message on stderr and in the log, and a test reads the progress 
 
 ## Unit 4: New UI base and the move of the functions
 
-### Selection between RmlUi and Flutter
+### RmlUi prototype
 
-Make the same small prototype with each candidate, inside the game window, on a branch that is not merged:
+The UI base is RmlUi (user decision 2026-11-25). Flutter was checked and dropped. The Flutter embedder that Flutter
+publishes for Windows x64 is a debug (JIT) build only, so a release build needs an engine build from source, which
+Flutter does not support for custom embedders. Flutter also needs the Dart toolchain and its own engine library
+(about 38 MB) in the release.
+
+Make a small prototype with RmlUi, inside the game window, on a branch that is not merged:
 
 - a settings panel with five rows generated from the settings definition (a switch, a slider, a choice list, a
   number, a text),
@@ -439,7 +444,7 @@ Check in the game:
 - DPI scaling on a display with a scale above 100 percent,
 - the CPU time and the GPU time for each frame with the panel open and closed.
 
-Compare also, from the documentation and the source:
+Record for RmlUi, from the documentation and the source:
 
 - the MD3 parts that must be written by hand (buttons, switches, sliders, lists, dialogs, text fields, the state
   layers of hover, focus, press and disabled),
@@ -449,7 +454,7 @@ Compare also, from the documentation and the source:
 - the files and the size that the release must ship, the license, and the build in MSYS2 CLANG64 and in CI,
 - the work to keep it up to date.
 
-Write the result and the choice in this file. The user decides.
+Write the result in this file. If RmlUi fails a check, the user decides the next step.
 
 ### Shared design values
 
@@ -516,7 +521,7 @@ settings panel opened and closed, a battle, and a switch between window and full
 - A removal of unit 1.5 can delete code that the Switch driver or the Linux host shares. The inventory of each PR
   lists the shared code first.
 - A second UI base on the render thread can break the lock order, as with Dear ImGui.
-- Flutter needs its own engine library and runtime in the release. RmlUi needs more MD3 parts made by hand.
+- RmlUi has no MD3 controls, so each control and its states (hover, focus, press, disabled) are made by hand.
 - The Japanese IME was only partly done with Dear ImGui (no composition text). The new base must do better, or at
   least the same.
 - The start GUI holds functions that the launcher does not have yet. Until phase 11, the CLI is the only way to do

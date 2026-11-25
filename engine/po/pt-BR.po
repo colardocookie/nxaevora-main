@@ -12,7 +12,6 @@ msgstr ""
 "Language-Team: ScarletNX <https://github.com/scarletnx/ScarletNX>\n"
 "X-Language-Name: Português (Brasil)\n"
 
-#: src/gui/apple.m
 #, c-format
 msgid "The log could not be shown: it is at %s"
 msgstr "Não foi possível mostrar o log: ele está em %s"
@@ -2062,10 +2061,6 @@ msgstr "Salva a saída e o log de jogo da última execução em scarletnx.log na
 #: src/gui/process_posix.c src/gui/process_win32.c
 msgid "A driver is already running"
 msgstr "Já há um driver rodando"
-
-#: src/gui/process_posix.c
-msgid "iOS runs no other programs: prepare games on a computer, then copy them to games/"
-msgstr "O iOS não roda outros programas: prepare os jogos num computador e depois copie-os para games/"
 
 #: src/gui/process_posix.c
 #, c-format

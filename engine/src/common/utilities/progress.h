@@ -26,6 +26,11 @@
 
 /* --progress=jsonl or --progress=jsonl-stage: its mode, -1 for any other value */
 int snx_progress_parse(const char* arg);
+/* 1 for --progress and any --progress=..., 0 for any other argument (NULL too) */
+int snx_progress_is_option(const char* arg);
+/* Opens the stream of an internal child stage (--progress=jsonl-stage before --) before any option is read. The driver
+   gives it to its children, which write to the parent's private stream; 0, or nonzero after snx_error */
+int snx_progress_open_stage(int argc, char** argv);
 /* makes fd 1 a copy of fd 2 and opens the stream on the old fd 1; 0, or nonzero after snx_error */
 int snx_progress_open(int mode);
 /* the mode of this process, SNX_PROGRESS_OFF when the stream is off */
@@ -61,9 +66,10 @@ void snx_progress_finish(int code);
 #define SNX_CHILD_INTERRUPTED 4  /* the parent was interrupted (Ctrl+C) */
 /* Puts the private stream on fd 1 for the spawn of a child, and stderr back after it returns (driver.c). Only a child
    that ended by itself with a nonzero code wrote its own error line, so only then does the restore clear the noted
-   error; after an interrupt, a signal or a failed start the parent keeps it for snx_progress_finish */
-void snx_progress_child_redirect(void);
-void snx_progress_child_restore(int child_result);
+   error; after an interrupt, a signal or a failed start the parent keeps it for snx_progress_finish. 0, or nonzero
+   with errno when the dup2 fails: the caller reports it */
+int snx_progress_child_redirect(void);
+int snx_progress_child_restore(int child_result);
 /* tests: sends the stream to out instead of a duplicated stdout; NULL detaches */
 void snx_progress_test_attach(FILE* out, int mode);
 

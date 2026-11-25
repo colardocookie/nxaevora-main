@@ -76,6 +76,29 @@ int main(void) {
     assert(!strcmp(why, strerror(ENOENT)));
 #endif
     printf("a file not there: %s\n", why);
+    /* snx_list_dir refuses a path that is a file and one that is not there, and leaves the outputs as they were */
+    {
+        char** names = (char**)1;
+        size_t count = 1;
+        errno = 0;
+        assert(snx_list_dir(file, &names, &count) == 1);
+        assert(names == (char**)1 && count == 1);
+        snx_os_error(why, sizeof why);
+        assert(why[0]);
+#ifndef _WIN32
+        assert(!strcmp(why, strerror(ENOTDIR)));
+#endif
+        printf("a folder that is a file: %s\n", why);
+        errno = 0;
+        assert(snx_list_dir(missing, &names, &count) == 1);
+        assert(names == (char**)1 && count == 1);
+        snx_os_error(why, sizeof why);
+        assert(why[0]);
+#ifndef _WIN32
+        assert(!strcmp(why, strerror(ENOENT)));
+#endif
+        printf("a folder not there: %s\n", why);
+    }
     /* a buffer too small is cut, never overrun */
     snx_os_error(why, 4);
     assert(strlen(why) <= 3);
