@@ -28,7 +28,7 @@ class FindGame(unittest.TestCase):
         if sys.platform == 'darwin':
             self.skipTest('the data folder is ~/Library/Application Support there, not one a variable names')
         self.home = tempfile.TemporaryDirectory()
-        self.data = Path(self.home.name) / 'scarletnx'
+        self.data = Path(self.home.name) / 'nxaevora'
         self.run_game = load(self.home.name)
 
     def tearDown(self):
@@ -57,7 +57,7 @@ class FindGame(unittest.TestCase):
         now = os.path.join(str(self.data), 'recompiled', 'G', 'G' + EXT)
         old = os.path.join(str(self.data), 'games', 'G', 'G' + EXT)
         self.assertEqual(
-            str(said.exception), 'neither %s nor %s exists: recompile the game (scarletnx -r)' % (now, old)
+            str(said.exception), 'neither %s nor %s exists: recompile the game (nxaevora-engine -r)' % (now, old)
         )
 
 

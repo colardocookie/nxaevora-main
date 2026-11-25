@@ -5,7 +5,7 @@
 
     tools/run_game.py 0100DA801624E000                        # one 60 s run of the New Game script
     tools/run_game.py 0100DA801624E000 --runs 5 --seconds 45  # five runs, for an intermittent bug
-    tools/run_game.py ~/.local/share/scarletnx/recompiled/0100DA801624E000 --script 15000:400 --out /tmp/x
+    tools/run_game.py ~/.local/share/nxaevora/recompiled/0100DA801624E000 --script 15000:400 --out /tmp/x
     tools/run_game.py Game --fps_limit=0                      # options it doesn't know go to the runtime
 
 The game is its folder in the user's data folder's recompiled/ (where the driver puts it when no --data names
@@ -33,11 +33,11 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 def data_folder():
     """The user's data folder, the driver's when no --data names one (snx_user_data_dir in common.c)"""
     if sys.platform == 'win32':
-        return os.path.join(os.environ.get('APPDATA', ''), 'scarletnx')
+        return os.path.join(os.environ.get('APPDATA', ''), 'nxaevora')
     if sys.platform == 'darwin':
-        return os.path.expanduser('~/Library/Application Support/scarletnx')
+        return os.path.expanduser('~/Library/Application Support/nxaevora')
     xdg = os.environ.get('XDG_DATA_HOME', '')  # the XDG spec ignores a relative one
-    return os.path.join(xdg if os.path.isabs(xdg) else os.path.expanduser('~/.local/share'), 'scarletnx')
+    return os.path.join(xdg if os.path.isabs(xdg) else os.path.expanduser('~/.local/share'), 'nxaevora')
 
 
 # where the driver puts a game (snx_recompiled_dir), and where an older version did, which still runs from there
@@ -96,8 +96,8 @@ def find_game(game):
     if os.path.isfile(old):
         return old
     if len(programs) == 1:
-        raise SystemExit('%s does not exist: recompile the game (scarletnx -r)' % programs[0])
-    raise SystemExit('neither %s nor %s exists: recompile the game (scarletnx -r)' % tuple(programs))
+        raise SystemExit('%s does not exist: recompile the game (nxaevora-engine -r)' % programs[0])
+    raise SystemExit('neither %s nor %s exists: recompile the game (nxaevora-engine -r)' % tuple(programs))
 
 
 def main():
@@ -115,7 +115,7 @@ def main():
         help='button script, "" for none (default: the New Game script of the game the fork is tested with)',
     )
     ap.add_argument('--out', help='folder for logs and screenshots')
-    ap.add_argument('--dump', help='extracted game folder, to name crash sites (e.g. ~/.cache/scarletnx/work/Game)')
+    ap.add_argument('--dump', help='decrypted game folder, to name crash sites (e.g. ~/.cache/nxaevora/work/Game)')
     ap.add_argument('args', nargs='*', help='more runtime options, e.g. --fps_limit=0 (with or without -- before them)')
     a, unknown = ap.parse_known_args()
     a.args += unknown

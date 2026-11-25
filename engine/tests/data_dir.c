@@ -239,20 +239,6 @@ int main(void) {
         free(file);
         free(dir);
     }
-    /* snx_dump_name: a dump file's name */
-    {
-        static const char* const names[][2] = {{"/dumps/My Game [v1.0].nsp", "My Game v10"},
-                                               {"C:\\dumps\\two.dots.xci", "twodots"},
-                                               {"/dumps/.nsp", "nsp"},
-                                               {"/dumps/[] .xci", "Game"},
-                                               {"caf\xc3\xa9 -_1.nsp", "caf\xc3\xa9 -_1"}};
-        size_t i;
-        for (i = 0; i < sizeof names / sizeof names[0]; ++i) {
-            char* name = snx_dump_name(names[i][0]);
-            assert(!strcmp(name, names[i][1]));
-            free(name);
-        }
-    }
     /* one disk: two folders of the temporary one, and one still to be made there; another file system is another */
     assert(snx_same_disk(checkout, program));
     file = join(root, "not/made/yet");

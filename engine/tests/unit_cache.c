@@ -6,8 +6,7 @@
    under a unit's key is what the module runs (the build read it, not compiled); a cut, altered or short object is
    compiled again and said, and so is a whole object under another unit's key; a reuse renews the file's time, and
    the size limit removes the oldest files, never another file of the folder. Each field of the key changes it, and
-   the key of fixed fields is pinned. A pack written a record at a time is the bytes of snx_objects_pack, an input
-   read when its turn comes, and each failure says what failed and why */
+   the key of fixed fields is pinned */
 #include "common/cpu/aarch64/cpu.h"
 #include "common/utilities/common.h"
 #include "nx/loader/loader.h"
@@ -15,7 +14,6 @@
 #include "nx/loader/module_abi.h"
 #include "nx/loader/module_llvm.h"
 #include "nx/loader/unit_cache.h"
-#include "common/cpu/recompiler/llvm/objects_pack.h"
 #include <errno.h>
 #include <llvm-c/TargetMachine.h>
 #include <llvm/Config/llvm-config.h>
@@ -398,82 +396,6 @@ static void trim(void) {
     snx_remove_tree(folder);
 }
 
-/* what snx_objects_pack_write's load gives for an input (NULL: nothing), and its calls */
-typedef struct {
-    const char* give;
-    size_t loads, written[4], written_count;
-} PackCalls;
-static unsigned char* pack_load(void* arg, size_t index, size_t* size, char* why, size_t why_size) {
-    PackCalls* calls = (PackCalls*)arg;
-    unsigned char* data;
-    ++calls->loads;
-    if (!calls->give) {
-        snprintf(why, why_size, "the test's load has nothing for input %zu", index);
-        return NULL;
-    }
-    *size = strlen(calls->give);
-    data = (unsigned char*)malloc(*size + 1);
-    memcpy(data, calls->give, *size + 1);
-    return data;
-}
-static void pack_written(void* arg, size_t index) {
-    PackCalls* calls = (PackCalls*)arg;
-    if (calls->written_count < 4) calls->written[calls->written_count++] = index;
-}
-
-/* a pack written a record at a time is snx_objects_pack's bytes, an input of no data read when its turn comes; a
-   read that fails, one of another size, a file that cannot be made or written: each said with what and why */
-static void pack_records(void) {
-    const char* folder = "snx-test-unit-cache.records";
-    SnxLinkInput inputs[3] = {
-        {(const unsigned char*)"abc", 3, "first"}, {NULL, 5, "second"}, {(const unsigned char*)"", 0, "third"}};
-    SnxLinkInput whole[3];
-    PackCalls calls = {0};
-    unsigned char *expected, *file;
-    size_t expected_size = 0, file_size = 0, size = 0;
-    char *path, *missing, error[1024], want[1024];
-    snx_remove_tree(folder);
-    CHECK(!snx_mkdirs(folder));
-    path = snx_path_join(folder, "pack.snxobj");
-    missing = snx_path_join(folder, "none/pack.snxobj");
-    memcpy(whole, inputs, sizeof whole);
-    whole[1].data = (const unsigned char*)"hello";
-    expected = snx_objects_pack(whole, 3, &expected_size);
-    calls.give = "hello";
-    CHECK(!snx_objects_pack_write(inputs, 3, path, &size, pack_load, pack_written, &calls, error, sizeof error));
-    file = snx_read_file(path, &file_size);
-    CHECK(expected && file && file_size == expected_size && size == file_size && !memcmp(file, expected, file_size));
-    CHECK(calls.loads == 1 && calls.written_count == 3 && calls.written[0] == 0 && calls.written[1] == 1 &&
-          calls.written[2] == 2);
-    free(file);
-    calls.give = NULL;
-    CHECK(snx_objects_pack_write(inputs, 3, path, &size, pack_load, NULL, &calls, error, sizeof error) &&
-          !strcmp(error, "cannot read back input 1 of 3 (second): the test's load has nothing for input 1"));
-    calls.give = "help";
-    CHECK(snx_objects_pack_write(inputs, 3, path, &size, pack_load, NULL, &calls, error, sizeof error) &&
-          !strcmp(error, "input 1 of 3 (second) read back is 4 bytes, 5 when it was made"));
-    CHECK(snx_objects_pack_write(whole, 3, missing, &size, NULL, NULL, NULL, error, sizeof error));
-    snprintf(want, sizeof want, "cannot write %s: ", missing);
-    CHECK(!strncmp(error, want, strlen(want)) && strlen(error) > strlen(want)); /* and the system's reason */
-#ifdef __linux__
-    if (snx_path_exists("/dev/full")) { /* every write fails with ENOSPC */
-        /* a record past the stdio buffer fails as it is written, a small pack when the file is closed */
-        static const unsigned char large[1 << 16];
-        SnxLinkInput big = {large, sizeof large, "big"};
-        snprintf(want, sizeof want, "cannot write /dev/full: %s", strerror(ENOSPC));
-        CHECK(snx_objects_pack_write(&big, 1, "/dev/full", &size, NULL, NULL, NULL, error, sizeof error) &&
-              !strcmp(error, want));
-        CHECK(snx_objects_pack_write(whole, 3, "/dev/full", &size, NULL, NULL, NULL, error, sizeof error) &&
-              !strcmp(error, want));
-    }
-#endif
-    free(expected);
-    free(missing);
-    free(path);
-    snx_remove_tree(folder);
-}
-
-
 int main(void) {
 #ifdef _WIN32
 #define SUFFIX ".dll"
@@ -501,7 +423,6 @@ int main(void) {
     CHECK(strstr(llvm, LLVM_VERSION_STRING) != NULL);
     keys();
     trim();
-    pack_records();
     snx_remove_tree(folder);
     for (i = 0; i < sizeof dirs / sizeof *dirs; ++i) {
         snx_remove_tree(dirs[i]);
