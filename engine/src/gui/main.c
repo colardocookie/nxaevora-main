@@ -6526,7 +6526,7 @@ static unsigned group_icon(const char* name) {
                  {"Overlay", GUI_ICON_POINTER}, {"Mouse", GUI_ICON_POINTER},
                  {"Keyboard", GUI_ICON_KEY_ROUND}, {"Controllers", GUI_ICON_GAMEPAD_2},
                  {"Network", GUI_ICON_WIFI},    {"User", GUI_ICON_USER},
-                 {"Debug", GUI_ICON_BUG}};
+                 {"Arceus graphics", GUI_ICON_IMAGE}, {"Debug", GUI_ICON_BUG}};
     for (size_t i = 0; i < SDL_arraysize(icons); ++i)
         if (!strcmp(icons[i].name, name)) return icons[i].icon;
     return GUI_ICON_NONE;
