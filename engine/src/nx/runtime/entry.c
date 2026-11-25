@@ -29,15 +29,6 @@ static char* runtime_settings(void) {
     return text;
 }
 #endif
-/* Opens the stream of an internal child stage before the driver reads any option: the driver gives it to its children
-   and they write to the parent's private stream */
-static int open_stage_stream(int argc, char** argv) {
-    int i;
-    for (i = 1; i < argc && strcmp(argv[i], "--"); ++i)
-        if (snx_progress_parse(argv[i]) == SNX_PROGRESS_JSONL_STAGE)
-            return snx_progress_open(SNX_PROGRESS_JSONL_STAGE);
-    return 0;
-}
 int snx_switch_main(int argc, char** argv) {
     int result;
     char why[160];
@@ -56,7 +47,7 @@ int snx_switch_main(int argc, char** argv) {
         snx_progress_finish(result);
         return result;
     }
-    if (open_stage_stream(argc, argv)) return SNX_EXIT_INTERNAL;
+    if (snx_progress_open_stage(argc, argv)) return SNX_EXIT_INTERNAL;
 #ifdef SNX_WITH_GUI
     snx_menu = snx_gui_main;
     snx_menu_run_theme = gui_run_theme;
