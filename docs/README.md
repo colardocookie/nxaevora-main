@@ -24,6 +24,10 @@ These documents tell how the engine works now. They come from the code. The stat
 - [arceus-temporal.md](dev/engine/arceus-temporal.md): the temporal passes (`probe` and `taa`), the object vectors, the scene rectangle and the FSR, XeSS and DLSS adapters.
 - [arceus-pass-census.md](dev/engine/arceus-pass-census.md): the read-only frame pass census and its log lines.
 
+### ui
+
+- [engine-menu.md](dev/ui/engine-menu.md): the design of the engine menu (the in-game UI base, the frame, the theme, the components, the motion and the migration).
+
 The launcher specification comes later.
 
 ## Records

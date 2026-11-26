@@ -3,6 +3,8 @@
 
 # Phase 7.5: NXAevora Engine, the CLI and the new UI
 
+Status (2026-11-26): the UI base is Dear ImGui 1.93.0 with its own MD3-style widgets. RmlUi was dropped, and Dear ImGui is not replaced. The current design is in [engine-menu.md](../../dev/ui/engine-menu.md).
+
 Status: plan only. No code is changed, no file is moved and no dependency is added yet. The roadmap entry is
 `ROADMAP.md`, "Phase 7.5". This file holds the details. It replaces the plan of the Dear ImGui windows
 (`imgui-plan.md`), which is now the old plan and stays as history.
@@ -420,14 +422,14 @@ exit code and a message on stderr and in the log, and a test reads the progress 
 
 ## Unit 4: New UI base and the move of the functions
 
-### RmlUi prototype
+### RmlUi prototype (dropped)
 
-The UI base is RmlUi (user decision 2026-11-25). Flutter was checked and dropped. The Flutter embedder that Flutter
+The UI base was RmlUi (user decision 2026-11-25). Flutter was checked and dropped. The Flutter embedder that Flutter
 publishes for Windows x64 is a debug (JIT) build only, so a release build needs an engine build from source, which
 Flutter does not support for custom embedders. Flutter also needs the Dart toolchain and its own engine library
 (about 38 MB) in the release.
 
-Make a small prototype with RmlUi, inside the game window, on a branch that is not merged:
+Dropped: make a small prototype with RmlUi, inside the game window, on a branch that is not merged:
 
 - a settings panel with five rows generated from the settings definition (a switch, a slider, a choice list, a
   number, a text),
@@ -444,7 +446,7 @@ Check in the game:
 - DPI scaling on a display with a scale above 100 percent,
 - the CPU time and the GPU time for each frame with the panel open and closed.
 
-Record for RmlUi, from the documentation and the source:
+Record for RmlUi (dropped), from the documentation and the source:
 
 - the MD3 parts that must be written by hand (buttons, switches, sliders, lists, dialogs, text fields, the state
   layers of hover, focus, press and disabled),
@@ -521,7 +523,7 @@ settings panel opened and closed, a battle, and a switch between window and full
 - A removal of unit 1.5 can delete code that the Switch driver or the Linux host shares. The inventory of each PR
   lists the shared code first.
 - A second UI base on the render thread can break the lock order, as with Dear ImGui.
-- RmlUi has no MD3 controls, so each control and its states (hover, focus, press, disabled) are made by hand.
+- RmlUi has no MD3 controls, so each control and its states (hover, focus, press, disabled) are made by hand. RmlUi was dropped as the UI base on 2026-11-26.
 - The Japanese IME was only partly done with Dear ImGui (no composition text). The new base must do better, or at
   least the same.
 - The start GUI holds functions that the launcher does not have yet. Until phase 11, the CLI is the only way to do
