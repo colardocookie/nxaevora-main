@@ -27,6 +27,11 @@ extern const char __ehdr_start[] __attribute__((weak, visibility("hidden")));
 
 #define NEAR_FUNCTION ((u64)1 << 20)   /* a host pc this far past a recompiled function's start is still in it */
 #define RUNTIME_WINDOW ((u64)256 << 20) /* the runtime's image is smaller than this */
+#if defined(_WIN32)
+#define MODULE_PATH_CHARS 260 /* MAX_PATH: the longest path GetModuleFileNameW returns without a cut */
+#define MODULE_NAME_BYTES (MODULE_PATH_CHARS * 4 + 1) /* UTF-8 of a path of MODULE_PATH_CHARS units, and its null */
+#define HOST_FRAMES 24        /* the host frames that a crash report shows, as the POSIX branch */
+#endif
 
 static const char* crash_kind(void* fault, int sig) {
 #if defined(_WIN32)
@@ -64,6 +69,28 @@ static int game_function_at(u64 pc, u64* guest, u64* offset) {
     return 1;
 }
 
+#if defined(_WIN32)
+/* the module that holds pc: its file name alone in name (UTF-8), and pc's offset from the module's base */
+static int module_of_address(const void* pc, char* name, size_t name_size, u64* offset) {
+    HMODULE module = NULL;
+    wchar_t path[MODULE_PATH_CHARS];
+    DWORD n, i;
+    /* GetModuleHandleExW and GetModuleFileNameW take the loader lock: this waits if another thread holds it */
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            (LPCWSTR)pc, &module) ||
+        !module)
+        return 0;
+    n = GetModuleFileNameW(module, path, MODULE_PATH_CHARS);
+    if (!n) return 0;
+    i = n;
+    while (i > 0 && path[i - 1] != L'\\' && path[i - 1] != L'/') i--;
+    /* -1: the UTF-8 copy keeps the terminating null that the log lines print */
+    if (WideCharToMultiByte(CP_UTF8, 0, path + i, -1, name, (int)name_size, NULL, NULL) <= 0) return 0;
+    *offset = (u64)(size_t)pc - (u64)(size_t)module;
+    return 1;
+}
+#endif
+
 /* where host_pc is: the game's code, or the runtime's own with its offset for addr2line */
 static void report_place(void* host_pc) {
     u64 pc = (u64)(size_t)host_pc, guest = 0, offset = 0;
@@ -95,6 +122,33 @@ static void report_place(void* host_pc) {
             WARN("  in the runtime itself (exe offset +%llx)\n", (unsigned long long)(pc - base));
             return;
         }
+    }
+#endif
+#if defined(_WIN32)
+    /* a library's: which one, at an offset, and the host frames that led there */
+    {
+        char name[MODULE_NAME_BYTES];
+        u64 offset = 0;
+        int found = module_of_address(host_pc, name, sizeof name, &offset);
+        if (found)
+            WARN("  in %s +%llx, on %s\n", name, (unsigned long long)offset,
+                 kthread_cur() ? "a game thread" : "one of the runtime's threads");
+        {
+            void* bt[HOST_FRAMES];
+            WORD n = CaptureStackBackTrace(0, HOST_FRAMES, bt, NULL);
+            WORD i;
+            logf_(0, "  host frames:");
+            for (i = 0; i < n; i++) {
+                char frame_name[MODULE_NAME_BYTES];
+                u64 frame_offset = 0;
+                if (module_of_address(bt[i], frame_name, sizeof frame_name, &frame_offset))
+                    logf_(0, " %s+%llx", frame_name, (unsigned long long)frame_offset);
+                else
+                    logf_(0, " %p", bt[i]);
+            }
+            logf_(0, "\n");
+        }
+        if (found) return;
     }
 #endif
 #if !defined(_WIN32)
