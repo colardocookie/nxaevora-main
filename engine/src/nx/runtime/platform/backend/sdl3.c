@@ -15,6 +15,7 @@
 #include "nx/runtime/platform/backend.h"
 #include "nx/runtime/platform/backend/imgui_sdl.h"
 #include "nx/runtime/platform/backend/keybind.h"
+#include "nx/gpu/vk/engine_menu.h"
 #include "nx/runtime/platform/prepare_screen.h"
 #include "nx/gpu/vk/imgui_input.h"
 #include "nx/runtime/platform/log.h"
@@ -1042,12 +1043,49 @@ static void hotkey(SDL_Keycode k) {
 static u64 finger_id(const SDL_TouchFingerEvent* f) {
     return (u64)f->fingerID | (f->touchID == SDL_PEN_TOUCHID ? 1ull << 63 : 0);
 }
+static u64 g_menu_pointer_finger; /* the finger that drives the engine menu's pointer, 0 when none */
 static void menu_open(int open) {
     if (overlay_shown() != open) overlay_toggle();
     vpad_release();
     keys_release_all();
     /* a finger or button down before this (Home on the on-screen controls opened it) lifts without a tap */
     overlay_pointers_reset();
+}
+/* The menu of this run: the legacy overlay, the engine menu while the Dear ImGui windows run, or none. */
+static int engine_choice(void) {
+    return engine_menu_choice(__atomic_load_n(&g_settings.imgui, __ATOMIC_RELAXED),
+                              __atomic_load_n(&g_settings.legacy_menu, __ATOMIC_RELAXED), imgui_input_running());
+}
+/* One line, once per run: an opener found no menu because the engine menu's windows did not start. */
+static void menu_unavailable(void) {
+    LOG_LIMIT(1, "engine menu: not available, the ImGui windows did not start\n");
+}
+/* Opens or closes the menu of the run, with the releases that a menu takes (the legacy menu's, in menu_open). */
+static void game_menu_toggle(void) {
+    int choice = engine_choice();
+    if (choice == ENGINE_MENU_ENGINE) {
+        int was = engine_menu_active();
+        engine_menu_toggle();
+        if (!was) g_menu_pointer_finger = 0; /* a new open starts with no finger */
+        vpad_release();
+        keys_release_all();
+        overlay_pointers_reset();
+        keycap_cancel();
+    } else if (choice == ENGINE_MENU_LEGACY) {
+        menu_open(!overlay_shown());
+    } else {
+        menu_unavailable();
+    }
+}
+/* The on-screen controls' menu button: it opens the engine menu, or the legacy one where that opens. */
+static void game_menu_press(void) {
+    int choice = engine_choice();
+    if (choice == ENGINE_MENU_ENGINE)
+        game_menu_toggle();
+    else if (choice == ENGINE_MENU_LEGACY && overlay_menu_opens())
+        menu_open(1);
+    else if (choice == ENGINE_MENU_NONE)
+        menu_unavailable();
 }
 static void overlay_do(int action) {
     if (action == OVERLAY_EXIT) g_quit = 1;
@@ -1093,21 +1131,84 @@ static int keyboard_event(const SDL_Event* e) {
     }
     return 1;
 }
+/* One finger on the engine menu's pointer: the first finger drives it as the mouse's left button does. */
+static void menu_pointer_event(const SDL_Event* e) {
+    int w, h, phase;
+    EngineMenuPointer p;
+    backend_window_size(&w, &h);
+    switch (e->type) {
+        case SDL_EVENT_FINGER_DOWN: phase = ENGINE_MENU_FINGER_DOWN; break;
+        case SDL_EVENT_FINGER_MOTION: phase = ENGINE_MENU_FINGER_MOTION; break;
+        case SDL_EVENT_FINGER_UP: phase = ENGINE_MENU_FINGER_UP; break;
+        default: phase = ENGINE_MENU_FINGER_CANCELED; break;
+    }
+    p = engine_menu_pointer(phase, finger_id(&e->tfinger), e->tfinger.x, e->tfinger.y, w, h, &g_menu_pointer_finger);
+    if (p.action == ENGINE_MENU_POINTER_IGNORED) return;
+    ImguiEvent pos = {.type = IMGUI_EV_MOUSE_POS, .x = p.x, .y = p.y};
+    imgui_input_push(&pos);
+    if (p.action == ENGINE_MENU_POINTER_PRESS || p.action == ENGINE_MENU_POINTER_RELEASE) {
+        ImguiEvent btn = {.type = IMGUI_EV_MOUSE_BUTTON, .button = SDL_BUTTON_LEFT,
+                          .down = p.action == ENGINE_MENU_POINTER_PRESS};
+        imgui_input_push(&btn);
+    }
+}
 static int menu_event(const SDL_Event* e) {
     int w, h;
     float d;
-    if (overlay_menu_opens() &&
-        ((e->type == SDL_EVENT_KEY_DOWN && !e->key.repeat && (e->key.key == SDLK_AC_BACK || e->key.key == SDLK_F2)) ||
-         (e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && e->gbutton.button == SDL_GAMEPAD_BUTTON_GUIDE))) {
-        if (vpad_editing())
-            vpad_edit(0);
-        else
-            menu_open(!overlay_shown());
-        return 1;
+    int choice = engine_choice();
+    if ((e->type == SDL_EVENT_KEY_DOWN && !e->key.repeat &&
+         (e->key.key == SDLK_AC_BACK || e->key.key == SDLK_F2)) ||
+        (e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && e->gbutton.button == SDL_GAMEPAD_BUTTON_GUIDE)) {
+        if (choice == ENGINE_MENU_ENGINE) {
+            if (vpad_editing())
+                vpad_edit(0);
+            else
+                game_menu_toggle();
+            return 1;
+        }
+        if (choice == ENGINE_MENU_NONE) {
+            menu_unavailable();
+            return 0;
+        }
+        if (overlay_menu_opens()) {
+            if (vpad_editing())
+                vpad_edit(0);
+            else
+                menu_open(!overlay_shown());
+            return 1;
+        }
     }
     if (vpad_editing() && e->type == SDL_EVENT_KEY_DOWN && e->key.key == SDLK_ESCAPE) {
         vpad_edit(0);
         return 1;
+    }
+    if (choice == ENGINE_MENU_ENGINE) {
+        /* the engine menu is the only user of the input while it shows; the ImGui queue already has the keys and mouse */
+        if (!engine_menu_active()) return 0;
+        if (e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN || e->type == SDL_EVENT_GAMEPAD_BUTTON_UP)
+            engine_menu_gamepad_button(e->gbutton.button, e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN);
+        else if (e->type == SDL_EVENT_GAMEPAD_AXIS_MOTION)
+            engine_menu_gamepad_axis(e->gaxis.axis, (int)e->gaxis.value);
+        switch (e->type) {
+            case SDL_EVENT_KEY_DOWN:
+            case SDL_EVENT_KEY_UP:
+            case SDL_EVENT_TEXT_INPUT:
+            case SDL_EVENT_MOUSE_BUTTON_DOWN:
+            case SDL_EVENT_MOUSE_BUTTON_UP:
+            case SDL_EVENT_MOUSE_MOTION:
+            case SDL_EVENT_MOUSE_WHEEL:
+            case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
+            case SDL_EVENT_GAMEPAD_BUTTON_UP:
+            case SDL_EVENT_GAMEPAD_AXIS_MOTION:
+            case SDL_EVENT_FINGER_DOWN:
+            case SDL_EVENT_FINGER_MOTION:
+            case SDL_EVENT_FINGER_UP:
+            case SDL_EVENT_FINGER_CANCELED:
+                menu_pointer_event(e);
+                return 1;
+            default: break;
+        }
+        return 0;
     }
     if (!overlay_shown() && !overlay_keyboard_shown()) return 0;
     if (!overlay_shown() && (e->type == SDL_EVENT_KEY_DOWN || e->type == SDL_EVENT_TEXT_INPUT))
@@ -1393,7 +1494,7 @@ static void press_pads_held(void) {
    mode is over the screen, they take what they would take over the game, and nothing presses */
 static int press_event(const SDL_Event* e) {
     u32* held;
-    int bit, listening = g_press.listening && !overlay_shown() && !vpad_editing();
+    int bit, listening = g_press.listening && !overlay_shown() && !vpad_editing() && !engine_menu_active();
     switch (e->type) {
         case SDL_EVENT_GAMEPAD_REMOVED:
             for (bit = 0; bit < SNX_GAMEPADS; ++bit)
@@ -1531,12 +1632,15 @@ void video_poll(void) {
     }
     /* the menu, or the keyboard's box, had the controls when this poll began: the press that closes it (B, or A that
        gives the box's line) is in this poll's state */
-    int menu_had = overlay_shown() || vpad_editing() || overlay_keyboard_shown();
+    int menu_had = overlay_shown() || vpad_editing() || overlay_keyboard_shown() || engine_menu_active();
     window_changes_apply();
     while (!g_opt_headless && SDL_PollEvent(&e)) {
         alt_track(&e);
         if (keycap_event(&e)) continue;
-        if (imgui_sdl_event(&e, imgui_density(), g_mouse_captured, !overlay_shown() && !prepare_screen_shown())) continue;
+        if (imgui_sdl_event(&e, imgui_density(), g_mouse_captured,
+                            engine_menu_active() || (!overlay_shown() && !prepare_screen_shown()),
+                            engine_menu_active()))
+            continue;
         if (press_event(&e)) continue;
         if (overlay_event(&e)) continue;
         switch (e.type) {
@@ -1626,12 +1730,13 @@ void video_poll(void) {
     static u64 script_was; /* the scripted buttons of the last poll: a Home press opens or closes the menu */
     if (!g_opt_headless) {
         imgui_sdl_text_input(g_win, g_typing.ticket != 0, imgui_density());
-        mouse_capture_update(overlay_shown() || vpad_editing() || overlay_keyboard_shown() || imgui_input_wants().release);
+        mouse_capture_update(overlay_shown() || vpad_editing() || overlay_keyboard_shown() || engine_menu_active() ||
+                             imgui_input_wants().release);
     }
     u64 s = unattended_buttons(), k = keys_held | s | g_mouse_buttons;
     if (s & ~script_was & SNX_SCRIPT_HOME) {
         ui_lock();
-        menu_open(!overlay_shown());
+        game_menu_toggle();
         ui_unlock();
     }
     script_was = s;
@@ -1704,7 +1809,8 @@ void video_poll(void) {
         ui_lock();
         vpad_state(&vb, vs);
         acts = vpad_actions();
-        if ((acts & SNX_VPAD_DO_MENU) && overlay_menu_opens()) menu_open(1);
+        if ((acts & SNX_VPAD_DO_MENU) && (engine_choice() == ENGINE_MENU_ENGINE || overlay_menu_opens()))
+            game_menu_press();
         /* with the menu open, the pads move it: the on-screen controls' and the connected ones', sticks too */
         overlay_do(overlay_controls(vb | pb | (s & 0xFFFFFull), vs[0] || vs[1] ? vs : pad, SDL_GetTicks()));
         ui_unlock();
@@ -1726,8 +1832,8 @@ void video_poll(void) {
         g_menu_held_pad0 |= g_hle.hid.pad1.buttons;
         for (int i = 0; i < SNX_GAMEPADS - 1; i++) g_menu_held_extra[i] |= g_hle.hid.pad_extra[i].buttons;
     }
-    /* the game's menu, the controls' edit mode or the keyboard's box has them */
-    if (menu_had || overlay_shown() || vpad_editing() || overlay_keyboard_shown()) {
+    /* the game's menu, the controls' edit mode, the keyboard's box or the engine menu has them */
+    if (menu_had || overlay_shown() || vpad_editing() || overlay_keyboard_shown() || engine_menu_active()) {
         g_menu_held = nonpad;
         g_menu_held_pad0 = g_hle.hid.pad1.buttons;
         b = 0;
@@ -1803,8 +1909,8 @@ void frontend_frame(void) {
     /* the controls and the menu stay on the window while the game shows nothing new, and so does its last frame while
        it is paused */
     if (g_renderer->refresh &&
-        (overlay_shown() || overlay_keyboard_shown() || vpad_shown() || game_paused() || overlay_toasting(plat_ns()) ||
-         __atomic_load_n(&g_settings.showcase, __ATOMIC_RELAXED) ||
+        (overlay_shown() || overlay_keyboard_shown() || vpad_shown() || engine_menu_active() || game_paused() ||
+         overlay_toasting(plat_ns()) || __atomic_load_n(&g_settings.showcase, __ATOMIC_RELAXED) ||
          __atomic_load_n(&g_settings.stats, __ATOMIC_RELAXED) || imgui_input_refresh_wanted()))
         g_renderer->refresh();
     if (g_shot_req) {

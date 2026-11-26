@@ -8,6 +8,9 @@
 void imgui_events_init(void);
 /* every queued event into the context's input */
 void imgui_events_feed(void);
+/* the input device of the last event fed: IMGUI_DEVICE_* */
+enum { IMGUI_DEVICE_MOUSE, IMGUI_DEVICE_KEYBOARD, IMGUI_DEVICE_GAMEPAD };
+int imgui_events_last_device(void);
 /* what the windows want, from the frame just begun, for the main thread (imgui_input_publish). menu_visible: the menu
    bar shows, which also lets go of the cursor */
 void imgui_events_publish(bool menu_visible);

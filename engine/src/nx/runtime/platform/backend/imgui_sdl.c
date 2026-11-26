@@ -84,11 +84,27 @@ static void pass_ends(const SDL_Event* e) {
     }
 }
 
-int imgui_sdl_event(const SDL_Event* e, float density, int captured, int owned) {
+int imgui_sdl_event(const SDL_Event* e, float density, int captured, int owned, int menu) {
     ImguiWants w = imgui_input_wants();
     follow_capture(captured, density);
     if (!owned) {
         pass_ends(e);
+        return 0;
+    }
+    if (menu) { /* the engine menu owns the mouse; its keys wait for menu_event, which the game cannot pass */
+        switch (e->type) {
+            case SDL_EVENT_MOUSE_MOTION:
+            case SDL_EVENT_MOUSE_BUTTON_DOWN:
+            case SDL_EVENT_MOUSE_BUTTON_UP:
+            case SDL_EVENT_MOUSE_WHEEL:
+                if (!captured) mouse_event(e, density, w);
+                return 1;
+            case SDL_EVENT_KEY_DOWN:
+            case SDL_EVENT_KEY_UP: key_event(e, w); return 0;
+            case SDL_EVENT_TEXT_INPUT: imgui_input_push_text(e->text.text); return 0;
+            case SDL_EVENT_WINDOW_MOUSE_LEAVE: push_pos(NO_MOUSE, NO_MOUSE); return 0;
+            case SDL_EVENT_WINDOW_FOCUS_LOST: focus_lost(); return 0;
+        }
         return 0;
     }
     switch (e->type) {

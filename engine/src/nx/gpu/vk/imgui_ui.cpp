@@ -9,6 +9,7 @@
 #include <cstring>
 #include "imgui.h"
 #include "nx/gpu/vk/debug_stats.h"
+#include "nx/gpu/vk/engine_menu.h"
 #include "nx/gpu/vk/imgui_settings.h"
 
 namespace {
@@ -675,9 +676,15 @@ void imgui_ui_reset(void) {
     g_show_display_settings = false;
     capture_stop();
     keyboard_reset();
+    engine_menu_reset();
 }
 
 bool imgui_ui_draw(ImguiFrame* f) {
+    /* the menu is modal: only its panel draws, and the game's windows come back when it closes */
+    if (engine_menu_visible()) {
+        engine_menu_draw(f);
+        return true;
+    }
     if (f->open_test != g_open_test_was) {
         g_open_test_was = f->open_test;
         g_show_test = f->open_test != 0;
