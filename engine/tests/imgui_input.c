@@ -69,6 +69,39 @@ int main(void) {
     n = drain(&motion, &type, &key);
     check(n == QUEUE_MAX && key == QUEUE_MAX - 1, "a queue of transitions keeps the oldest and drops the newest past its end");
 
+    /* a gamepad button down and up are transitions: a full queue keeps both, in order, by removing motion */
+    push(IMGUI_EV_MOUSE_POS, 9, 9, 0);
+    for (int i = 0; i < QUEUE_MAX - 2; ++i) push(IMGUI_EV_KEY, 0, 0, i);
+    {
+        ImguiEvent down = {.type = IMGUI_EV_GAMEPAD, .key = 100, .down = 1};
+        ImguiEvent up = {.type = IMGUI_EV_GAMEPAD, .key = 100, .down = 0};
+        int count = 0, previous = -1, last = -1, last_key = -1;
+        imgui_input_push(&down);
+        imgui_input_push(&up);
+        while (imgui_input_pop(&e)) {
+            if (e.type == IMGUI_EV_GAMEPAD) {
+                previous = last;
+                last = e.down;
+                last_key = e.key;
+            }
+            ++count;
+        }
+        check(count == QUEUE_MAX && previous == 1 && last == 0 && last_key == 100,
+              "a gamepad button down and up survive a full queue, in order");
+    }
+
+    /* a stick reading is motion: a full queue drops it, not the key that comes after */
+    {
+        ImguiEvent axis = {.type = IMGUI_EV_GAMEPAD_AXIS, .down = 1, .key = 200, .value = 1.0f};
+        int last_key = -1;
+        imgui_input_push(&axis);
+        for (int i = 0; i < QUEUE_MAX - 1; ++i) push(IMGUI_EV_KEY, 0, 0, i);
+        push(IMGUI_EV_KEY, 0, 0, 999);
+        while (imgui_input_pop(&e))
+            if (e.type == IMGUI_EV_KEY) last_key = e.key;
+        check(last_key == 999, "a full queue drops a stick reading to keep a key");
+    }
+
     /* a commit longer than a piece: pieces end between characters and together give the text back */
     {
         char text[200] = "", got[200] = "";

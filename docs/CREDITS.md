@@ -15,5 +15,7 @@ NXAevora is GPL-3.0-or-later. These projects and works are used in it.
 | Ryujinx (the Ryujinx team and contributors) | The resolution scale of texel fetches in fragment shaders: the formula of `Helper_TexelFetchScale` (the texel times the scale plus the fragment position modulo the scale) and its aspect ratio rule from `TextureBindingsManager`, in `spirv_translate.c` (`scaled_coords`) and `scale.h` (`vk_scale_same_aspect`). Thanks to the Ryujinx team for this method. | MIT |
 | FidelityFX SDK API headers (Advanced Micro Devices, Inc.) | The C API headers of the FSR 3.1 adapter, from the SDK tag `v2.4.0` (commit `7539ae8`), in `engine/third_party/FidelityFX-SDK` (license text in `LICENSE.txt` there) | MIT |
 | XeSS SDK headers (Intel Corporation) | The C headers of the XeSS Super Resolution adapter, from the XeSS SDK commit `de0fb9c`, in `engine/third_party/XeSS` (license text in `LICENSE.txt` there) | MIT |
+| material-color-utilities (Google LLC and contributors) | The HCT color space, CAM16 and the tonal palette of the engine menu (`engine/src/nx/gpu/vk/md3/md3_palette.cpp`), ported from the TypeScript sources at commit `0f07b68759989d4e065b806229daba6ad000695d` | Apache 2.0 |
+| Material Symbols (Google LLC) | The icon font of the engine menu, subset from `variablefont/` of `google/material-design-icons` at commit `10ecc14790612ca8fd164e3f4ffe9c16fc50d5b7` by `tools/subset_icon_font.py` (`assets/fonts/MaterialSymbolsRounded-Subset.ttf`) | Apache 2.0 |
 
 The credits of the libraries that ScarletNX uses are in its own `docs/CREDITS.md`.

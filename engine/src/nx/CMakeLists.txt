@@ -99,7 +99,7 @@ snx_shaderdec(snx_shader)
 snx_component(vk gpu/vk/landing.c gpu/vk/renderer.c gpu/vk/device.c gpu/vk/cmd.c gpu/vk/record.c gpu/vk/format.c gpu/vk/surface.c gpu/vk/rt_group.c gpu/vk/texture.c
                  gpu/vk/buffer.c gpu/vk/writeback.c gpu/vk/pipeline.c gpu/vk/pipeline_file.c gpu/vk/render.c gpu/vk/release.c gpu/vk/query.c gpu/vk/compute.c
                  gpu/vk/pending_pages.c gpu/vk/memory.c gpu/vk/renderdoc.c gpu/vk/astc.c gpu/vk/blocklinear.c gpu/vk/texconv.c gpu/vk/owned.c gpu/vk/nvdec.c gpu/vk/dma.c gpu/vk/blit.c gpu/vk/ui.c gpu/texture/blocklinear.c gpu/texture/depth.c gpu/vk/vic.c gpu/vk/vma.cpp gpu/vk/gpuprof.c
-                 gpu/vk/ftz_probe.c gpu/vk/pass_guest.c gpu/vk/postfx.c gpu/vk/temporal.c gpu/vk/scene_scale.c gpu/vk/upscaler.c gpu/vk/upscaler_host.c gpu/vk/upscaler_module.c gpu/vk/upscaler_selftest.c gpu/vk/imgui.c gpu/vk/imgui_glue.cpp gpu/vk/imgui_style.cpp gpu/vk/imgui_input.c gpu/vk/imgui_text.c gpu/vk/imgui_events.cpp gpu/vk/imgui_ui.cpp gpu/vk/imgui_settings.c gpu/vk/debug_stats.c
+                 gpu/vk/ftz_probe.c gpu/vk/pass_guest.c gpu/vk/postfx.c gpu/vk/temporal.c gpu/vk/scene_scale.c gpu/vk/upscaler.c gpu/vk/upscaler_host.c gpu/vk/upscaler_module.c gpu/vk/upscaler_selftest.c gpu/vk/imgui.c gpu/vk/imgui_glue.cpp gpu/vk/imgui_style.cpp gpu/vk/imgui_input.c gpu/vk/imgui_text.c gpu/vk/imgui_events.cpp gpu/vk/imgui_ui.cpp gpu/vk/imgui_settings.c gpu/vk/debug_stats.c gpu/vk/engine_menu.cpp gpu/vk/md3/md3_palette.cpp gpu/vk/md3/md3_scale.cpp gpu/vk/md3/md3_theme.cpp gpu/vk/md3/md3_motion.cpp gpu/vk/md3/md3_widgets.cpp
                  "${volk_SOURCE_DIR}/volk.c"
                  "${imgui_SOURCE_DIR}/imgui.cpp" "${imgui_SOURCE_DIR}/imgui_draw.cpp"
                  "${imgui_SOURCE_DIR}/imgui_tables.cpp" "${imgui_SOURCE_DIR}/imgui_widgets.cpp"
@@ -167,6 +167,11 @@ snx_glsl_spirv(snx_vk SOURCE gpu/vk/shaders/smaa.frag NAME smaa_weights_fs_spv H
                DEFINES SMAA_PASS_WEIGHTS)
 snx_glsl_spirv(snx_vk SOURCE gpu/vk/shaders/smaa.frag NAME smaa_blend_fs_spv HEADER nx/gpu/vk/post_spv.h
                DEFINES SMAA_PASS_BLEND)
+# the engine menu's panel composite (gpu/vk/imgui.c)
+snx_glsl_spirv(snx_vk SOURCE gpu/vk/shaders/menu_composite.vert NAME menu_composite_vs_spv
+               HEADER nx/gpu/vk/menu_spv.h)
+snx_glsl_spirv(snx_vk SOURCE gpu/vk/shaders/menu_composite.frag NAME menu_composite_fs_spv
+               HEADER nx/gpu/vk/menu_spv.h)
 include("${PROJECT_SOURCE_DIR}/cmake/smaa_tables.cmake")
 snx_smaa_tables(snx_vk)
 set(components core kernel hle video gpu platform shader vk)

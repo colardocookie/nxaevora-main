@@ -11,6 +11,7 @@ namespace {
 constexpr float NO_MOUSE_BELOW = -1.0e8f; /* a position under this is "no mouse" (imgui_input.h) */
 ImVec2 g_ime_pos;
 float g_ime_height;
+int g_last_device = IMGUI_DEVICE_KEYBOARD;
 
 /* called at the end of a frame, when a text field is active: where its cursor is */
 void set_ime_data(ImGuiContext*, ImGuiViewport*, ImGuiPlatformImeData* data) {
@@ -70,21 +71,42 @@ void imgui_events_feed(void) {
     while (imgui_input_pop(&e)) {
         switch (e.type) {
             case IMGUI_EV_MOUSE_POS:
+                g_last_device = IMGUI_DEVICE_MOUSE;
                 if (e.x < NO_MOUSE_BELOW)
                     io.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
                 else
                     io.AddMousePosEvent(e.x, e.y);
                 break;
             case IMGUI_EV_MOUSE_BUTTON:
+                g_last_device = IMGUI_DEVICE_MOUSE;
                 if (map_button(e.button) >= 0) io.AddMouseButtonEvent(map_button(e.button), e.down != 0);
                 break;
-            case IMGUI_EV_WHEEL: io.AddMouseWheelEvent(e.x, e.y); break;
-            case IMGUI_EV_KEY: feed_key(io, e); break;
-            case IMGUI_EV_TEXT: io.AddInputCharactersUTF8(e.text); break;
+            case IMGUI_EV_WHEEL:
+                g_last_device = IMGUI_DEVICE_MOUSE;
+                io.AddMouseWheelEvent(e.x, e.y);
+                break;
+            case IMGUI_EV_KEY:
+                g_last_device = IMGUI_DEVICE_KEYBOARD;
+                feed_key(io, e);
+                break;
+            case IMGUI_EV_TEXT:
+                g_last_device = IMGUI_DEVICE_KEYBOARD;
+                io.AddInputCharactersUTF8(e.text);
+                break;
             case IMGUI_EV_FOCUS: io.AddFocusEvent(false); break;
+            case IMGUI_EV_GAMEPAD:
+                g_last_device = IMGUI_DEVICE_GAMEPAD;
+                if (e.key > ImGuiKey_None) io.AddKeyEvent((ImGuiKey)e.key, e.down != 0);
+                break;
+            case IMGUI_EV_GAMEPAD_AXIS:
+                g_last_device = IMGUI_DEVICE_GAMEPAD;
+                if (e.key > ImGuiKey_None) io.AddKeyAnalogEvent((ImGuiKey)e.key, e.down != 0, e.value);
+                break;
         }
     }
 }
+
+int imgui_events_last_device(void) { return g_last_device; }
 
 void imgui_events_publish(bool menu_visible) {
     ImGuiIO& io = ImGui::GetIO();

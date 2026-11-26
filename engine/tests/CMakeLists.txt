@@ -576,6 +576,35 @@ add_executable(snx-test-imgui-text imgui_text.c "${PROJECT_SOURCE_DIR}/src/nx/gp
 snx_test_target(snx-test-imgui-text 11)
 add_test(NAME imgui_text COMMAND snx-test-imgui-text)
 
+# The MD3 core of the engine menu (docs/dev/ui/engine-menu.md): the palette, the eased curves and the UI scale have no
+# ImGui, so each test links its module alone. The motion test builds md3_motion.cpp without its ImGui part.
+add_executable(snx-test-md3-palette md3_palette.cpp "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/md3/md3_palette.cpp")
+set_target_properties(snx-test-md3-palette PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+snx_test_target(snx-test-md3-palette 11)
+add_test(NAME md3_palette COMMAND snx-test-md3-palette)
+
+add_executable(snx-test-md3-motion md3_motion.cpp "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/md3/md3_motion.cpp")
+set_target_properties(snx-test-md3-motion PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+target_compile_definitions(snx-test-md3-motion PRIVATE MD3_MOTION_TEST)
+snx_test_target(snx-test-md3-motion 11)
+add_test(NAME md3_motion COMMAND snx-test-md3-motion)
+
+add_executable(snx-test-md3-scale md3_scale.cpp "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/md3/md3_scale.cpp")
+set_target_properties(snx-test-md3-scale PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+snx_test_target(snx-test-md3-scale 11)
+add_test(NAME md3_scale COMMAND snx-test-md3-scale)
+
+# The engine menu's pure rules: the choice of the menu of a run and the gamepad mapping (src/nx/gpu/vk/engine_menu.cpp).
+add_executable(snx-test-engine-menu engine_menu_pure.cpp "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/engine_menu.cpp")
+set_target_properties(snx-test-engine-menu PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+target_compile_definitions(snx-test-engine-menu PRIVATE ENGINE_MENU_PURE_TEST)
+target_include_directories(snx-test-engine-menu PRIVATE "${imgui_SOURCE_DIR}")
+if(TARGET SDL3::SDL3)
+    target_link_libraries(snx-test-engine-menu PRIVATE SDL3::SDL3)
+endif()
+snx_test_target(snx-test-engine-menu 11)
+add_test(NAME engine_menu COMMAND snx-test-engine-menu)
+
 add_executable(snx-test-imgui-settings imgui_settings.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/imgui_settings.c"
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
 snx_test_target(snx-test-imgui-settings 11)
