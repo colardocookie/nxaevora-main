@@ -4380,13 +4380,13 @@ static void test_text_tick_end(void) {
     const char* const values[7] = {NULL, "0", "1", "3", "", "2", "00"};
     const int forms[7] = {3, 0, 3, 3, 3, 3, 3};
     for (unsigned k = 0; k < 7; k++) {
-        if (values[k]) setenv("SNX_ARCEUS_TEXT_TICK_END", values[k], 1);
-        else unsetenv("SNX_ARCEUS_TEXT_TICK_END");
+        if (values[k]) flag("SNX_ARCEUS_TEXT_TICK_END", values[k]);
+        else unset_flag("SNX_ARCEUS_TEXT_TICK_END");
         text_tick_end_passed = text_tick_end_held = text_tick_end_kept_back = 9;
         text_tick_end_read();
         assert(text_tick_end == forms[k] && !text_tick_end_passed && !text_tick_end_held && !text_tick_end_kept_back);
     }
-    unsetenv("SNX_ARCEUS_TEXT_TICK_END");
+    unset_flag("SNX_ARCEUS_TEXT_TICK_END");
     /* 0, a shown text waiting (the game answers 0): the skipped frames answer 1, the 0 and 1 of the stuck box */
     tt_reset();
     tt_shown = 0, tt_shown_steps = 0, text_tick_end = 0;
