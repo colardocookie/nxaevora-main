@@ -20,7 +20,7 @@ Automated, in `engine/tests/arceus_clock.c`, built with clang `-std=gnu11 -Wall 
 ## VERIFY-MATRIX
 Axes: frame rate and render scale. The fault grows with the rate: the step runs on one frame in two at 60, one in four at 120 and one in eight at 240.
 
-Rule, written before the runs: with the fix, every save box that is offered a press closes at that first press. The tables count the presses offered to a waiting box, so a box that stays through four presses counts four. One miss in any cell holds this PR. The runs with the tick alone are reported, not judged. A run counts only with its native NVN line, its save commit line and its box lines.
+Rule, written before the runs: with the fix, every save box that is offered a press closes at that first press. The tables count the presses offered to a waiting box, so a box that stays through four presses counts four. One miss in any cell holds this PR. The runs with the tick alone are reported, not judged. A run counts only with its native NVN line, its save commit line and its box lines. The three runs on this branch's own build are the exception: the branch has no save probe, so they have no commit or box lines, and their boxes are read from screenshots (below).
 
 The runs used the fork's development line with this change (build 0779e6, commit 47f49156), on the same PC, from a fresh save with a scripted save of 81 s. "Fix" is `SNX_ARCEUS_TEXT_TICK_END=3`, and "tick alone" leaves it unset there.
 
@@ -58,7 +58,15 @@ The user's play on the same build, scale 2.0, target 120, with a real controller
 - Seven saves, seven boxes, all closed. The user's word: the save fix worked perfectly fine.
 - A wild battle was fought. Its five messages that leave by themselves (mode 3, threshold 0) each left one tick after their wait began, 24 to 33 ms, where without the hold they would leave after one frame. 52 extra steps were kept back.
 
-PENDING: one save run on this branch's own build, scale 2.0 and target 120, with the key unset, to show that the default turns the fix on.
+On this branch's own build (7c8964, commit 50505470), with the same save script at scale 2.0 and target 120. The commits after it change only the test's comments and this text. The branch has no save probe, so the boxes were read from screenshots every 100 presents, checked against a run of the development line whose probe gives the boxes (382adb, SWH-2-e3 above):
+
+| Run | `SNX_ARCEUS_TEXT_TICK_END` | Start line | Report | Presses offered to a waiting box | Missed |
+| --- | --- | --- | --- | --- | --- |
+| SBP-def-a | unset | `end=3` | dfdc76 | 2 | 0 |
+| SBP-def-b | unset | `end=3` | 6ee139 | 2 | 0 |
+| SBP-off | `0` | `end=0` | 23a589 | 3 | 1 |
+
+In both runs with the key unset, the key is in neither the job's environment nor its settings, so the `end=3` line comes from the default, and every box closed at its first press. With `0`, the start line says `end=0`, and the second box stays through the press at 67 s, as with the tick alone on main.
 
 ## Remaining
 - A message with a count of 40 (the battle's longer self-leaving messages, about 1.3 s at 30) was not seen in play. The host test covers thresholds up to 255, and the hold works the same way at every threshold. No played run has shown one yet.
