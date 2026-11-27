@@ -91,6 +91,41 @@ Each rail item has an icon and a label. A selected item has a pill indicator beh
 
 The game software keyboard is its own centered dialog. It is not a rail page.
 
+### Display and Performance pages
+
+The Display and Performance pages show the rows of the settings model. The model is generated from `engine/src/nx/runtime/settings.txt`, and the old window and the command line read the same model. The Display page shows the rows of its table in their order. The Performance page shows the rows of its table, in the groups that this part describes below. A page reads at most 64 rows of its table.
+
+Each row takes its widget from the model alone. The first rule that matches picks the widget:
+
+1. A row with presets is a dropdown.
+2. An int or a text row with words is a dropdown. A word list with `#` (a numeric entry) does not count as words, so `map_limit_mb` and `map_limit_files`, with the words `No limit|#`, get a number field.
+3. An int from 0 to 1 without words is a switch.
+4. An int whose range has at most 64 steps (`kSliderMaxSteps`) is a slider.
+5. Any other int is a number field.
+6. A text row without words shows only its supporting text, "Edit it in the .ini file".
+7. A float row without presets is not drawn. No row of these two pages is a float row.
+
+The model gives `heap_max_mb`, a text setting, as an int row, so it gets a number field (`NUMBER_TEXT` in `imgui_settings.c`).
+
+A row whose setting applies at the next start shows the restart mark before its label. A row whose saved value differs from the running game shows "Saved. Applies after a restart." in place of its help text. A row that the command line holds is disabled, and a change of its value is not taken.
+
+The Display page ends with the Reduce motion switch. The menu keeps the value of this switch in memory only, so the value is not saved.
+
+The Performance page shows five main rows first, in this order: `fps_limit`, `memory_gb`, `pipeline_threads`, `async_pipelines` and `prepare_shaders`. A key that the model does not have is skipped. The section title "Advanced" follows the main rows. Under it, the page shows all other rows of the table, in the order of the table.
+
+The `fps_limit` row is a dropdown of these presets: "Game's pace", 30, 60, 120, 144, 240 and "Unlimited". Its Custom entry takes any value from 10 to 1000. When the value is not one of the presets, the row shows Custom and a number field below the dropdown. The field also shows when the user picks Custom, even if the value is a preset. Picking a preset hides the field and sets the value.
+
+The right part is 240 wide (`kRightWidthComboPx`) for a dropdown, 240 wide (`kRightWidthNumberPx`) for a number field and 280 wide (`kRightWidthSliderPx`) for a slider. The right part of a row with a Custom field is as high as two dropdowns and the item spacing between them.
+
+A number field edits as follows:
+
+- A click, Enter or A on a gamepad starts an edit. The field then holds the current value. Only digits go in, and Backspace removes the last digit.
+- Enter, or a loss of focus, commits the edit. A whole number in the range of the row becomes the value. Any other text keeps the old value, and the outline and the text turn to the error color until the next edit starts.
+- Esc or the B button of a gamepad cancels the edit. While an edit is open, these keys do not close the menu.
+- A page change ends an open edit the same way as a loss of focus.
+- A menu close cancels an open edit.
+- With the nav focus on the field and no edit open, the arrow keys or the D-pad change the value by the step of the row, within the range, at once.
+
 ## 5. Theme
 
 The theme uses one seed color, `0xF97316`. The theme has only the dark scheme. The palette comes from an HCT port of material-color-utilities (Apache 2.0, commit `0f07b687`).
@@ -132,15 +167,18 @@ These sizes set the components. Each state layer uses `kStateHover` = 0.08, `kSt
 | Button | Height `kButtonHeightPx` = 36. Minimum width `kButtonMinWidthPx` = 64. Horizontal padding `kButtonPaddingPx` = 20 each side. Pill rounding | Filled, tonal, outlined, text and error outlined. Hover, focus and press layers. A 1 px outline for the outlined kinds |
 | Icon button | `kButtonHeightPx` = 36 square. Icon `kIconSizePx` = 20. Round | Hover, focus and press layers |
 | Rail item | Height `kRailItemHeightPx` = 52. Indicator `kRailIndicatorWidthPx` = 48 by `kRailIndicatorHeightPx` = 28, at `kRailIndicatorTopPx` = 4. Label `kRailLabelPx` = 12 at `kRailLabelGapPx` = 2 below the indicator | Selected indicator (secondary container). Unselected hover, focus and press layers |
-| List row | Height `kRowHeightPx` = 48, or `kRowHeightTwoLinePx` = 64 with a supporting text. Horizontal padding `kRowPaddingPx` = 16. Icon gap `kRowIconGapPx` = 6. Two-line gap `kTwoLineGapPx` = 2 | A hover layer of the on-surface color at 0.04. An optional restart mark of `kSmallIconSizePx` = 16 |
+| List row | Minimum height `kRowHeightPx` = 48, or `kRowHeightTwoLinePx` = 64 with a supporting text. The row grows to fit its wrapped text. Horizontal padding `kRowPaddingPx` = 16. Icon gap `kRowIconGapPx` = 6. Two-line gap `kTwoLineGapPx` = 2. Text gap `kRowTextGapPx` = 16 | A hover layer of the on-surface color at 0.04. An optional restart mark of `kSmallIconSizePx` = 16 |
 | Card | Padding `kCardPaddingPx` = 16 on all four sides. Medium corner. Height follows its content | No state. The background is `surface_container_low` |
 | Dialog | Centered. Large corner. Window padding 24 horizontal by 20 vertical. Modal with a scrim | Open and close fade. A close input starts the fade |
 | Exposed dropdown | Height `kDropdownHeightPx` = 44. Corner `kDropdownCornerPx` = 4. Padding `kDropdownPaddingPx` = 12. Icon `kDropdownIconPx` = 20. Indicator `kDropdownIndicatorPx` = 1, or `kDropdownIndicatorActivePx` = 2 when active. Menu corner `kMenuCornerPx` = 4, item height `kMenuItemHeightPx` = 40, item padding `kMenuItemPaddingPx` = 12, vertical padding `kMenuVerticalPaddingPx` = 8, edge margin `kMenuEdgeMarginPx` = 8 | Closed, open and closing. Hover and focus. The selected item has a secondary container background |
 | Slider | Item height `kSliderItemHeightPx` = 32. Track `kSliderTrackPx` = 4. Handle radius `kSliderHandleRadiusPx` = 8. State radius `kSliderStateRadiusPx` = 16. Value label height `kSliderValueHeightPx` = 24, padding `kSliderValuePaddingPx` = 10, gap `kSliderValueGapPx` = 2, text gap `kSliderTextGapPx` = 8 | Hover, focus and press layers. A value label on drag and on a key change |
+| Number field | Height `kDropdownHeightPx` = 44, the same as the exposed dropdown. Corner `kDropdownCornerPx` = 4. Padding `kDropdownPaddingPx` = 12. Outline `kTextFieldOutlinePx` = 1. Caret `kTextFieldCaretPx` = 1. Background `surface_container_highest`. Text at the body large size | Hover, focus and press layers. The outline is the outline color, or the error color after a rejected commit. A caret while an edit is open. The edit rules are in [Display and Performance pages](#display-and-performance-pages) |
 
 The focus ring is `kFocusRingPx` = 2 thick and uses the secondary color. It shows only when the ImGui nav cursor is visible. A mouse click hides the nav cursor, so no focus ring follows the mouse.
 
 Cards and rows follow one padding rule. A card has `kCardPaddingPx` (16) on all four sides. A row inside a card drops its own horizontal padding, so each item of the card starts at the card padding. A row outside a card has `kRowPaddingPx` (16) horizontal padding.
+
+The text of a list row wraps before its right part. The text column is the row width less the horizontal padding on each side, the icon slot, the right part and the text gap. Every list row reserves the icon slot, which holds the restart mark and its gap, so the labels of the rows start at the same x. The row height is the largest of the minimum height, the height of the right part, and the wrapped text with `kRowPaddingPx` above and below it.
 
 ## 7. Motion
 
@@ -186,6 +224,10 @@ The dropdown menu has the left edge and the width of the field. It opens below t
 
 The mouse wheel and the navigation scroll are eased. The wheel step adds to the target and not to the eased value, so quick notches keep the full distance. A scrollbar drag is direct and cancels the eased motion. Reduce motion makes the scroll direct. The scroll tween uses the standard curve and 200 ms.
 
+The nav scroll keeps the focused row of a page visible. The whole row box counts, not only the right part. A row above the view scrolls to its top, and a row below the view scrolls to its bottom. The first nav row of a page scrolls to 0, and the last nav row scrolls to the maximum. A nav row is a row with a right part that is not disabled. The maximum uses the content of this frame, including the growth of the page card in this frame, and not the value that ImGui wrote in the last frame.
+
+The rail scrolls in the same way. The rail has no visible scrollbar. It scrolls only when its items are taller than its body, and it keeps the focused item fully visible. The first item scrolls the rail to 0, and the last item scrolls it to the maximum.
+
 ## 11. ImGui 1.93.0 notes
 
 The mockup depends on these ImGui rules. A note gives the flag or the function name.
@@ -224,5 +266,7 @@ The base and the move of the functions are units 4 to 6 of phase 7.5 in `ROADMAP
 1. Unit 4, the base in the engine: the theme, the fonts, the widgets, the shell and the host tests.
 2. Unit 5, the move of the functions: one screen or one group per pull request. The old screen is deleted in the same pull request. The game never switches between the old and the new UI.
 3. Unit 6, the removal of the rest of the old UI, and the finish of the docs.
+
+The first move of unit 5 moves the Display and Performance pages to the engine menu. These two pages leave the old Display window in the same pull request, so the old window keeps only its Graphics tab.
 
 The third-party parts go into `docs/CREDITS.md` in unit 4. These parts are the HCT port and the fonts.

@@ -9,10 +9,13 @@
 #include <cfloat>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 
 #include "imgui_internal.h"
+#include "nx/gpu/vk/md3/md3_layout.h"
 #include "nx/gpu/vk/md3/md3_motion.h"
 #include "nx/gpu/vk/md3/md3_theme.h"
+#include "nx/gpu/vk/menu_settings.h"
 
 namespace md3 {
 namespace {
@@ -61,6 +64,53 @@ DialogFade g_dialog_fades[kDialogFadeCount]{};
 ImGuiID g_dialog_pair_id = 0;
 float g_dialog_pair_alpha = 1.0f;
 bool g_dialog_pair_closing = false;
+
+// The number fields keep their line and error across frames. One entry per
+// field; the oldest goes to a new field when all are taken.
+constexpr int kNumberFieldCount = 8;
+constexpr int kNumberFieldTextMax = 16;
+struct NumberFieldState {
+    ImGuiID id;
+    int frame;
+    char text[kNumberFieldTextMax];
+    bool editing;
+    bool error;
+};
+NumberFieldState g_number_fields[kNumberFieldCount]{};
+ImGuiContext* g_number_field_context = nullptr;
+
+// A new context makes the stored ids and frames meaningless.
+void SyncNumberFieldContext() {
+    ImGuiContext* context = ImGui::GetCurrentContext();
+    if (context == g_number_field_context) return;
+    for (NumberFieldState& state : g_number_fields) state = NumberFieldState{};
+    g_number_field_context = context;
+}
+
+NumberFieldState* NumberFieldStateFor(ImGuiID id) {
+    NumberFieldState* free_slot = nullptr;
+    for (NumberFieldState& state : g_number_fields) {
+        if (state.id == id) return &state;
+        if (state.id == 0 && free_slot == nullptr) free_slot = &state;
+    }
+    NumberFieldState* slot = free_slot;
+    if (slot == nullptr) {
+        slot = &g_number_fields[0];
+        for (NumberFieldState& state : g_number_fields)
+            if (state.frame < slot->frame) slot = &state;
+    }
+    *slot = NumberFieldState{};
+    slot->id = id;
+    return slot;
+}
+
+bool AnyNumberFieldEditing() {
+    SyncNumberFieldContext();
+    const int frame = ImGui::GetFrameCount();
+    for (const NumberFieldState& state : g_number_fields)
+        if (state.editing && (state.frame == frame || state.frame == frame - 1)) return true;
+    return false;
+}
 
 DialogFade* FindDialogFade(ImGuiID id) {
     for (DialogFade& fade : g_dialog_fades) {
@@ -134,6 +184,22 @@ void DrawTextCentered(const char* text, const ImRect& box, float size, ImU32 col
                size, color, alpha_mul);
 }
 
+// The size of a text wrapped at wrap_width. A wrap width of 0 does not wrap.
+ImVec2 TextSizeWrapped(const char* text, float size, float wrap_width) {
+    ImFont* font = ImGui::GetFont();
+    if (font == nullptr || text == nullptr) return ImVec2(0.0f, size);
+    return font->CalcTextSizeA(size, FLT_MAX, wrap_width, text);
+}
+
+// Draws a text wrapped at wrap_width. A wrap width of 0 does not wrap.
+void DrawTextWrappedAt(const char* text, ImVec2 pos, float size, ImU32 color, float wrap_width,
+                       float alpha_mul = 1.0f) {
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    ImFont* font = ImGui::GetFont();
+    if (draw == nullptr || font == nullptr || text == nullptr) return;
+    draw->AddText(font, size, pos, FadeColor(color, alpha_mul), text, nullptr, wrap_width);
+}
+
 void DrawIcon(uint32_t codepoint, const ImRect& box, float size, ImU32 color,
               float alpha_mul = 1.0f) {
     char utf8[5];
@@ -146,6 +212,41 @@ void DrawFocusRing(const ImRect& box, float rounding, const Theme& theme, bool f
     ImGui::GetWindowDrawList()->AddRect(box.Min, box.Max, FadeColor(ToImU32(theme.scheme.secondary)),
                                         rounding, kFocusRingPx * theme.scale, 0);
 }
+
+// The page window: the outermost child window above the widget, so the page
+// itself for a row of a card of the page.
+ImGuiWindow* PageWindow() {
+    ImGuiWindow* window = ImGui::GetCurrentWindow();
+    while ((window->Flags & ImGuiWindowFlags_ChildWindow) != 0 && window->ParentWindow != nullptr &&
+           (window->ParentWindow->Flags & ImGuiWindowFlags_ChildWindow) != 0) {
+        window = window->ParentWindow;
+    }
+    return window;
+}
+
+// The row that RowBegin is drawing, for the nav scroll of the page.
+struct RowCapture {
+    bool active;
+    int index; // the row's ordinal among the rows with a right part, -1 without one
+    ImVec2 min;
+    ImVec2 max;
+    ImGuiWindow* window;
+};
+RowCapture g_row{};
+int g_row_count = 0;
+
+// The focused row of the page, in the page's content coordinates.
+struct FocusedRowCapture {
+    bool valid;
+    ImGuiID nav_id;
+    float top;
+    float bottom;
+    int index;
+};
+FocusedRowCapture g_focused_row{};
+
+// The last card's content above the size ImGui gave it from the last frame.
+float g_card_growth = 0.0f;
 
 struct ItemState {
     bool hovered;
@@ -169,6 +270,18 @@ ItemState RunItem(const ImRect& box, ImGuiID id) {
     state.pressed = ImGui::ButtonBehavior(box, id, &state.hovered, &state.held);
     state.focused = ImGui::IsItemFocused();
     state.focus_visible = state.focused && NavCursorVisible();
+    // The nav scroll needs the whole row box, not the right part that ItemAdd
+    // registered. A popup item is in another window than the row.
+    if (state.focused && g_row.active && ImGui::GetCurrentWindow() == g_row.window) {
+        ImGuiWindow* page = PageWindow();
+        if (page != nullptr) {
+            g_focused_row.valid = true;
+            g_focused_row.nav_id = id;
+            g_focused_row.top = g_row.min.y - page->DC.CursorStartPos.y;
+            g_focused_row.bottom = g_row.max.y - page->DC.CursorStartPos.y;
+            g_focused_row.index = g_row.index;
+        }
+    }
     return state;
 }
 
@@ -184,16 +297,8 @@ ImU32 LayerForState(TweenId id, ImU32 container, ImU32 on_color, const ItemState
     return StateLayer(container, on_color, TweenLayerAlpha(id, state));
 }
 
-// The visible area of the page window: the outermost child window above the
-// widget, so the page itself for a row of a card of the page.
-ImRect PageVisibleRect() {
-    ImGuiWindow* window = ImGui::GetCurrentWindow();
-    while ((window->Flags & ImGuiWindowFlags_ChildWindow) != 0 && window->ParentWindow != nullptr &&
-           (window->ParentWindow->Flags & ImGuiWindowFlags_ChildWindow) != 0) {
-        window = window->ParentWindow;
-    }
-    return window->InnerRect;
-}
+// The visible area of the page window.
+ImRect PageVisibleRect() { return PageWindow()->InnerRect; }
 
 } // namespace
 
@@ -383,10 +488,18 @@ void CardBegin(const char* id) {
 
 void CardEnd() {
     if (g_card_depth > 0) g_card_depth -= 1;
+    ImGuiWindow* card = ImGui::GetCurrentWindow();
+    if (card != nullptr) {
+        const float content =
+            card->DC.CursorMaxPos.y - card->DC.CursorStartPos.y + card->WindowPadding.y * 2.0f;
+        g_card_growth = content - card->Size.y;
+    }
     ImGui::EndChild();
     ImGui::PopStyleVar(2);
     ImGui::PopStyleColor();
 }
+
+float LastCardGrowth() { return g_card_growth; }
 
 void SectionTitle(const char* text) {
     const Theme& theme = CurrentTheme();
@@ -412,13 +525,47 @@ RowLayout RowBegin(const char* id, const char* label, const char* supporting, bo
     const Theme& theme = CurrentTheme();
     const float s = theme.scale;
     const bool two_line = supporting != nullptr && supporting[0] != '\0';
-    const float height = (two_line ? kRowHeightTwoLinePx : kRowHeightPx) * s;
+    const float min_height = (two_line ? kRowHeightTwoLinePx : kRowHeightPx) * s;
     const float width = ImGui::GetContentRegionAvail().x;
     const ImVec2 origin = ImGui::GetCursorScreenPos();
+
+    const bool inside_card = g_card_depth > 0;
+    const float pad = inside_card ? 0.0f : kRowPaddingPx * s;
+    // Every row reserves the restart icon slot, so a row with the mark and a row
+    // without it start their label at the same x (decision 3).
+    const float icon_slot = (kSmallIconSizePx + kRowIconGapPx) * s;
+    const float text_gap = kRowTextGapPx * s;
+    const float text_width = TextColumnWidth(
+        TextColumnInput{width, pad, icon_slot, right_width, text_gap});
+
+    // The supporting text wraps at the text column width, so it never runs under
+    // the right part, and the row grows to the wrapped height (decisions 1, 2).
+    const ImVec2 label_size = TextSizeWrapped(label, theme.body_large, text_width);
+    const ImVec2 supporting_size = two_line ? TextSizeWrapped(supporting, theme.body_medium, text_width)
+                                            : ImVec2(0.0f, 0.0f);
+    const float text_height =
+        label_size.y + (two_line ? kTwoLineGapPx * s + supporting_size.y : 0.0f);
+    const float height = SettingsRowHeight(
+        RowHeightInput{text_height, kRowPaddingPx * s, min_height, right_height});
+
     const ImRect box(origin, ImVec2(origin.x + width, origin.y + height));
 
     ImGui::ItemSize(box.GetSize());
     const ImVec2 after = ImGui::GetCursorScreenPos();
+
+    g_row.active = true;
+    g_row.min = box.Min;
+    g_row.max = box.Max;
+    g_row.window = ImGui::GetCurrentWindow();
+    // Only a row with a right part that is not disabled is a nav item of the page.
+    ImGuiContext* context = ImGui::GetCurrentContext();
+    const bool disabled = context != nullptr && (context->CurrentItemFlags & ImGuiItemFlags_Disabled) != 0;
+    if (right_width > 0.0f && !disabled) {
+        g_row.index = g_row_count;
+        g_row_count += 1;
+    } else {
+        g_row.index = -1;
+    }
 
     ImDrawList* draw = ImGui::GetWindowDrawList();
     const bool row_hovered =
@@ -432,29 +579,23 @@ RowLayout RowBegin(const char* id, const char* label, const char* supporting, bo
             theme.corner_small);
     }
 
-    const bool inside_card = g_card_depth > 0;
-    const float pad = inside_card ? 0.0f : kRowPaddingPx * s;
-    float text_x = box.Min.x + pad;
     const ImU32 on_surface = ToImU32(theme.scheme.on_surface);
+    float text_x = box.Min.x + pad;
     if (restart) {
         const float icon_size = kSmallIconSizePx * s;
         const ImRect icon_box(ImVec2(text_x, box.Min.y + (height - icon_size) * 0.5f),
                               ImVec2(text_x + icon_size, box.Min.y + (height + icon_size) * 0.5f));
         DrawIcon(icon::kRestart, icon_box, icon_size, ToImU32(theme.scheme.on_surface_variant));
-        text_x += icon_size + kRowIconGapPx * s;
     }
+    text_x += icon_slot;
 
-    if (two_line) {
-        // Center the two lines as one block, so a larger font cannot leave the row.
-        const float block = theme.body_large + kTwoLineGapPx * s + theme.body_medium;
-        const float top = box.Min.y + (height - block) * 0.5f;
-        DrawTextAt(label, ImVec2(text_x, top), theme.body_large, on_surface);
-        DrawTextAt(supporting, ImVec2(text_x, top + theme.body_large + kTwoLineGapPx * s),
-                   theme.body_medium, ToImU32(theme.scheme.on_surface_variant));
-    } else {
-        const ImVec2 label_size = TextSize(label, theme.body_large);
-        DrawTextAt(label, ImVec2(text_x, box.Min.y + (height - label_size.y) * 0.5f),
-                   theme.body_large, on_surface);
+    if (text_width > 0.0f) {
+        const float top = box.Min.y + (height - text_height) * 0.5f;
+        DrawTextWrappedAt(label, ImVec2(text_x, top), theme.body_large, on_surface, text_width);
+        if (two_line) {
+            DrawTextWrappedAt(supporting, ImVec2(text_x, top + label_size.y + kTwoLineGapPx * s),
+                              theme.body_medium, ToImU32(theme.scheme.on_surface_variant), text_width);
+        }
     }
 
     RowLayout layout{};
@@ -471,6 +612,7 @@ RowLayout RowBegin(const char* id, const char* label, const char* supporting, bo
 }
 
 void RowEnd() {
+    g_row.active = false;
     if (g_row_depth <= 0) return;
     g_row_depth -= 1;
     // ImGui 1.93 asserts if a window ends on a cursor move that grows the contents.
@@ -812,6 +954,123 @@ bool SliderInt(const char* id, int* value, int min, int max, int step, const cha
     return changed;
 }
 
+bool NumberField(const char* id, int* value, int lo, int hi, int step) {
+    if (id == nullptr || value == nullptr || lo > hi) return false;
+    SyncNumberFieldContext();
+    const Theme& theme = CurrentTheme();
+    const float s = theme.scale;
+    const ImGuiID item_id = ImGui::GetID(id);
+    NumberFieldState* state = NumberFieldStateFor(item_id);
+    const int frame = ImGui::GetFrameCount();
+    // A field that the page did not draw last frame does not keep an old edit.
+    if (state->editing && state->frame < frame - 1) {
+        state->editing = false;
+        state->error = false;
+    }
+    state->frame = frame;
+
+    const float width = ImGui::GetContentRegionAvail().x;
+    const float height = kDropdownHeightPx * s;
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    const ImRect box(origin, ImVec2(origin.x + width, origin.y + height));
+    const ItemState item = RunItem(box, item_id);
+    const int increment = step > 0 ? step : 1;
+    bool changed = false;
+
+    if (state->editing) {
+        const bool cancel = ImGui::IsKeyPressed(ImGuiKey_Escape, false) ||
+                            ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false);
+        const bool commit = ImGui::IsKeyPressed(ImGuiKey_Enter, false) ||
+                            ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false);
+        if (cancel) {
+            state->editing = false;
+            state->error = false;
+        } else if (commit || !item.focused) {
+            int parsed = 0;
+            if (menu_parse_number(state->text, lo, hi, &parsed)) {
+                *value = parsed;
+                changed = true;
+                state->editing = false;
+                state->error = false;
+            } else {
+                // The field keeps the old value and shows the error colour.
+                state->editing = false;
+                state->error = true;
+            }
+        } else {
+            static const ImGuiKey kDigitKeys[10] = {ImGuiKey_0, ImGuiKey_1, ImGuiKey_2, ImGuiKey_3, ImGuiKey_4,
+                                                    ImGuiKey_5, ImGuiKey_6, ImGuiKey_7, ImGuiKey_8, ImGuiKey_9};
+            static const ImGuiKey kKeypadKeys[10] = {
+                ImGuiKey_Keypad0, ImGuiKey_Keypad1, ImGuiKey_Keypad2, ImGuiKey_Keypad3, ImGuiKey_Keypad4,
+                ImGuiKey_Keypad5, ImGuiKey_Keypad6, ImGuiKey_Keypad7, ImGuiKey_Keypad8, ImGuiKey_Keypad9};
+            const size_t length = std::strlen(state->text);
+            for (int digit = 0; digit < 10; ++digit) {
+                if (!ImGui::IsKeyPressed(kDigitKeys[digit], true) && !ImGui::IsKeyPressed(kKeypadKeys[digit], true))
+                    continue;
+                if (length + 1 < sizeof state->text) {
+                    state->text[length] = static_cast<char>('0' + digit);
+                    state->text[length + 1] = '\0';
+                }
+                break;
+            }
+            if (ImGui::IsKeyPressed(ImGuiKey_Backspace, true)) {
+                const size_t now = std::strlen(state->text);
+                if (now > 0) state->text[now - 1] = '\0';
+            }
+        }
+    } else if (item.pressed) {
+        std::snprintf(state->text, sizeof state->text, "%d", *value);
+        state->editing = true;
+        state->error = false;
+        // A mouse click must keep the focus too, so the commit on the loss of the focus can see it.
+        ImGui::SetFocusID(item_id, ImGui::GetCurrentWindow());
+        ImGui::NavMoveRequestCancel();
+    } else {
+        const bool nav_right = item.focus_visible && (ImGui::IsKeyPressed(ImGuiKey_GamepadDpadRight, true) ||
+                                                      ImGui::IsKeyPressed(ImGuiKey_RightArrow, true));
+        const bool nav_left = item.focus_visible && (ImGui::IsKeyPressed(ImGuiKey_GamepadDpadLeft, true) ||
+                                                     ImGui::IsKeyPressed(ImGuiKey_LeftArrow, true));
+        if (nav_right || nav_left) {
+            const long long next = static_cast<long long>(*value) + (nav_right ? increment : -increment);
+            const int clamped = next < lo ? lo : next > hi ? hi : static_cast<int>(next);
+            if (clamped != *value) {
+                *value = clamped;
+                changed = true;
+            }
+            ImGui::NavMoveRequestCancel();
+        }
+    }
+
+    const ImU32 accent = ToImU32(state->error ? theme.scheme.error : theme.scheme.outline);
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    draw->AddRectFilled(box.Min, box.Max, FadeColor(ToImU32(theme.scheme.surface_container_highest)),
+                        kDropdownCornerPx * s);
+    const float layer = TweenLayerAlpha(item_id, item);
+    if (layer > 0.0f)
+        draw->AddRectFilled(box.Min, box.Max,
+                            FadeColor(StateLayerOver(ToImU32(theme.scheme.on_surface), layer)), kDropdownCornerPx * s);
+    draw->AddRect(box.Min, box.Max, FadeColor(accent), kDropdownCornerPx * s, 0, kTextFieldOutlinePx * s);
+
+    char value_text[kNumberFieldTextMax];
+    const char* text = state->text;
+    if (!state->editing) {
+        std::snprintf(value_text, sizeof value_text, "%d", *value);
+        text = value_text;
+    }
+    const ImVec2 text_size = TextSize(text, theme.body_large);
+    const ImVec2 text_pos(box.Min.x + kDropdownPaddingPx * s, box.Min.y + (height - text_size.y) * 0.5f);
+    DrawTextAt(text, text_pos, theme.body_large,
+               ToImU32(state->error ? theme.scheme.error : theme.scheme.on_surface));
+    if (state->editing) {
+        const float caret_x = text_pos.x + text_size.x + kTextFieldCaretPx * s;
+        draw->AddLine(ImVec2(caret_x, box.Min.y + kDropdownPaddingPx * s),
+                      ImVec2(caret_x, box.Max.y - kDropdownPaddingPx * s), FadeColor(ToImU32(theme.scheme.primary)),
+                      kTextFieldCaretPx * s);
+    }
+    DrawFocusRing(box, kDropdownCornerPx * s, theme, item.focus_visible);
+    return changed;
+}
+
 void Chip(const char* text) {
     const Theme& theme = CurrentTheme();
     const float s = theme.scale;
@@ -906,14 +1165,39 @@ bool AnyPopupOpen() {
     return ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
 }
 
+bool TextEditing() { return AnyNumberFieldEditing(); }
+
+void CancelTextEditing() {
+    SyncNumberFieldContext();
+    for (NumberFieldState& state : g_number_fields) {
+        state.editing = false;
+        state.error = false;
+    }
+}
+
 void BeginNavAnchorCapture() {
     g_nav_anchor = NavAnchor{};
     g_capture_nav_anchor = true;
+    g_focused_row = FocusedRowCapture{};
+    g_row = RowCapture{};
+    g_row_count = 0;
+    g_card_growth = 0.0f;
 }
 
 NavAnchor EndNavAnchorCapture() {
     g_capture_nav_anchor = false;
     return g_nav_anchor;
+}
+
+FocusedRow LastFocusedRow() {
+    FocusedRow row{};
+    row.valid = g_focused_row.valid;
+    row.nav_id = g_focused_row.nav_id;
+    row.top = g_focused_row.top;
+    row.bottom = g_focused_row.bottom;
+    row.index = g_focused_row.index;
+    row.count = g_row_count;
+    return row;
 }
 
 } // namespace md3

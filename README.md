@@ -11,7 +11,7 @@
 <a href="https://github.com/nxaevora/nxaevora-main/actions/workflows/repo-checks.yml"><img src="https://github.com/nxaevora/nxaevora-main/actions/workflows/repo-checks.yml/badge.svg?branch=main" alt="Repository checks"></a>
 <br>
 <img src="https://img.shields.io/badge/Platform-Windows%20x64%20%7C%20Linux%20x64%20(Planned)-blue?style=flat" alt="Badge">
-<img src="https://img.shields.io/badge/GPU-NVIDIA%20%7C%20AMD%20%7C%20Intel-green?style=flat" alt="Badge">
+<img src="https://img.shields.io/badge/Upscaler-DLSS%20%7C%20FSR3.1%20%7C%20XeSS-green?style=flat" alt="Badge">
 <img src="https://img.shields.io/badge/Status-work%20in%20progress%20(alpha%20stage)-orange?style=flat" alt="Status: work in progress (alpha stage)">
 <img src="https://img.shields.io/badge/License-GPL--3.0%20(v3)-lightgrey?style=flat" alt="License: GPL-3.0 (v3)">
 </p>

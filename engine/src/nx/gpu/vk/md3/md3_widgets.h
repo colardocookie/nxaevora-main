@@ -67,6 +67,9 @@ inline constexpr float kRowPaddingPx = 16.0f;
 inline constexpr float kCardPaddingPx = 16.0f;
 inline constexpr float kRowIconGapPx = 6.0f;
 inline constexpr float kTwoLineGapPx = 2.0f;
+// Gap between the text column and the right part of a settings row (the MD3
+// list item gap), 16 px at 1080p.
+inline constexpr float kRowTextGapPx = 16.0f;
 
 // Exposed dropdown menu (decision 5 of the UI brief).
 inline constexpr float kDropdownHeightPx = 44.0f;
@@ -75,6 +78,9 @@ inline constexpr float kDropdownPaddingPx = 12.0f;
 inline constexpr float kDropdownIconPx = 20.0f;
 inline constexpr float kDropdownIndicatorPx = 1.0f;
 inline constexpr float kDropdownIndicatorActivePx = 2.0f;
+// Outline and caret of the number field, 1px at 1080p.
+inline constexpr float kTextFieldOutlinePx = 1.0f;
+inline constexpr float kTextFieldCaretPx = 1.0f;
 inline constexpr float kMenuCornerPx = 4.0f;
 inline constexpr float kMenuItemHeightPx = 40.0f;
 inline constexpr float kMenuItemPaddingPx = 12.0f;
@@ -111,6 +117,11 @@ bool NavItem(const char* id, uint32_t icon_code, const char* label, bool selecte
 void CardBegin(const char* id);
 void CardEnd();
 
+// The height that the last card grew by in this frame, above the size that
+// ImGui gave it at Begin from the last frame's content. The page scroll adds it
+// so the clamp uses this frame's content (decision 6).
+float LastCardGrowth();
+
 // A title medium line at the top of a page section.
 void SectionTitle(const char* text);
 
@@ -137,6 +148,12 @@ bool Combo(const char* id, int* index, const char* const* items, int count);
 // A slider with an optional step. Returns true on a change.
 bool SliderInt(const char* id, int* value, int min, int max, int step, const char* format);
 
+// An MD3 outlined number field of the dropdown height. A click, Enter or A
+// starts the edit. Enter or a loss of focus commits, Esc cancels, and only
+// digits go in. A page change commits the edit and a menu close cancels it.
+// Returns true on each valid commit and each Left/Right step that changes it.
+bool NumberField(const char* id, int* value, int lo, int hi, int step);
+
 // A read-only chip.
 void Chip(const char* text);
 
@@ -152,6 +169,12 @@ void DialogEnd(bool open);
 // True when any ImGui popup or dialog is open (a dropdown or a dialog).
 bool AnyPopupOpen();
 
+// True while a NumberField of this frame or the frame before takes the text keys.
+bool TextEditing();
+
+// Cancels every number field edit without a commit. Call it when the menu closes.
+void CancelTextEditing();
+
 // The id and screen box of the first nav item drawn inside the page. The rail
 // uses it to send D-pad right to the first page control.
 struct NavAnchor {
@@ -163,5 +186,19 @@ struct NavAnchor {
 
 void BeginNavAnchorCapture();
 NavAnchor EndNavAnchorCapture();
+
+// The row of a settings page that holds the nav item the keyboard or the gamepad
+// moved to in the frame just drawn. top and bottom are in the page's content
+// coordinates; index and count are among the rows with a right part.
+struct FocusedRow {
+    bool valid;
+    ImGuiID nav_id;
+    float top;
+    float bottom;
+    int index;
+    int count;
+};
+
+FocusedRow LastFocusedRow();
 
 } // namespace md3
