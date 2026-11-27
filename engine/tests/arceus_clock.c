@@ -4331,9 +4331,9 @@ static void tt_frame(u64 ns) {
     step.step = ns;
     __atomic_add_fetch(&frame_step_frames, 1, __ATOMIC_RELEASE);
 }
-/* The waiting text's step (TEXT_TICK_END): a stand-in reveal with FBFBD0's loop as the game has it (status 1 ends it, another non-zero status
-   loops uncounted, status 0 with answer 1 counts to +A4, status 0 with any other answer ends it; the reveal answers the
-   last answer), and a step for a fully shown text (+A8 and +BC 0) that answers tt_shown and writes nothing of T */
+/* The waiting text's step (TEXT_TICK_END): a stand-in reveal with FBFBD0's loop as the game has it. Status 1 ends it,
+   another non-zero status loops uncounted, status 0 with answer 1 counts to +A4, status 0 with another answer ends it,
+   and the reveal answers the last answer. A step for a shown text (+A8 and +BC 0) answers tt_shown and writes no T */
 static u32 tt_shown;
 static unsigned tt_shown_steps;
 static void tt_step_shown(CPU* c, u64 entry) {
@@ -4466,11 +4466,10 @@ static void test_text_tick_end(void) {
     main_base = base, step.step = ns, frame_step_frames = frames;
     memset(memory, 0, sizeof memory);
 }
-/* END3-HOLD: a step with the game's waits. A press (tt_press, one frame) leaves. In the end wait (+A8 0) modes 2 and 3
-   count +A3 toward +A2 as 2B31D44..64 does (leave when +A3 > +A2, else store +A3 + 1 and leave when +A2 is below it),
-   or store tt_count instead when it is set (a fresh count). Leaving sets tt_left and answers 4, the end wait answers
-   0, a page break (+A8 2, written at 2B31928) answers 2, +BC set answers 0 with no count (2B31634). tt_mode, when
-   set, is written to +90 by a step that also counts (a new setup) */
+/* The hold: a step with the game's waits. A press (tt_press) leaves. In the end wait (+A8 0) modes 2 and 3 count +A3
+   toward +A2 as 2B31D44 does, or store tt_count when set. Leaving sets tt_left and answers 4, the end wait 0, a page
+   break (+A8 2) 2, and +BC set 0 with no count (2B31634). tt_mode, when set, goes to +90 with a count (a new setup).
+   The count leaves when +A3 > +A2, else it stores +A3 + 1 and leaves when +A2 is below that */
 static int tt_press, tt_left, tt_count = -1, tt_mode = -1;
 static void tt_step_auto(CPU* c, u64 entry) {
     (void)entry;
@@ -4545,7 +4544,7 @@ static void test_text_tick_hold(void) {
                                            text_tick_end_kept_back == (th ? 6u : 0));
             }
     /* a press on any frame of the wait is seen on that frame with END=3: modes 0 and 1 (no count), and a counting
-       mode 2 far from its end; with the tick alone only on a tick frame (every fourth) */
+       mode 2 far from its end. With the tick alone only on a tick frame (every fourth) */
     const u32 modes[3] = {0, 1, 2};
     for (unsigned m = 0; m < 3; m++)
         for (int k = 1; k < 8; k++) {
