@@ -20,11 +20,11 @@ Automated, in `engine/tests/arceus_clock.c`, built with clang `-std=gnu11 -Wall 
 ## VERIFY-MATRIX
 Axes: frame rate and render scale. The fault grows with the rate: the step runs on one frame in two at 60, one in four at 120 and one in eight at 240.
 
-Rule, written before the runs: with the fix, every save box that is offered a press closes at that first press. One miss in any cell holds this PR. The runs with the tick alone are reported, not judged. A run counts only with its native NVN line, its save commit line and its box lines.
+Rule, written before the runs: with the fix, every save box that is offered a press closes at that first press. The tables count the presses offered to a waiting box, so a box that stays through four presses counts four. One miss in any cell holds this PR. The runs with the tick alone are reported, not judged. A run counts only with its native NVN line, its save commit line and its box lines.
 
 The runs used the fork's development line with this change (build 0779e6, commit 47f49156), on the same PC, from a fresh save with a scripted save of 81 s. "Fix" is `SNX_ARCEUS_TEXT_TICK_END=3`, and "tick alone" leaves it unset there.
 
-| Scale | Target | Menu rate | Arm | Report | Boxes offered a press | Missed |
+| Scale | Target | Menu rate | Arm | Report | Presses offered to a waiting box | Missed |
 | --- | --- | --- | --- | --- | --- | --- |
 | 1.0 | 120 | 120.0 to 120.4 | fix | d83181 | 2 | 0 |
 | 1.0 | 120 | | fix | a73dae | 2 | 0 |
@@ -41,7 +41,18 @@ The runs used the fork's development line with this change (build 0779e6, commit
 | 1.0 | game (30) | 30.0 | fix | 74f006 | 2 | 0 |
 | 1.0 | game (30) | | tick alone | 350140 | 2 | 0 |
 
-With the fix: 18 presses offered, 0 missed, at 30, 60, 120 and 240 and at both scales. Earlier runs the same day at scale 2.0 and target 120 offered 16 more, also with none missed. With the tick alone: 0 of 2 lost at 30, 3 of 6 at 60, 4 of 4 at 1.0/120 and 4 of 4 at 240. At the game's own 30 nothing is skipped, so both arms close every box and the fix's step count is 0. That is the baseline the model predicts. The save box is not an auto-advance text, so no count was held in these runs.
+With the fix: 18 presses offered, 0 missed, at 30, 60, 120 and 240 and at both scales.
+
+Earlier runs the same day with the same script at scale 2.0 and target 120, with the fix and this code:
+
+| Run | Build | Report | Presses offered to a waiting box | Missed |
+| --- | --- | --- | --- | --- |
+| SWH-2-e3 | 0779e6 | 65f079 | 2 | 0 |
+| SWH-3-e3 | 0779e6 | 974ec4 | 2 | 0 |
+| RGL-sw | e27b4f | 8a366d | 2 | 0 |
+| RGL-sw-k | e27b4f | 171d29 | 2 | 0 |
+
+e27b4f is the development line with RT-GI merged in. Its text tick code is the same as 0779e6's. RGL-sw-k ran with RT-GI's keys on, so the trace was running during the save. Runs of an earlier form without the hold are not counted. With the tick alone: 0 of 2 lost at 30, 3 of 6 at 60, 4 of 4 at 1.0/120 and 4 of 4 at 240. At the game's own 30 nothing is skipped, so both arms close every box and the fix's step count is 0. That is the baseline the model predicts. The save box is not an auto-advance text, so no count was held in these runs.
 
 The user's play on the same build, scale 2.0, target 120, with a real controller (report fa3c2f):
 - Seven saves, seven boxes, all closed. The user's word: the save fix worked perfectly fine.
