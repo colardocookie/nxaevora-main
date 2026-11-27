@@ -3,6 +3,8 @@
 
 # In-game settings UI with Dear ImGui: plan
 
+Status (2026-11-26): the UI base is Dear ImGui 1.93.0 with its own MD3-style widgets. RmlUi was dropped, and Dear ImGui is not replaced. The current design is in [engine-menu.md](../../dev/ui/engine-menu.md).
+
 Status: old plan, replaced. Phase 7.5 replaces Dear ImGui completely with a new UI base (decision of the user,
 2026-11-13). The new plan is [engine-ui-plan.md](engine-ui-plan.md). This file stays as the history of the ImGui
 windows and as a source of facts (the lock order, the draw point, the input gate, the name input). Its steps and

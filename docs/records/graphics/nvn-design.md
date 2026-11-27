@@ -406,7 +406,7 @@ now and fills it when an effect needs it.
 - Not decided now: which draws are the scene pass, and how a velocity buffer is made (the game may not write one). The tap
   carries the information for that later analysis.
 
-Note (2026-11-24): the TAA work did not use this tap plan. It reads the frame in post passes and makes its own motion vectors (see `docs/dev/engine/arceus-temporal.md`).
+Note (2026-11-24): the TAA work did not use this tap plan. It reads the frame in post passes and makes its own motion vectors (see `docs/dev/engine/motion-vector.md`).
 
 ### When to evaluate choice 2
 

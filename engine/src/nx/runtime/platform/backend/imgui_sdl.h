@@ -6,10 +6,10 @@
 #include <SDL3/SDL.h>
 
 /* An event, given to the windows. 1 when they take it, so the game and the old menu do not get it. density is the
-   pixels of the picture for each point of the window, captured whether the mouse look holds the cursor (the windows
-   then see no mouse). owned is 0 while the old menu or the loading screen has the controls: the windows then get only
-   releases and a lost focus, and take nothing. A key-up is never taken: a key the game saw go down must come up */
-int imgui_sdl_event(const SDL_Event* e, float density, int captured, int owned);
+   picture's pixels for each point of the window, captured when the mouse look holds the cursor. owned is 0 while the
+   old menu or the loading screen has the controls: the windows get only releases and a lost focus. menu is 1 while
+   the engine menu is open or closing: it takes the whole mouse, and its keys go to the queue (0 here) */
+int imgui_sdl_event(const SDL_Event* e, float density, int captured, int owned, int menu);
 /* turns the window's text input on while a text field is active, unless the game's keyboard box has it (keyboard_box) */
 void imgui_sdl_text_input(SDL_Window* win, int keyboard_box, float density);
 #endif

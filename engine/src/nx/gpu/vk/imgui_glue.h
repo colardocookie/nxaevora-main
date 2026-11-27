@@ -23,6 +23,7 @@ typedef struct {
     VkFormat format;      /* of the images drawn on */
     const char* latin_font;    /* a TTF file, NULL for ImGui's own font */
     const char* japanese_font; /* merged into the first, NULL for none */
+    const char* icon_font;     /* merged into the first, NULL for none */
     float font_px;
 } ImguiGlueInit;
 
@@ -51,6 +52,7 @@ typedef struct {
     /* what the Debug window reports of the display and the game */
     int window_w, window_h;
     int game_w, game_h;     /* the game's picture, as the renderer makes it: the console's size times the render scale */
+    float display_scale;    /* the display's scale, 1.0 for none: the engine menu's UI scale (overlay_display_percent) */
     int vsync;
     int anti_aliasing; /* the setting: 0 off, 1 FXAA, 2 SMAA */
     int scaling_filter; /* the setting: 0 bilinear, 1 bicubic */

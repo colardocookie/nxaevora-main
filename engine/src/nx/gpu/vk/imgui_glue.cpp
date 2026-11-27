@@ -5,6 +5,7 @@
 #include "nx/gpu/vk/imgui_glue.h"
 #include "imgui.h"
 #include "imgui_impl_vulkan.h"
+#include "nx/gpu/vk/engine_menu.h"
 #include "nx/gpu/vk/imgui_events.h"
 #include "nx/gpu/vk/imgui_input.h"
 #include "nx/gpu/vk/imgui_style.h"
@@ -24,10 +25,14 @@ bool add_fonts(const ImguiGlueInit* in) {
     ImGuiIO& io = ImGui::GetIO();
     if (!in->latin_font) return true;
     if (!io.Fonts->AddFontFromFileTTF(in->latin_font, in->font_px)) return false;
-    if (in->japanese_font) {
-        ImFontConfig merge;
-        merge.MergeMode = true;
-        if (!io.Fonts->AddFontFromFileTTF(in->japanese_font, in->font_px, &merge)) return false;
+    ImFontConfig merge;
+    merge.MergeMode = true;
+    if (in->japanese_font && !io.Fonts->AddFontFromFileTTF(in->japanese_font, in->font_px, &merge)) return false;
+    if (in->icon_font) {
+        ImFontConfig icons;
+        icons.MergeMode = true;
+        icons.GlyphOffset = ImVec2(0.0f, 1.0f);
+        if (!io.Fonts->AddFontFromFileTTF(in->icon_font, in->font_px, &icons)) return false;
     }
     return true;
 }
@@ -92,6 +97,15 @@ extern "C" int imgui_glue_vk_failed(void) { return g_vk_failed; }
 extern "C" int imgui_glue_frame(ImguiFrame* f) {
     if (!g_ready) return 0;
     ImGuiIO& io = ImGui::GetIO();
+    /* the menu's navigation is on only while its panel shows, so the windows keep their behavior */
+    const bool menu_shows = engine_menu_visible();
+    if (menu_shows) {
+        io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
+        io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
+    } else {
+        io.ConfigFlags &= ~(ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad);
+        io.BackendFlags &= ~ImGuiBackendFlags_HasGamepad;
+    }
     io.DisplaySize = ImVec2(f->w, f->h);
     io.DeltaTime = f->dt > 0 ? f->dt : 1.0f / 60;
     imgui_events_feed();

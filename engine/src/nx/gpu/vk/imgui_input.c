@@ -13,8 +13,11 @@ static int g_running;
 
 static ImguiEvent* at(int i) { return &g_queue[(g_head + i) % QUEUE_MAX]; }
 
-/* a position or a wheel step can be merged or lost, a button, a key, a text or a focus change cannot */
-static int is_motion(const ImguiEvent* e) { return e->type == IMGUI_EV_MOUSE_POS || e->type == IMGUI_EV_WHEEL; }
+/* a position, a wheel step or a stick reading can be merged or lost (the next reading of a stick carries both of its
+   sides), a button, a key, a text or a focus change cannot */
+static int is_motion(const ImguiEvent* e) {
+    return e->type == IMGUI_EV_MOUSE_POS || e->type == IMGUI_EV_WHEEL || e->type == IMGUI_EV_GAMEPAD_AXIS;
+}
 
 /* makes room by removing the oldest motion event: 1 when there is room now */
 static int evict_motion(void) {

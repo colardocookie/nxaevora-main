@@ -13,7 +13,7 @@ ScarletNX runtime compiles the code at that moment (the JIT). A fully static bui
 ## Phase 0: Foundation (done)
 
 - The repository, the vendored ScarletNX and the folder layout are in place.
-- ScarletNX builds on Windows with MSYS2 CLANG64. The steps are in `docs/build/ENGINE_BUILD-NOTES.md`.
+- ScarletNX builds on Windows with MSYS2 CLANG64. The steps are in `docs/build/engine-build.md`.
 - A portable copy of the recompiler runs without MSYS2.
 - The base game and update 1.1.1 recompile in a few minutes.
 - The recompiled game boots to the language selection screen and runs without a crash for 45 seconds.
@@ -199,11 +199,11 @@ ScarletNX, and in the game it has two UIs: the old menu of ScarletNX and the win
 
 Goal: the base derived from ScarletNX becomes the NXAevora Engine in `engine/`. The Engine starts from its CLI, which
 recompiles the game and runs it, and the game window stays. SDL stays for the window and the input. The in-game UI
-uses one new UI base with the look of Material Design 3. Dear ImGui is replaced completely and does not stay for
-debug. The start GUI, the old menu and the old UI drawing base of ScarletNX are removed after their needed functions
-move. The external launcher calls the CLI and is finished in phase 11.
+uses one new UI base with the look of Material Design 3: Dear ImGui 1.93.0 with its own MD3-style widgets. Dear ImGui
+stays as the base and is not removed. The start GUI and the old menu of ScarletNX are removed after their needed
+functions move. The external launcher calls the CLI and is finished in phase 11.
 
-The work has five reviewable units:
+The work has six reviewable units:
 1. Move to the Engine: the new folder and the shown name, the references in the build, CI, the tools and the docs,
    the program name and its callers. The copyright lines, the license and the upstream commit stay recorded. A bulk
    rename of internal identifiers is not required.
@@ -213,22 +213,26 @@ The work has five reviewable units:
 3. CLI: the commands, the settings file, the paths, the exit codes, and a progress and error stream that the launcher
    reads. A normal run needs no dialog. An error before the window shows on stderr and in the log. One settings
    definition serves the CLI, the launcher and the in-game UI.
-4. New UI base: RmlUi (user decision 2026-11-25). A small prototype in the game checks it. Then the needed in-game
-   functions move to it, with shared MD3 design values.
-5. Removal of Dear ImGui and the old UIs, with their code, settings and build dependencies.
+4. New UI base: Dear ImGui 1.93.0 with its own MD3-style widgets (user decision 2026-11-26). The theme, the fonts,
+   the widgets, the shell and the host tests go into the Engine. The design is in
+   [engine-menu.md](docs/dev/ui/engine-menu.md).
+5. Move of the functions: one screen or one group per pull request, and the old screen is deleted in the same pull
+   request. The game never switches between the old and the new UI.
+6. Removal of the rest of the old UI, with its code, settings and build dependencies, and the finish of the docs.
 
 A unit 1.5, after unit 1 and before unit 3, removes the drivers for the GBA, the 3DS, the Vita and the Linux AArch64
 programs, and the Android, iOS and macOS frontends, in two pull requests. The Linux host build stays as a later
 target.
 
 The old and the new UI can both exist during the work, but not at the end of the phase. The details, the first
-inventory and the selection checks are in `docs/records/ui/engine-ui-plan.md`.
+inventory and the selection checks are in `docs/records/ui/engine-ui-plan.md`. The design of the menu is in
+[engine-menu.md](docs/dev/ui/engine-menu.md).
 
 Exit condition: from the new layout the CLI recompiles and runs the game, the Engine does not depend on the old start
-GUI, the needed in-game UI works on the new base, Dear ImGui and the old UI code and dependencies are gone, the
-removed drivers and frontends are gone from the build, CI and the docs, no function was lost in the move, the tests,
-CI and runs of the target scenes pass, and the Japanese input, the switch of the input between the UI and the game,
-and the load of the new UI are checked.
+GUI, the needed in-game UI works on the new base, the old UI code and its build dependencies are gone, the removed
+drivers and frontends are gone from the build, CI and the docs, no function was lost in the move, the tests, CI and
+runs of the target scenes pass, and the Japanese input, the switch of the input between the UI and the game, and the
+load of the new UI are checked.
 
 ## Phase 8: Shaders and pipelines
 

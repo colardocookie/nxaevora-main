@@ -12,13 +12,23 @@
 extern "C" {
 #endif
 
-enum { IMGUI_EV_MOUSE_POS, IMGUI_EV_MOUSE_BUTTON, IMGUI_EV_WHEEL, IMGUI_EV_KEY, IMGUI_EV_TEXT, IMGUI_EV_FOCUS };
+enum {
+    IMGUI_EV_MOUSE_POS,
+    IMGUI_EV_MOUSE_BUTTON,
+    IMGUI_EV_WHEEL,
+    IMGUI_EV_KEY,
+    IMGUI_EV_TEXT,
+    IMGUI_EV_FOCUS,
+    IMGUI_EV_GAMEPAD,      /* key: an ImGuiKey_Gamepad* value, down */
+    IMGUI_EV_GAMEPAD_AXIS /* key: a stick key, down and the analog value */
+};
 enum { IMGUI_TEXT_MAX = 32 };
 /* an SDL button number (1 left, 2 middle, 3 right) in button; a key as the SDL keycode and the SDL modifier mask */
 typedef struct {
     int type;
     float x, y; /* a position in pixels of the picture, or the wheel's steps. -1e9 for no mouse */
     int button, down, key, mods;
+    float value; /* a gamepad axis's analog value, 0 for the others */
     char text[IMGUI_TEXT_MAX];
 } ImguiEvent;
 

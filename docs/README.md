@@ -7,7 +7,7 @@ The notes of NXAevora, by subject.
 
 ## Guides for contributors
 
-- [ENGINE_BUILD-NOTES.md](build/ENGINE_BUILD-NOTES.md): how ScarletNX is built on Windows in MSYS2 CLANG64.
+- [engine-build.md](build/engine-build.md): how ScarletNX is built on Windows in MSYS2 CLANG64.
 - [runtime-changes.md](build/runtime-changes.md): the list of the changes in the vendored ScarletNX. Kept up to date.
 - [CREDITS.md](CREDITS.md): the projects and works that NXAevora uses, and their licenses.
 
@@ -21,8 +21,14 @@ These documents tell how the engine works now. They come from the code. The stat
 - [aot-recompiler.md](dev/engine/aot-recompiler.md): the input, the stages, the output, the dispatch table, the JIT fallback and the hints.
 - [nvn-vulkan.md](dev/engine/nvn-vulkan.md): the two NVN paths, the host objects, the command lists, the frame job, the replay and the shaders.
 - [arceus-timing.md](dev/engine/arceus-timing.md): the elapsed-time clocks of the game and the hook groups that follow the frame step.
-- [arceus-temporal.md](dev/engine/arceus-temporal.md): the temporal passes (`probe` and `taa`), the object vectors, the scene rectangle and the FSR, XeSS and DLSS adapters.
+- [motion-vector.md](dev/engine/motion-vector.md): the base motion-vector stage: the scene and camera matrices, the camera and object vectors, the links, the scene rectangle, the projection and the GPU time.
+- [temporal-anti-aliasing.md](dev/engine/temporal-anti-aliasing.md): the temporal anti-aliasing pass (`taa`), with the jitter, the resolve, the options, the views and the viewport gate.
+- [ai-upscaling.md](dev/engine/ai-upscaling.md): the upscaler step (FSR, XeSS and DLSS), with the contract, the hand-over, the device needs and the self-test.
 - [arceus-pass-census.md](dev/engine/arceus-pass-census.md): the read-only frame pass census and its log lines.
+
+### ui
+
+- [engine-menu.md](dev/ui/engine-menu.md): the design of the engine menu (the in-game UI base, the frame, the theme, the components, the motion and the migration).
 
 The launcher specification comes later.
 
@@ -64,6 +70,7 @@ AI agents. They are kept as history. They are not a specification and can be out
 - [nvn-survey.md](records/graphics/nvn-survey.md): the survey of stage 1, what ScarletNX had for NVN.
 - [shader-analysis.md](records/graphics/shader-analysis.md): the shader programs that ScarletNX did not translate.
 - [present-alpha.md](records/graphics/present-alpha.md): the HUD ghosting with Mailbox and Immediate. Fixed.
+- [upscaler-selftest-runs.md](records/graphics/upscaler-selftest-runs.md): the history of the upscaler self-test's single runs.
 
 ### input
 
