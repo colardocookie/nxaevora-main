@@ -594,6 +594,12 @@ set_target_properties(snx-test-md3-scale PROPERTIES CXX_STANDARD 17 CXX_STANDARD
 snx_test_target(snx-test-md3-scale 11)
 add_test(NAME md3_scale COMMAND snx-test-md3-scale)
 
+# The settings row and page scroll rules (src/nx/gpu/vk/md3/md3_layout.cpp), with no ImGui.
+add_executable(snx-test-md3-layout md3_layout.cpp "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/md3/md3_layout.cpp")
+set_target_properties(snx-test-md3-layout PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+snx_test_target(snx-test-md3-layout 11)
+add_test(NAME md3_layout COMMAND snx-test-md3-layout)
+
 # The engine menu's pure rules: the choice of the menu of a run and the gamepad mapping (src/nx/gpu/vk/engine_menu.cpp).
 add_executable(snx-test-engine-menu engine_menu_pure.cpp "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/engine_menu.cpp")
 set_target_properties(snx-test-engine-menu PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
@@ -611,6 +617,14 @@ snx_test_target(snx-test-imgui-settings 11)
 target_link_libraries(snx-test-imgui-settings PRIVATE scarletnx-common m)
 target_include_directories(snx-test-imgui-settings PRIVATE "${PROJECT_BINARY_DIR}/generated")
 add_test(NAME imgui_settings COMMAND snx-test-imgui-settings)
+
+# The engine menu's settings pages' pure rules: the widget of a row, the two groups of the Performance page, and the
+# number a field commits (src/nx/gpu/vk/menu_settings.cpp).
+add_executable(snx-test-menu-settings menu_settings.cpp "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/menu_settings.cpp")
+set_target_properties(snx-test-menu-settings PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+target_include_directories(snx-test-menu-settings PRIVATE "${PROJECT_SOURCE_DIR}/src")
+snx_test_target(snx-test-menu-settings 11)
+add_test(NAME menu_settings COMMAND snx-test-menu-settings)
 
 add_executable(snx-test-nvn-objtab nvn/nvn_objtab.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_objtab.c")
 snx_test_target(snx-test-nvn-objtab 11)

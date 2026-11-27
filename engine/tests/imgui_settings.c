@@ -97,8 +97,9 @@ int main(void) {
     check(imgui_settings_pages() == 6, "six pages");
     check(imgui_settings_page_window(page_of("Mouse")) == IMGUI_WINDOW_INPUT &&
               imgui_settings_page_window(page_of("Controllers")) == IMGUI_WINDOW_INPUT &&
-              imgui_settings_page_window(page_of("Display")) == IMGUI_WINDOW_DISPLAY &&
-              imgui_settings_page_window(page_of("Performance")) == IMGUI_WINDOW_DISPLAY &&
+              imgui_settings_page_window(page_of("Display")) == IMGUI_WINDOW_ENGINE_MENU &&
+              imgui_settings_page_window(page_of("Performance")) == IMGUI_WINDOW_ENGINE_MENU &&
+              imgui_settings_page_window(page_of("Graphics")) == IMGUI_WINDOW_DISPLAY &&
               imgui_settings_page_window(99) == -1,
           "the window of each page");
 

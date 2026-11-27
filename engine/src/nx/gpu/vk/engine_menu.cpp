@@ -9,6 +9,7 @@
 
 #include <SDL3/SDL_gamepad.h>
 #include <cmath>
+#include <cstring>
 
 #include "imgui.h"
 
@@ -130,17 +131,21 @@ extern "C" EngineMenuPointer engine_menu_pointer(int phase, uint64_t id, float f
 #include "imgui_internal.h"
 #include "nx/gpu/vk/imgui_events.h"
 #include "nx/gpu/vk/imgui_input.h"
+#include "nx/gpu/vk/imgui_settings.h"
+#include "nx/gpu/vk/md3/md3_layout.h"
 #include "nx/gpu/vk/md3/md3_motion.h"
 #include "nx/gpu/vk/md3/md3_palette.h"
 #include "nx/gpu/vk/md3/md3_scale.h"
 #include "nx/gpu/vk/md3/md3_theme.h"
 #include "nx/gpu/vk/md3/md3_widgets.h"
+#include "nx/gpu/vk/menu_settings.h"
 
 namespace {
 
 constexpr int kPageCount = 10;
 constexpr int kPageGame = 0;
 constexpr int kPageDisplay = 1;
+constexpr int kPagePerformance = 3;
 
 constexpr float kTopBarHeightPx = 64.0f;
 constexpr float kRailWidthPx = 112.0f;
@@ -173,6 +178,27 @@ const char* const kBuildMark = "\xEF\xA3\x8D";
 // U+E5D5 (Material Symbols Rounded, refresh) in UTF-8, for a restart hint.
 const char* const kRestartMark = "\xEE\x97\x95";
 
+// The settings model's pages that this menu shows, and the lines of a row.
+constexpr const char* kDisplayPageName = "Display";
+constexpr const char* kPerformancePageName = "Performance";
+constexpr const char* kRestartSupporting = "Saved. Applies after a restart.";
+constexpr const char* kTextOnlySupporting = "Edit it in the .ini file";
+constexpr double kPresetEpsilon = 1e-6;
+
+// The row limits and right part sizes of the settings pages. The widths are
+// the mockup's, the row count is above every page of the model, and a combo
+// holds at most 40 values.
+constexpr int kMenuRowMax = 64;
+constexpr int kMenuComboMax = 40;
+constexpr int kMenuValueMax = 96;
+constexpr float kRightWidthComboPx = 240.0f;
+constexpr float kRightWidthNumberPx = 240.0f;
+constexpr float kRightWidthSliderPx = 280.0f;
+
+// The preset row whose Custom entry was picked: its number field stays below the
+// dropdown, as in the old window, even when the value is one of the presets.
+const char* g_custom_key = nullptr;
+
 enum class InputDevice { Keyboard, Gamepad, Mouse };
 
 InputDevice DeviceFromEvent(int device) {
@@ -198,6 +224,7 @@ struct MenuState {
     float panel_alpha;
     float panel_offset;
     int page;
+    int pending_page = -1;
     int anim_page;
     bool reduce_motion;
     bool was_visible;
@@ -213,6 +240,7 @@ struct MenuState {
     int page_window_frame;
     float page_scroll_target;
     bool page_scroll_animating;
+    int rail_focus;
 };
 
 std::atomic<int> g_state{MENU_CLOSED};
@@ -321,6 +349,18 @@ bool NavRightPressed() {
            ImGui::IsKeyPressed(ImGuiKey_RightArrow, false);
 }
 
+// The largest scroll of the window's content as it is this frame. ImGui writes
+// ScrollMax at the next Begin from the last frame's content, so the engine
+// computes the current maximum itself (decision 6, fault C3). content_growth is
+// the part that a card added above its last frame's size.
+float PageScrollMax(ImGuiWindow* window, float content_growth) {
+    if (window == nullptr) return 0.0f;
+    const float content_height = window->DC.CursorMaxPos.y - window->DC.CursorStartPos.y;
+    const float max_scroll =
+        content_height + content_growth + window->WindowPadding.y * 2.0f - window->InnerRect.GetHeight();
+    return max_scroll > 0.0f ? max_scroll : 0.0f;
+}
+
 void DrawTopBar() {
     const md3::Theme& theme = md3::CurrentTheme();
     const float s = theme.scale;
@@ -398,29 +438,299 @@ void DrawRail(float body_height) {
     ImGui::BeginChild("##rail", ImVec2(kRailWidthPx * theme.scale, body_height), ImGuiChildFlags_NavFlattened,
                       ImGuiWindowFlags_NoScrollbar);
     const bool right_pressed = NavRightPressed();
+    int focused_page = -1;
+    ImRect focused_box;
     for (int page = 0; page < kPageCount; ++page) {
         char id[32];
         std::snprintf(id, sizeof(id), "##rail_%d", page);
-        if (md3::NavItem(id, kRailIcons[page], kRailLabels[page], g_ui.page == page)) g_ui.page = page;
-        if (right_pressed && ImGui::IsItemFocused() && g_ui.page_anchor_page == g_ui.page &&
+        if (md3::NavItem(id, kRailIcons[page], kRailLabels[page], g_ui.page == page) &&
+            page != g_ui.page) {
+            if (md3::TextEditing())
+                g_ui.pending_page = page;
+            else
+                g_ui.page = page;
+        }
+        // The old page is drawn once more, so the field loses the focus and commits.
+        if (page == g_ui.pending_page) {
+            ImGuiWindow* rail = ImGui::GetCurrentWindow();
+            const ImRect box(ImGui::GetItemRectMin(), ImGui::GetItemRectMax());
+            ImGui::SetNavWindow(rail);
+            ImGui::SetNavID(ImGui::GetItemID(), ImGuiNavLayer_Main, rail->NavRootFocusScopeId,
+                            ImGui::WindowRectAbsToRel(rail, box));
+            ImGui::SetNavCursorVisible(g_ui.last_device != InputDevice::Mouse);
+        }
+        if (ImGui::IsItemFocused()) {
+            focused_page = page;
+            focused_box = ImRect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax());
+        }
+        if (right_pressed && focused_page == page && g_ui.page_anchor_page == g_ui.page &&
             g_ui.page_anchor.id != 0) {
             FocusNavAnchor(g_ui.page_anchor);
             g_ui.request_page_top = true;
         }
     }
+    // Decision 8: the rail scrolls with no visible scrollbar when the items are
+    // taller than the body, and a new focused item is kept fully visible.
+    if (focused_page >= 0 && focused_page != g_ui.rail_focus) {
+        g_ui.rail_focus = focused_page;
+        ImGuiWindow* rail = ImGui::GetCurrentWindow();
+        const float top = focused_box.Min.y - rail->DC.CursorStartPos.y;
+        const float bottom = focused_box.Max.y - rail->DC.CursorStartPos.y;
+        const float target = md3::PageScrollTarget(
+            {top, bottom, rail->InnerRect.GetHeight(), ImGui::GetScrollY(), PageScrollMax(rail, 0.0f),
+             focused_page == 0, focused_page == kPageCount - 1});
+        ImGui::SetScrollY(rail, target);
+    }
     ImGui::EndChild();
+}
+
+int SettingsPageByName(const char* name) {
+    for (int page = 0; page < imgui_settings_pages(); ++page)
+        if (std::strcmp(imgui_settings_page_name(page), name) == 0) return page;
+    return -1;
+}
+
+int ReadSettingsRows(int page, ImguiSettingRow* rows, int max_rows) {
+    int count = 0;
+    while (count < max_rows && imgui_settings_row(page, count, &rows[count])) ++count;
+    return count;
+}
+
+void SetSettingInt(const ImguiSettingRow& row, int value) {
+    char text[16];
+    std::snprintf(text, sizeof text, "%d", value);
+    imgui_settings_set(row.key, text);
+}
+
+void DrawSwitchRow(const ImguiSettingRow& row) {
+    bool on = row.ivalue != 0;
+    if (md3::Switch("##value", &on)) imgui_settings_set(row.key, on ? "1" : "0");
+}
+
+void DrawSliderRow(const ImguiSettingRow& row) {
+    int value = row.ivalue;
+    const int lo = static_cast<int>(row.lo);
+    const int hi = static_cast<int>(row.hi);
+    if (md3::SliderInt("##value", &value, lo, hi, row.step, "%d") && value != row.ivalue) SetSettingInt(row, value);
+}
+
+void DrawNumberRow(const ImguiSettingRow& row) {
+    int value = row.ivalue;
+    const int step = row.step > 0 ? row.step : 1;
+    if (md3::NumberField("##value", &value, static_cast<int>(row.lo), static_cast<int>(row.hi), step) &&
+        value != row.ivalue)
+        SetSettingInt(row, value);
+}
+
+void DrawIntWordsRow(const ImguiSettingRow& row) {
+    const int step = row.step > 0 ? row.step : 1;
+    const int lo = static_cast<int>(row.lo);
+    int count = static_cast<int>((row.hi - row.lo) / step) + 1;
+    if (count < 1) count = 1;
+    if (count > kMenuComboMax) count = kMenuComboMax;
+    char labels[kMenuComboMax][kMenuValueMax];
+    const char* items[kMenuComboMax];
+    int index = 0;
+    for (int i = 0; i < count; ++i) {
+        const int value = lo + i * step;
+        imgui_settings_word(row.key, value, labels[i], kMenuValueMax);
+        items[i] = labels[i];
+        if (value == row.ivalue) index = i;
+    }
+    int chosen = index;
+    if (!md3::Combo("##value", &chosen, items, count) || chosen == index) return;
+    SetSettingInt(row, lo + chosen * step);
+}
+
+void DrawTextWordsRow(const ImguiSettingRow& row) {
+    char values[kMenuComboMax][kMenuValueMax];
+    char labels[kMenuComboMax][kMenuValueMax];
+    const char* items[kMenuComboMax];
+    int count = 0;
+    int index = -1;
+    while (count < kMenuComboMax &&
+           imgui_settings_text_word(row.key, count, values[count], kMenuValueMax, labels[count], kMenuValueMax)) {
+        items[count] = labels[count];
+        if (std::strcmp(values[count], row.text) == 0) index = count;
+        ++count;
+    }
+    if (count == 0) return;
+    const int word_count = count;
+    if (index < 0 && count < kMenuComboMax) {
+        std::snprintf(labels[count], kMenuValueMax, "%s (custom)", row.text);
+        items[count] = labels[count];
+        index = count;
+        ++count;
+    }
+    if (index < 0) index = 0;
+    int chosen = index;
+    if (!md3::Combo("##value", &chosen, items, count) || chosen == index) return;
+    if (chosen < word_count) imgui_settings_set(row.key, values[chosen]);
+}
+
+bool PresetShowsCustom(const ImguiSettingRow& row) {
+    if (row.presets <= 0 || (row.flags & IMGUI_SETTING_CUSTOM) == 0) return false;
+    if (g_custom_key != nullptr && std::strcmp(g_custom_key, row.key) == 0) return true;
+    const double now = row.type == IMGUI_SETTING_FLOAT ? static_cast<double>(row.fvalue) : static_cast<double>(row.ivalue);
+    for (int i = 0; i < row.presets; ++i) {
+        char value[kMenuValueMax];
+        char label[kMenuValueMax];
+        double number = 0.0;
+        if (!imgui_settings_preset(row.key, i, value, sizeof value, label, sizeof label, &number)) return false;
+        if (std::fabs(number - now) < kPresetEpsilon) return false;
+    }
+    return true;
+}
+
+void DrawPresetRow(const ImguiSettingRow& row) {
+    char values[kMenuComboMax][kMenuValueMax];
+    char labels[kMenuComboMax][kMenuValueMax];
+    const char* items[kMenuComboMax];
+    int count = row.presets;
+    if (count < 0) count = 0;
+    if (count > kMenuComboMax - 1) count = kMenuComboMax - 1;
+    const double now = row.type == IMGUI_SETTING_FLOAT ? static_cast<double>(row.fvalue) : static_cast<double>(row.ivalue);
+    int at = -1;
+    for (int i = 0; i < count; ++i) {
+        double number = 0.0;
+        if (!imgui_settings_preset(row.key, i, values[i], kMenuValueMax, labels[i], kMenuValueMax, &number)) {
+            count = i;
+            break;
+        }
+        items[i] = labels[i];
+        if (std::fabs(number - now) < kPresetEpsilon) at = i;
+    }
+    const bool custom_row = (row.flags & IMGUI_SETTING_CUSTOM) != 0;
+    const int custom_index = count;
+    if (custom_row && count < kMenuComboMax) {
+        items[count] = "Custom";
+        ++count;
+    }
+    const bool custom_on = custom_row && PresetShowsCustom(row);
+    const int index = custom_on ? custom_index : (at >= 0 ? at : 0);
+    int chosen = index;
+    if (md3::Combo("##value", &chosen, items, count) && chosen != index) {
+        if (custom_row && chosen == custom_index) {
+            g_custom_key = row.key;
+        } else if (chosen < custom_index) {
+            g_custom_key = nullptr;
+            imgui_settings_set(row.key, values[chosen]);
+        }
+    }
+    if (!custom_on) return;
+    int value = row.ivalue;
+    if (value < static_cast<int>(row.lo)) value = static_cast<int>(row.lo);
+    if (value > static_cast<int>(row.hi)) value = static_cast<int>(row.hi);
+    const int step = row.step > 0 ? row.step : 1;
+    if (md3::NumberField("##custom", &value, static_cast<int>(row.lo), static_cast<int>(row.hi), step) &&
+        value != row.ivalue)
+        SetSettingInt(row, value);
+}
+
+void DrawSettingRow(const ImguiSettingRow& row) {
+    const int widget = menu_settings_widget(&row);
+    if (widget == MENU_WIDGET_UNSUPPORTED) return; // no FLOAT row of these pages today
+    const md3::Theme& theme = md3::CurrentTheme();
+    const float s = theme.scale;
+    const bool locked = (row.flags & IMGUI_SETTING_LOCKED) != 0;
+    const bool restart = (row.flags & IMGUI_SETTING_STARTUP) != 0;
+    const bool custom_field = widget == MENU_WIDGET_COMBO && PresetShowsCustom(row);
+    float right_width = 0.0f;
+    float right_height = 0.0f;
+    switch (widget) {
+        case MENU_WIDGET_COMBO:
+            right_width = kRightWidthComboPx * s;
+            right_height = md3::kDropdownHeightPx * s;
+            break;
+        case MENU_WIDGET_NUMBER:
+            right_width = kRightWidthNumberPx * s;
+            right_height = md3::kDropdownHeightPx * s;
+            break;
+        case MENU_WIDGET_SLIDER:
+            right_width = kRightWidthSliderPx * s;
+            right_height = md3::kSliderItemHeightPx * s;
+            break;
+        case MENU_WIDGET_SWITCH:
+            right_width = md3::kSwitchWidthPx * s;
+            right_height = md3::kSwitchHeightPx * s;
+            break;
+        default:
+            break;
+    }
+    if (custom_field) right_height = right_height * 2.0f + ImGui::GetStyle().ItemSpacing.y;
+    const char* supporting = row.help;
+    if (row.flags & IMGUI_SETTING_RESTART)
+        supporting = kRestartSupporting;
+    else if (widget == MENU_WIDGET_TEXT_ONLY)
+        supporting = kTextOnlySupporting;
+    char id[96];
+    std::snprintf(id, sizeof id, "##setting_%s", row.key);
+    ImGui::BeginDisabled(locked);
+    md3::RowBegin(id, row.name != nullptr ? row.name : row.key, supporting, restart, right_width, right_height);
+    ImGui::PushID(row.key);
+    switch (widget) {
+        case MENU_WIDGET_COMBO:
+            if (row.presets > 0)
+                DrawPresetRow(row);
+            else if (row.type == IMGUI_SETTING_TEXT)
+                DrawTextWordsRow(row);
+            else
+                DrawIntWordsRow(row);
+            break;
+        case MENU_WIDGET_NUMBER:
+            DrawNumberRow(row);
+            break;
+        case MENU_WIDGET_SLIDER:
+            DrawSliderRow(row);
+            break;
+        case MENU_WIDGET_SWITCH:
+            DrawSwitchRow(row);
+            break;
+        default:
+            break;
+    }
+    ImGui::PopID();
+    md3::RowEnd();
+    ImGui::EndDisabled();
+}
+
+void DrawDisplaySettings() {
+    const int page = SettingsPageByName(kDisplayPageName);
+    if (page < 0) return;
+    ImguiSettingRow rows[kMenuRowMax];
+    const int count = ReadSettingsRows(page, rows, kMenuRowMax);
+    for (int i = 0; i < count; ++i) DrawSettingRow(rows[i]);
+}
+
+void DrawPerformanceSettings() {
+    const int page = SettingsPageByName(kPerformancePageName);
+    if (page < 0) return;
+    ImguiSettingRow rows[kMenuRowMax];
+    const int count = ReadSettingsRows(page, rows, kMenuRowMax);
+    int main_index[MENU_PERFORMANCE_MAIN_COUNT];
+    int advanced[kMenuRowMax];
+    int main_count = 0;
+    int advanced_count = 0;
+    menu_performance_groups(rows, count, main_index, &main_count, advanced, &advanced_count);
+    for (int i = 0; i < main_count; ++i) DrawSettingRow(rows[main_index[i]]);
+    md3::SectionTitle("Advanced");
+    for (int i = 0; i < advanced_count; ++i) DrawSettingRow(rows[advanced[i]]);
 }
 
 void DrawPage(int page) {
     md3::CardBegin("##page_card");
     md3::SectionTitle(kRailLabels[page]);
-    md3::BodyText(PAGE_PLACEHOLDER);
-    if (page == kPageDisplay) { // Display: the Reduce motion switch, in memory only
-        const md3::Theme& theme = md3::CurrentTheme();
+    if (page == kPageDisplay) {
+        DrawDisplaySettings();
         md3::RowBegin("##reduce_motion", "Reduce motion", "Turns off the animations", false,
-                      md3::kSwitchWidthPx * theme.scale, md3::kSwitchHeightPx * theme.scale);
+                      md3::kSwitchWidthPx * md3::CurrentTheme().scale,
+                      md3::kSwitchHeightPx * md3::CurrentTheme().scale);
         md3::Switch("##reduce_motion", &g_ui.reduce_motion);
         md3::RowEnd();
+    } else if (page == kPagePerformance) {
+        DrawPerformanceSettings();
+    } else {
+        md3::BodyText(PAGE_PLACEHOLDER);
     }
     md3::CardEnd();
 }
@@ -466,6 +776,7 @@ void DrawPanel() {
         md3::Tween(kPageOffsetTweenId, 0.0f, md3::kDurationMediumMs, md3::kCurveEmphasizedDecelerate);
 
     const bool page_known = g_ui.page_window != nullptr && g_ui.page_window_frame >= ImGui::GetFrameCount() - 1;
+    const bool wheel = ImGui::GetIO().MouseWheel != 0.0f;
     if (page_changed || g_ui.request_page_top) {
         g_ui.request_page_top = false;
         g_ui.page_scroll_target = 0.0f;
@@ -473,15 +784,17 @@ void DrawPanel() {
         md3::ResetTween(kPageScrollTweenId, 0.0f);
         if (page_known) ImGui::SetScrollY(g_ui.page_window, 0.0f);
     } else if (page_known) {
+        // The wheel keeps its own target. A nav move uses the row rule after the
+        // page is drawn, so its keep-visible target is dropped here.
         const float pending = g_ui.page_window->ScrollTarget.y;
-        if (pending < FLT_MAX) {
+        if (pending < FLT_MAX && wheel) {
             const float ratio = g_ui.page_window->ScrollTargetCenterRatio.y;
             float wanted = pending - ratio * g_ui.page_window->SizeFull.y;
-            if (ImGui::GetIO().MouseWheel != 0.0f)
-                wanted = g_ui.page_scroll_target + (wanted - g_ui.page_window->Scroll.y);
+            wanted = g_ui.page_scroll_target + (wanted - g_ui.page_window->Scroll.y);
             md3::ResetTween(kPageScrollTweenId, g_ui.page_window->Scroll.y);
-            g_ui.page_scroll_target = ImClamp(wanted, 0.0f, g_ui.page_window->ScrollMax.y);
+            g_ui.page_scroll_target = wanted;
         }
+        g_ui.page_window->ScrollTarget.y = FLT_MAX;
     }
     if (page_known) {
         const float scroll =
@@ -512,6 +825,23 @@ void DrawPanel() {
     DrawPage(g_ui.page);
     g_ui.page_anchor = md3::EndNavAnchorCapture();
     g_ui.page_anchor_page = g_ui.page;
+
+    // Decision 5: a nav move scrolls the page by the whole focused row box.
+    // Decision 6: the clamp uses this frame's content maximum.
+    const float max_scroll = PageScrollMax(page_window, md3::LastCardGrowth());
+    const md3::FocusedRow focused = md3::LastFocusedRow();
+    ImGuiContext* context = ImGui::GetCurrentContext();
+    const ImGuiID nav_moved = context != nullptr ? context->NavJustMovedToId : 0;
+    if (focused.valid && focused.count > 0 && nav_moved != 0 && nav_moved == focused.nav_id) {
+        const float scroll = ImGui::GetScrollY();
+        md3::ResetTween(kPageScrollTweenId, scroll);
+        g_ui.page_scroll_target = md3::PageScrollTarget(
+            {focused.top, focused.bottom, page_window->InnerRect.GetHeight(), scroll, max_scroll,
+             focused.index == 0, focused.index == focused.count - 1});
+        g_ui.page_scroll_animating = true;
+    } else {
+        g_ui.page_scroll_target = ImClamp(g_ui.page_scroll_target, 0.0f, max_scroll);
+    }
     ImGui::EndChild();
     ImGui::PopStyleVar(2);
 
@@ -525,23 +855,31 @@ bool HandlePageKeys() {
     if (md3::AnyPopupOpen()) return false;
     ImGuiIO& io = ImGui::GetIO();
     const int previous_page = g_ui.page;
-    const bool next = ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false);
-    const bool previous = ImGui::IsKeyPressed(ImGuiKey_GamepadL1, false);
+    int target_page = previous_page;
     if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Tab, false)) {
         if (io.KeyShift)
-            g_ui.page = (g_ui.page + kPageCount - 1) % kPageCount;
+            target_page = (target_page + kPageCount - 1) % kPageCount;
         else
-            g_ui.page = (g_ui.page + 1) % kPageCount;
+            target_page = (target_page + 1) % kPageCount;
     }
-    if (next) g_ui.page = (g_ui.page + 1) % kPageCount;
-    if (previous) g_ui.page = (g_ui.page + kPageCount - 1) % kPageCount;
+    if (ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false))
+        target_page = (target_page + 1) % kPageCount;
+    if (ImGui::IsKeyPressed(ImGuiKey_GamepadL1, false))
+        target_page = (target_page + kPageCount - 1) % kPageCount;
+    if (target_page == previous_page) return false;
+    if (md3::TextEditing())
+        g_ui.pending_page = target_page;
+    else
+        g_ui.page = target_page;
     return g_ui.page != previous_page;
 }
 
 void ResetUiState() {
+    md3::CancelTextEditing();
     g_ui.panel_alpha = 0.0f;
     g_ui.panel_offset = 0.0f;
     g_ui.page = kPageGame;
+    g_ui.pending_page = -1;
     g_ui.anim_page = kPageGame;
     g_ui.was_visible = false;
     g_ui.focus_panel = false;
@@ -556,6 +894,8 @@ void ResetUiState() {
     g_ui.page_window_frame = 0;
     g_ui.page_scroll_target = 0.0f;
     g_ui.page_scroll_animating = false;
+    g_ui.rail_focus = -1;
+    g_custom_key = nullptr;
 }
 
 } // namespace
@@ -615,12 +955,19 @@ bool engine_menu_draw(ImguiFrame* f) {
 
     const bool open = state == MENU_OPEN;
     if (open) {
+        if (g_ui.pending_page >= 0) {
+            g_ui.page = g_ui.pending_page;
+            g_ui.pending_page = -1;
+        }
         HandlePageKeys();
         const bool close_pressed = ImGui::IsKeyPressed(ImGuiKey_Escape, false) ||
                                    ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false);
-        if (close_pressed && !md3::AnyPopupOpen()) {
+        if (close_pressed && !md3::AnyPopupOpen() && !md3::TextEditing()) {
             if (StateMove(MENU_OPEN, MENU_CLOSING)) state = MENU_CLOSING;
         }
+    } else {
+        md3::CancelTextEditing();
+        g_ui.pending_page = -1;
     }
 
     const bool closing = state != MENU_OPEN;

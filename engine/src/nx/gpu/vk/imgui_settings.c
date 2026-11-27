@@ -24,8 +24,8 @@ typedef struct {
     int window;       /* the window that shows it */
 } Page;
 static const Page PAGES[] = {{"Mouse", IMGUI_WINDOW_INPUT},       {"Keyboard", IMGUI_WINDOW_INPUT},
-                             {"Controllers", IMGUI_WINDOW_INPUT}, {"Display", IMGUI_WINDOW_DISPLAY},
-                             {"Graphics", IMGUI_WINDOW_DISPLAY}, {"Performance", IMGUI_WINDOW_DISPLAY}};
+                             {"Controllers", IMGUI_WINDOW_INPUT}, {"Display", IMGUI_WINDOW_ENGINE_MENU},
+                             {"Graphics", IMGUI_WINDOW_DISPLAY}, {"Performance", IMGUI_WINDOW_ENGINE_MENU}};
 enum { PAGE_COUNT = sizeof PAGES / sizeof PAGES[0] };
 
 /* Settings that the window shows as a choice from a list, not a slider: the anisotropic filtering and the FPS limit. A
