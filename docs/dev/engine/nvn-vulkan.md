@@ -156,7 +156,7 @@ These log and profile switches are off unless set:
 | `SNX_ARCEUS_LATENCY_PROBE` | Logs a scripted press from the HID update to the presented frames. |
 | `SNX_ARCEUS_PROFILE` | `1` sets the `profiler` option. |
 | `SNX_ARCEUS_GPU_PROFILE` | `1` sets the `vk_gpu_profile` option. |
-| `SNX_ARCEUS_VK_VALIDATION` | `1` turns on the validation layer and its synchronisation checks; `2` does the same. |
+| `SNX_ARCEUS_VK_VALIDATION` | `1` turns on the validation layer and its synchronisation checks; `2` does the same. See [A run under the validation layer](#a-run-under-the-validation-layer). |
 | `SNX_ARCEUS_PATCH_HASH` | `1` takes a buffer patched in place as changed at its next full check. |
 
 The in-game tests are in `engine/src/nx/gpu/nvn/test/`. `nvn_selftest.c` needs `nvn_trace=1` and `nvn_legacy=1`. `nvn_exectest.c` needs `nvn_trace=1` and `nvn_legacy=0`. Both are diagnostics and draw nothing. The host tests are in `engine/tests/nvn/`: `nvn_objtab`, `nvn_cmdlist`, `nvn_frame`, `nvn_replay`, `nvn_rt`, `nvn_dirty`, `nvn_marks`, `nvn_sink`, `nvn_blend_slots`, `draw_record`, `nvn_measure`, `nvn_params`, `nvn_exectest`, `nvn_enum_trace`, `nvn_command_gap` and `nvn_control`, with the selftest parts `nvn_selftest_cmp`, `nvn_selftest_mem`, `nvn_selftest_rec`, `nvn_selftest_dec` and `nvn_selftest_regdiff`. `engine/tests/CMakeLists.txt` adds them to `ctest`.
@@ -195,3 +195,72 @@ The in-game tests are in `engine/src/nx/gpu/nvn/test/`. `nvn_selftest.c` needs `
 The render-target clip limit is `NVN_REPLAY_CLIP_LIMIT` 0x4000. It is a provisional constant. Its source, the device word at `+0x18`, is not known. The code uses the same value for the render targets and the clears.
 
 For the history of the NVN work, see [nvn-design.md](../../records/graphics/nvn-design.md) and [nvn-coverage.md](../../records/graphics/nvn-coverage.md).
+
+## A run under the validation layer
+
+The runtime option `vulkan_validation_layer` (switch `SNX_ARCEUS_VK_VALIDATION`) asks the validation layer for its
+synchronisation checks. When the option is on, the game instance asks for these checks through the extension that the
+layer lists for its features. The option only logs. It changes nothing else. When the option is off, nothing changes,
+and no line is printed.
+
+A run report keeps its `arceus-` lines. The validation facts are written under the prefix `arceus-validation: `, one
+fact per line.
+
+- Whether the layer is enabled, or why it is not. If the loader's list, read whole, does not contain the layer, the
+  line says "not installed". An incomplete list, a failed call or a missing memory allocation means the state is not
+  known.
+- Whether the synchronisation checks were asked for and the instance was made with them, or which way they were not
+  asked for. The list may lack the extension, the list may be incomplete, a call may have failed, or the memory for the
+  list may be missing.
+- Whether the message callback is ready, or was not made, together with the result.
+
+The absence of a "not installed" warning does not prove that a callback exists. A run counts as a run under the layer
+only when all three lines are present. What the layer does with the checks cannot be read from the log.
+
+The instance also asks for the repeated-message limit to be off (`enable_message_limit`, false), as the self-test does.
+This is done only if the layer lists the settings extension. That extension is then enabled, and its structure is placed
+in the instance chain next to the synchronisation structure. Neither structure replaces the other. A line says whether
+the setting was asked for, or which way it was not asked for: no extension, an incomplete list, a failed call, no memory,
+or headers that lack the setting. "Asked" is not the same as confirmed, and the setting itself cannot be read.
+
+Reading a list works the same way here, in the self-test, for loader layers and for layer extensions. A name that is
+found in a list counts as found, even when the list is incomplete. Only a name that is not found in an incomplete list
+is unresolved. For such a name, the list is asked again, up to three times in all. If the list is still incomplete
+without the name, nothing is asked for, and the line says that the state is not known.
+
+Each callback keeps its old `vulkan validation: ...` line, and the prefix is added in front of it. The rules for
+printing are in `validation_lines.h`, which is host tested.
+
+- A line is printed when the callback is the first of its rule, when it is the first with a variable name that was not
+  seen before, or when it has no match with the pattern. Up to 64 no-match callbacks are printed. After that, they are
+  only counted. A new rule or name is printed at its first occurrence, however late that is. Non-printable ASCII
+  characters and backslashes are shown with the self-test's marks. A line is at most 1800 bytes long after the marks.
+  Longer text is cut, the cut is stated, and the contents are counted. Whole and cut callbacks are counted separately.
+  A no-match callback is lost only if it is not printed. The first callback of a new rule is printed even after the 64
+  no-match lines.
+- The rules are identified by the whole name and number. There are up to 32 rules, and names may be up to 127 characters
+  long. The variable names come from the layer's pattern in the raw text, which is the word `variable` followed by a
+  quoted name. There are up to 64 variable names of up to 63 characters each, taken from the first 1 MiB. These are
+  pattern names. They never name images, and they do not show whose image is bound.
+- Every callback is counted, in 64 bits. When the counter reaches its maximum, it stays there, and the log says so. The
+  counter inherited from the message system is 32 bits. Count lines are written at 1, 2, 4, 8 and so on. Each count line
+  gives the total, two printed counts, the limits that were met, and the count of each listed rule on its own line. There
+  is no orderly end of the game, so the last count is within a factor of two of the true total.
+- Each loss prints one `LIMIT MET, first at callback N: ...` line the first time it happens. The losses are these: a rule
+  without a name; a rule name that is too long; a full rules table; a variable name that is too long; a full names table;
+  an unclosed quoted name; text that was not read to the end; the first no-match callback, which is no longer printed; the
+  first cut line; and a stopped counter. Count lines repeat the state.
+- One lock covers the tables, the counters and the inherited counter. The lock is a word that sits beside the state, and
+  it is never copied. The lines are written under the lock. A callback that arrives before the status lines is handled
+  like any other callback.
+
+From a log, the statement "only these rules, on these names" needs three status lines, no `LIMIT MET` line, and no
+unprinted no-match callback. The statement "no callback arrived" needs the whole log. It covers warnings and errors only,
+at the registered severities. Callback and count lines may appear anywhere in the log, including before the status lines.
+
+By default, the layer stops a rule after ten repeats, which bounds the tables. The limit can be set or disabled outside the
+program, in a settings file, in the environment or in the configurator. If the program did not ask for the limit to be off,
+the limit is unknown, and the line says so. The first game run under the layer had 62 callbacks, 57 findings and 5 stop
+notices.
+
+Fixture `engine/tests/validation_lines`.

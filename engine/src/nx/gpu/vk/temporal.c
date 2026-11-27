@@ -3,7 +3,7 @@
 /* Temporal passes for Pokemon Legends: Arceus (SNX_ARCEUS_TEMPORAL). "probe" finds the scene colour and depth of a
    frame, keeps the camera's matrices and makes camera motion vectors between the scene colour's last write and first
    read. "taa" also gives the scene's camera a sub-pixel jitter and resolves the scene there with a history of its
-   own. SNX_ARCEUS_TEMPORAL_VIEW draws what they see (docs/dev/engine/arceus-temporal.md). Unset, nothing here runs. */
+   own. SNX_ARCEUS_TEMPORAL_VIEW draws what they see (docs/dev/engine/motion-vector.md). Unset, nothing here runs. */
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
