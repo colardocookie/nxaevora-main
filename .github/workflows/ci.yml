@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the NXAevora contributors
 #
-# Build ScarletNX for Windows in MSYS2 CLANG64 (docs/build/ENGINE_BUILD-NOTES.md) and run its ctest suite.
+# Build ScarletNX for Windows in MSYS2 CLANG64 (docs/build/engine-build.md) and run its ctest suite.
 # No game file, key or save is used: the tests need none, and a hosted runner has no GPU, so the game is never run.
 # The job name "Windows build and test" is the check name to require on main. Keep it stable.
 name: Build NXAevora (Windows)
@@ -94,7 +94,7 @@ jobs:
           key: ${{ steps.toolchain.outputs.deps }}
           restore-keys: ${{ steps.toolchain.outputs.deps }}-
 
-      # -mcx16: the 16-byte atomics of two test targets fail -Werror without it (ENGINE_BUILD-NOTES.md).
+      # -mcx16: the 16-byte atomics of two test targets fail -Werror without it (engine-build.md).
       # SNX_DEPLOY=OFF: CI has no recompiled game to copy the runtime to.
       - name: Configure
         run: |

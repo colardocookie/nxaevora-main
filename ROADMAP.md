@@ -13,7 +13,7 @@ ScarletNX runtime compiles the code at that moment (the JIT). A fully static bui
 ## Phase 0: Foundation (done)
 
 - The repository, the vendored ScarletNX and the folder layout are in place.
-- ScarletNX builds on Windows with MSYS2 CLANG64. The steps are in `docs/build/ENGINE_BUILD-NOTES.md`.
+- ScarletNX builds on Windows with MSYS2 CLANG64. The steps are in `docs/build/engine-build.md`.
 - A portable copy of the recompiler runs without MSYS2.
 - The base game and update 1.1.1 recompile in a few minutes.
 - The recompiled game boots to the language selection screen and runs without a crash for 45 seconds.

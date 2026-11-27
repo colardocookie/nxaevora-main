@@ -112,7 +112,7 @@ fix of an intermittent crash.
 
 Each pull request to `main`, each push to `main` and each manual run starts the workflow `CI`
 (`.github/workflows/ci.yml`). Its check `Windows build and test` builds `engine` in MSYS2 CLANG64 with the steps of
-`docs/build/ENGINE_BUILD-NOTES.md`, starts `nxaevora-engine.exe --help` and runs `ctest`. It uses no game data and no
+`docs/build/engine-build.md`, starts `nxaevora-engine.exe --help` and runs `ctest`. It uses no game data and no
 secrets, so it also runs for a pull request from a fork. The result is on the Checks tab of the pull request. When a
 test fails, its output is in the log of the step `Run ctest`, and the file `LastTest.log` is attached to the run.
 

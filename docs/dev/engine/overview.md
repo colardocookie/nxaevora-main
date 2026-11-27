@@ -130,7 +130,7 @@ The game's `.ini` holds the settings of the runtime only. The Arceus timing swit
 
 ### Build and test
 
-The Windows build uses MSYS2 CLANG64. The steps, the packages and the presets are in [ENGINE_BUILD-NOTES.md](../../build/ENGINE_BUILD-NOTES.md). The output is `engine/build/default/` with `nxaevora-engine.exe` and `snx-shaderc.exe`.
+The Windows build uses MSYS2 CLANG64. The steps and the packages are in [engine-build.md](../../build/engine-build.md). The presets are in `engine/CMakePresets.json`, and the guide uses the `default` preset. The output is `engine/build/default/` with `nxaevora-engine.exe` and `snx-shaderc.exe`.
 
 The host tests are `add_test` entries under `engine/tests/`, run by `ctest`. `ctest` needs `APPDATA` set on Windows. The test options are `SNX_TEST_SANITIZERS`, `SNX_TEST_VULKAN`, `SNX_TEST_ARM_AOT` and `SNX_TEST_VP9_VECTORS` in `engine/tests/CMakeLists.txt`. The NVN tests are `engine/tests/nvn/`. The Arceus tests are `engine/tests/arceus_clock.c` and `engine/tests/arceus_timing.c`.
 
