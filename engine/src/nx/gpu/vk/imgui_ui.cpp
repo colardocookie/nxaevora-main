@@ -18,9 +18,7 @@ bool g_bar_shown;
 bool g_show_test;
 bool g_show_debug;
 bool g_show_input_settings;
-bool g_show_display_settings;
 constexpr const char* INPUT_SETTINGS_TITLE = "Controller&Keyboard"; /* the menu entries and the windows */
-constexpr const char* DISPLAY_SETTINGS_TITLE = "Display";
 constexpr float DEBUG_WIDTH = 380.0f, DEBUG_HEIGHT = 520.0f, DEBUG_MIN_WIDTH = 300.0f, DEBUG_MIN_HEIGHT = 200.0f;
 constexpr float GRAPH_HEIGHT = 56.0f, GRAPH_TOP_MS = 50.0f;
 constexpr float MB_PER_GB = 1024.0f;
@@ -54,7 +52,6 @@ void menu_bar() {
     }
     if (ImGui::BeginMenu("Settings")) {
         ImGui::MenuItem(INPUT_SETTINGS_TITLE, nullptr, &g_show_input_settings);
-        ImGui::MenuItem(DISPLAY_SETTINGS_TITLE, nullptr, &g_show_display_settings);
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("Mods")) {
@@ -673,7 +670,6 @@ void imgui_ui_reset(void) {
     g_bar_shown = false;
     g_open_test_was = -1;
     g_show_input_settings = false;
-    g_show_display_settings = false;
     capture_stop();
     keyboard_reset();
     engine_menu_reset();
@@ -704,7 +700,6 @@ bool imgui_ui_draw(ImguiFrame* f) {
         input_settings_window();
     else
         capture_stop();
-    if (g_show_display_settings) settings_window(DISPLAY_SETTINGS_TITLE, IMGUI_WINDOW_DISPLAY, &g_show_display_settings, 30.0f);
     if (g_show_test) test_window(f->dt);
     keyboard_window(f->kb);
     return g_bar_shown;

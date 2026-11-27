@@ -99,9 +99,31 @@ int main(void) {
               imgui_settings_page_window(page_of("Controllers")) == IMGUI_WINDOW_INPUT &&
               imgui_settings_page_window(page_of("Display")) == IMGUI_WINDOW_ENGINE_MENU &&
               imgui_settings_page_window(page_of("Performance")) == IMGUI_WINDOW_ENGINE_MENU &&
-              imgui_settings_page_window(page_of("Graphics")) == IMGUI_WINDOW_DISPLAY &&
+              imgui_settings_page_window(page_of("Graphics")) == IMGUI_WINDOW_ENGINE_MENU &&
               imgui_settings_page_window(99) == -1,
           "the window of each page");
+
+    /* the pages of each window, in the model's order */
+    {
+        static const char* const menu_pages[] = {"Display", "Graphics", "Performance"};
+        static const char* const input_pages[] = {"Mouse", "Keyboard", "Controllers"};
+        const int menu_max = (int)(sizeof menu_pages / sizeof menu_pages[0]);
+        const int input_max = (int)(sizeof input_pages / sizeof input_pages[0]);
+        int menu_count = 0;
+        int input_count = 0;
+        for (int p = 0; p < imgui_settings_pages(); ++p) {
+            if (imgui_settings_page_window(p) == IMGUI_WINDOW_ENGINE_MENU) {
+                check(menu_count < menu_max && !strcmp(imgui_settings_page_name(p), menu_pages[menu_count]),
+                      "an engine menu page");
+                ++menu_count;
+            } else if (imgui_settings_page_window(p) == IMGUI_WINDOW_INPUT) {
+                check(input_count < input_max && !strcmp(imgui_settings_page_name(p), input_pages[input_count]),
+                      "an input window page");
+                ++input_count;
+            }
+        }
+        check(menu_count == menu_max && input_count == input_max, "the page count of each window");
+    }
 
     /* the rows: the game's own, a player's, and the ones with a row of their own do not show */
     check(imgui_settings_rows(page_of("Display")) == 1 && row_of("Display", "fullscreen", &r), "the Display rows");
