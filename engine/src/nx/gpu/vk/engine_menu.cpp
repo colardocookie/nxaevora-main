@@ -145,6 +145,7 @@ namespace {
 constexpr int kPageCount = 10;
 constexpr int kPageGame = 0;
 constexpr int kPageDisplay = 1;
+constexpr int kPageGraphics = 2;
 constexpr int kPagePerformance = 3;
 
 constexpr float kTopBarHeightPx = 64.0f;
@@ -180,6 +181,7 @@ const char* const kRestartMark = "\xEE\x97\x95";
 
 // The settings model's pages that this menu shows, and the lines of a row.
 constexpr const char* kDisplayPageName = "Display";
+constexpr const char* kGraphicsPageName = "Graphics";
 constexpr const char* kPerformancePageName = "Performance";
 constexpr const char* kRestartSupporting = "Saved. Applies after a restart.";
 constexpr const char* kTextOnlySupporting = "Edit it in the .ini file";
@@ -694,8 +696,9 @@ void DrawSettingRow(const ImguiSettingRow& row) {
     ImGui::EndDisabled();
 }
 
-void DrawDisplaySettings() {
-    const int page = SettingsPageByName(kDisplayPageName);
+// The rows of a settings model page, in model order, with no section title.
+void DrawSettingsPage(const char* page_name) {
+    const int page = SettingsPageByName(page_name);
     if (page < 0) return;
     ImguiSettingRow rows[kMenuRowMax];
     const int count = ReadSettingsRows(page, rows, kMenuRowMax);
@@ -721,12 +724,14 @@ void DrawPage(int page) {
     md3::CardBegin("##page_card");
     md3::SectionTitle(kRailLabels[page]);
     if (page == kPageDisplay) {
-        DrawDisplaySettings();
+        DrawSettingsPage(kDisplayPageName);
         md3::RowBegin("##reduce_motion", "Reduce motion", "Turns off the animations", false,
                       md3::kSwitchWidthPx * md3::CurrentTheme().scale,
                       md3::kSwitchHeightPx * md3::CurrentTheme().scale);
         md3::Switch("##reduce_motion", &g_ui.reduce_motion);
         md3::RowEnd();
+    } else if (page == kPageGraphics) {
+        DrawSettingsPage(kGraphicsPageName);
     } else if (page == kPagePerformance) {
         DrawPerformanceSettings();
     } else {

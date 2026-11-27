@@ -32,8 +32,8 @@ typedef struct {
     char text[IMGUI_SETTING_TEXT_MAX]; /* TEXT: the value; a TEXT with has_words is a choice of imgui_settings_text_word */
 } ImguiSettingRow;
 
-/* the windows that show pages: the engine menu, Controller&Keyboard and Display */
-enum { IMGUI_WINDOW_INPUT, IMGUI_WINDOW_DISPLAY, IMGUI_WINDOW_ENGINE_MENU };
+/* the windows that show pages: Controller&Keyboard and the engine menu */
+enum { IMGUI_WINDOW_INPUT, IMGUI_WINDOW_ENGINE_MENU };
 
 int imgui_settings_pages(void);
 const char* imgui_settings_page_name(int page);

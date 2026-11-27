@@ -91,9 +91,9 @@ Each rail item has an icon and a label. A selected item has a pill indicator beh
 
 The game software keyboard is its own centered dialog. It is not a rail page.
 
-### Display and Performance pages
+### Display, Graphics and Performance pages
 
-The Display and Performance pages show the rows of the settings model. The model is generated from `engine/src/nx/runtime/settings.txt`, and the old window and the command line read the same model. The Display page shows the rows of its table in their order. The Performance page shows the rows of its table, in the groups that this part describes below. A page reads at most 64 rows of its table.
+The Display, Graphics and Performance pages show the rows of the settings model. The model is generated from `engine/src/nx/runtime/settings.txt`, and the Controller&Keyboard window and the command line read the same model. The Display page shows the rows of its table in their order. The Graphics page shows all rows of the model page Graphics in model order, with no title below the page title, the same as the Display page. The Performance page shows the rows of its table, in the groups that this part describes below. A page reads at most 64 rows of its table.
 
 Each row takes its widget from the model alone. The first rule that matches picks the widget:
 
@@ -172,7 +172,7 @@ These sizes set the components. Each state layer uses `kStateHover` = 0.08, `kSt
 | Dialog | Centered. Large corner. Window padding 24 horizontal by 20 vertical. Modal with a scrim | Open and close fade. A close input starts the fade |
 | Exposed dropdown | Height `kDropdownHeightPx` = 44. Corner `kDropdownCornerPx` = 4. Padding `kDropdownPaddingPx` = 12. Icon `kDropdownIconPx` = 20. Indicator `kDropdownIndicatorPx` = 1, or `kDropdownIndicatorActivePx` = 2 when active. Menu corner `kMenuCornerPx` = 4, item height `kMenuItemHeightPx` = 40, item padding `kMenuItemPaddingPx` = 12, vertical padding `kMenuVerticalPaddingPx` = 8, edge margin `kMenuEdgeMarginPx` = 8 | Closed, open and closing. Hover and focus. The selected item has a secondary container background |
 | Slider | Item height `kSliderItemHeightPx` = 32. Track `kSliderTrackPx` = 4. Handle radius `kSliderHandleRadiusPx` = 8. State radius `kSliderStateRadiusPx` = 16. Value label height `kSliderValueHeightPx` = 24, padding `kSliderValuePaddingPx` = 10, gap `kSliderValueGapPx` = 2, text gap `kSliderTextGapPx` = 8 | Hover, focus and press layers. A value label on drag and on a key change |
-| Number field | Height `kDropdownHeightPx` = 44, the same as the exposed dropdown. Corner `kDropdownCornerPx` = 4. Padding `kDropdownPaddingPx` = 12. Outline `kTextFieldOutlinePx` = 1. Caret `kTextFieldCaretPx` = 1. Background `surface_container_highest`. Text at the body large size | Hover, focus and press layers. The outline is the outline color, or the error color after a rejected commit. A caret while an edit is open. The edit rules are in [Display and Performance pages](#display-and-performance-pages) |
+| Number field | Height `kDropdownHeightPx` = 44, the same as the exposed dropdown. Corner `kDropdownCornerPx` = 4. Padding `kDropdownPaddingPx` = 12. Outline `kTextFieldOutlinePx` = 1. Caret `kTextFieldCaretPx` = 1. Background `surface_container_highest`. Text at the body large size | Hover, focus and press layers. The outline is the outline color, or the error color after a rejected commit. A caret while an edit is open. The edit rules are in [Display, Graphics and Performance pages](#display-graphics-and-performance-pages) |
 
 The focus ring is `kFocusRingPx` = 2 thick and uses the secondary color. It shows only when the ImGui nav cursor is visible. A mouse click hides the nav cursor, so no focus ring follows the mouse.
 
@@ -267,6 +267,6 @@ The base and the move of the functions are units 4 to 6 of phase 7.5 in `ROADMAP
 2. Unit 5, the move of the functions: one screen or one group per pull request. The old screen is deleted in the same pull request. The game never switches between the old and the new UI.
 3. Unit 6, the removal of the rest of the old UI, and the finish of the docs.
 
-The first move of unit 5 moves the Display and Performance pages to the engine menu. These two pages leave the old Display window in the same pull request, so the old window keeps only its Graphics tab.
+The first move of unit 5 moves the Display and Performance pages to the engine menu. These two pages leave the old Display window in the same pull request, so the old window keeps only its Graphics tab. The second move of unit 5 moves the Graphics page to the engine menu, and the old Display window is deleted in the same pull request.
 
 The third-party parts go into `docs/CREDITS.md` in unit 4. These parts are the HCT port and the fonts.
