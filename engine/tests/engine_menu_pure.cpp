@@ -5,6 +5,9 @@
 // value comes from the decisions: the legacy menu without the Dear ImGui windows or with legacy_menu, the engine menu
 // only with imgui=1 and legacy_menu=0 and the windows running, no menu when they did not start, the physical face
 // positions (south = activate, east = back), and only the first finger driving the pointer.
+// The key capture rule (src/nx/gpu/vk/engine_menu_input.cpp): a capture stays while the Keyboard page draws in each
+// frame and the menu is open, stops in the first frame after a frame without the page or when the menu is not open, a
+// reset stops it, and a new start clears the note that the last key has no name.
 
 #include <cmath>
 #include <cstdio>
@@ -14,6 +17,7 @@
 
 #include "imgui.h"
 #include "nx/gpu/vk/engine_menu.h"
+#include "nx/gpu/vk/engine_menu_input.h"
 
 namespace {
 
@@ -54,6 +58,42 @@ void CheckTrigger(int axis, int value, int key, bool down, const char* what) {
     EngineMenuPadEvent out[2];
     const int count = engine_menu_pad_events(ENGINE_MENU_PAD_AXIS, axis, value, out);
     Check(count == 1 && out[0].key == key && out[0].down == (down ? 1 : 0), what);
+}
+
+void CheckKeyCapture() {
+    EngineMenuKeyCapture capture{kEngineMenuKeyCaptureNone, false, false};
+
+    /* a new start clears the note that the last key has no name */
+    capture.unnamed = true;
+    EngineMenuKeyCaptureStart(capture, 3);
+    Check(capture.row == 3 && !capture.unnamed, "a new capture clears the no name note");
+    Check(capture.drawn, "a new capture marks the page as drawn");
+
+    /* an open menu marks the page as drawn and does not stop the capture */
+    Check(!EngineMenuKeyCaptureDrawn(capture, true), "an open menu does not stop the capture");
+    Check(capture.drawn, "an open menu marks the page as drawn");
+
+    /* the page draws in each frame: the capture stays */
+    Check(!EngineMenuKeyCaptureFrame(capture), "a capture stays while the page draws in each frame");
+    EngineMenuKeyCaptureDrawn(capture, true);
+    Check(!EngineMenuKeyCaptureFrame(capture), "a capture stays in the second drawn frame");
+
+    /* a running capture stops when the menu is not open */
+    Check(EngineMenuKeyCaptureDrawn(capture, false), "a running capture stops when the menu is not open");
+
+    /* the page does not draw: the next frame stops the capture */
+    Check(EngineMenuKeyCaptureFrame(capture), "a capture stops in the first frame after a frame with no draw");
+    EngineMenuKeyCaptureStop(capture);
+    Check(capture.row == kEngineMenuKeyCaptureNone, "a stopped capture waits for no key");
+
+    /* no capture with the menu not open does not stop */
+    Check(!EngineMenuKeyCaptureDrawn(capture, false), "no capture with the menu not open does not stop");
+
+    /* a reset stops the capture */
+    EngineMenuKeyCaptureStart(capture, 1);
+    EngineMenuKeyCaptureReset(capture);
+    Check(capture.row == kEngineMenuKeyCaptureNone && !capture.drawn && !capture.unnamed,
+          "a reset stops the capture");
 }
 
 } // namespace
@@ -132,6 +172,8 @@ int main() {
     CheckTrigger(SDL_GAMEPAD_AXIS_LEFT_TRIGGER, 32767, ImGuiKey_GamepadL2, true, "left trigger down");
     CheckTrigger(SDL_GAMEPAD_AXIS_LEFT_TRIGGER, 0, ImGuiKey_GamepadL2, false, "left trigger up");
     CheckTrigger(SDL_GAMEPAD_AXIS_RIGHT_TRIGGER, 32767, ImGuiKey_GamepadR2, true, "right trigger down");
+
+    CheckKeyCapture();
 
     std::puts("engine_menu: ok");
     return 0;

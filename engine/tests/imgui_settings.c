@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the NXAevora contributors */
-/* The Settings window's view of the .ini's tables (gpu/vk/imgui_settings.c), on small tables of its own: which rows show,
+/* The engine menu's view of the .ini's tables (gpu/vk/imgui_settings.c), on small tables of its own: which rows show,
    the choice lists (the render resolution, the anisotropic filtering, the FPS limit), the text rows (a choice of words, a
    number of megabytes), and the saved value that a startup setting shows after a change. */
 #include "nx/gpu/vk/imgui_settings.h"
@@ -95,34 +95,23 @@ int main(void) {
 
     /* the pages and the window of each */
     check(imgui_settings_pages() == 6, "six pages");
-    check(imgui_settings_page_window(page_of("Mouse")) == IMGUI_WINDOW_INPUT &&
-              imgui_settings_page_window(page_of("Controllers")) == IMGUI_WINDOW_INPUT &&
-              imgui_settings_page_window(page_of("Display")) == IMGUI_WINDOW_ENGINE_MENU &&
-              imgui_settings_page_window(page_of("Performance")) == IMGUI_WINDOW_ENGINE_MENU &&
-              imgui_settings_page_window(page_of("Graphics")) == IMGUI_WINDOW_ENGINE_MENU &&
-              imgui_settings_page_window(99) == -1,
-          "the window of each page");
+    for (int p = 0; p < imgui_settings_pages(); ++p)
+        check(imgui_settings_page_window(p) == IMGUI_WINDOW_ENGINE_MENU, "a page of the engine menu");
+    check(imgui_settings_page_window(99) == -1, "a page outside the list has no window");
 
-    /* the pages of each window, in the model's order */
+    /* the pages of the engine menu, in the model's order */
     {
-        static const char* const menu_pages[] = {"Display", "Graphics", "Performance"};
-        static const char* const input_pages[] = {"Mouse", "Keyboard", "Controllers"};
-        const int menu_max = (int)(sizeof menu_pages / sizeof menu_pages[0]);
-        const int input_max = (int)(sizeof input_pages / sizeof input_pages[0]);
-        int menu_count = 0;
-        int input_count = 0;
+        static const char* const model_pages[] = {"Mouse",    "Keyboard", "Controllers",
+                                                  "Display",  "Graphics", "Performance"};
+        const int model_max = (int)(sizeof model_pages / sizeof model_pages[0]);
+        int count = 0;
         for (int p = 0; p < imgui_settings_pages(); ++p) {
-            if (imgui_settings_page_window(p) == IMGUI_WINDOW_ENGINE_MENU) {
-                check(menu_count < menu_max && !strcmp(imgui_settings_page_name(p), menu_pages[menu_count]),
-                      "an engine menu page");
-                ++menu_count;
-            } else if (imgui_settings_page_window(p) == IMGUI_WINDOW_INPUT) {
-                check(input_count < input_max && !strcmp(imgui_settings_page_name(p), input_pages[input_count]),
-                      "an input window page");
-                ++input_count;
-            }
+            check(imgui_settings_page_window(p) == IMGUI_WINDOW_ENGINE_MENU, "an engine menu page");
+            check(count < model_max && !strcmp(imgui_settings_page_name(p), model_pages[count]),
+                  "a page in the model's order");
+            ++count;
         }
-        check(menu_count == menu_max && input_count == input_max, "the page count of each window");
+        check(count == model_max, "the page count of the engine menu");
     }
 
     /* the rows: the game's own, a player's, and the ones with a row of their own do not show */
