@@ -469,22 +469,28 @@ int main(void) {
         CHECK(name[4] == 127 && name[5] == 0 && name[6] == 0 && name[7] == 2);
         err = reply32(&r, 4);
         CHECK(err == 0);
-        /* and it hears both a datagram to its address and one to the subnet's broadcast address, which Linux
-           delivers to no socket bound to a unicast address: the companion on 127.255.255.255 takes those */
+        /* and it hears both a datagram to its address and one to the subnet's broadcast address: on a host that binds
+           it, the companion on 127.255.255.255 takes the second, and Windows takes the limited broadcast that the
+           stack's rule gives for it. The peer is another console of this loopback network, bound to 127.0.0.1 */
         {
+            static const uint8_t subnet_bcast[4] = {127, 255, 255, 255};
             SnxSocket* peer;
             SnxSockAddr to;
+            u8 send_to[4];
             u8 port[2] = {name[2], name[3]};
             int one = (int)snx_le32(1), k;
             CHECK(snx_socket_open(&peer, SNX_AF_INET, SNX_SOCK_DGRAM, 0) == 0);
             snx_socket_setsockopt(peer, SNX_SOL_SOCKET, SNX_SO_BROADCAST, &one, sizeof one);
             memset(&to, 0, sizeof to);
             to.family = SNX_AF_INET;
-            memcpy(&to.port, port, 2);
             to.addr[0] = 127;
+            to.addr[3] = 1;
+            CHECK(snx_socket_bind(peer, &to) == 0);
+            memcpy(&to.port, port, 2);
             to.addr[3] = 2;
             CHECK(snx_socket_send(peer, "unicast", 7, 0, &to) == 7);
-            memset(to.addr + 1, 255, 3);
+            snx_net_broadcast_dest(subnet_bcast, subnet_bcast, send_to);
+            memcpy(to.addr, send_to, 4);
             CHECK(snx_socket_send(peer, "broadcast", 9, 0, &to) == 9);
             for (k = 0; k < 2; k++) {
                 request(&r, 9); /* RecvFrom(fd, flags) -> (ret, errno, addrlen), the message and the sender */

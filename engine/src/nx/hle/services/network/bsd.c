@@ -83,16 +83,23 @@ void bsd_set_bind_address(const u8* ip, const u8* bcast) {
     if (ip) memcpy(g_hle.bsd.bind_bcast, bcast, 4);
     pm_unlock(&g_host.bsd.bind_lk);
 }
+/* 1 with the console's address and its subnet's broadcast address, while ldn gave this console one of them (ldn.c) */
+static int bind_set_address(u8 ip[4], u8 bcast[4]) {
+    int r;
+    pm_lock(&g_host.bsd.bind_lk);
+    r = g_hle.bsd.bind_set;
+    if (r) memcpy(ip, g_hle.bsd.bind_ip, 4);
+    if (r) memcpy(bcast, g_hle.bsd.bind_bcast, 4);
+    pm_unlock(&g_host.bsd.bind_lk);
+    return r;
+}
 /* 1 and the broadcast address when a was INADDR_ANY and became the console's address */
 static int bind_address(SnxSockAddr* a, u8 bcast[4]) {
     static const u8 any[4];
-    int r;
+    u8 ip[4];
     if (a->family != SNX_AF_INET || memcmp(a->addr, any, 4)) return 0;
-    pm_lock(&g_host.bsd.bind_lk);
-    r = g_hle.bsd.bind_set;
-    if (r) memcpy(a->addr, g_hle.bsd.bind_ip, 4);
-    if (r) memcpy(bcast, g_hle.bsd.bind_bcast, 4);
-    pm_unlock(&g_host.bsd.bind_lk);
+    int r = bind_set_address(ip, bcast);
+    if (r) memcpy(a->addr, ip, 4);
     return r;
 }
 /* the broadcast companion of a datagram socket bound to the console's address: the same port on the broadcast
@@ -574,6 +581,9 @@ static int64_t do_recv(Bsd* b, IpcBuf message, i32 fd, u32 gflags, IpcBuf addr, 
 static int64_t do_send(Bsd* b, IpcBuf message, i32 fd, u32 gflags, const SnxSockAddr* to) {
     u64 a = message.addr, n = message.size;
     SnxSocket* s = fd_get(b, fd, NULL);
+    const SnxSockAddr* guest_to = to;
+    SnxSockAddr mapped;
+    u8 ip[4], bcast[4];
     if (!s) return -SNX_EBADF;
     int64_t r;
     if (to && !reachable(s, to))
@@ -581,12 +591,18 @@ static int64_t do_send(Bsd* b, IpcBuf message, i32 fd, u32 gflags, const SnxSock
     else if (!a && n)
         r = -SNX_EFAULT;
     else {
+        /* the console's subnet broadcast may need the limited broadcast (net.h), and the guest keeps its address */
+        if (to && to->family == SNX_AF_INET && bind_set_address(ip, bcast)) {
+            mapped = *to;
+            snx_net_broadcast_dest(to->addr, bcast, mapped.addr);
+            to = &mapped;
+        }
         if (a) own_acquire(a, n); /* the kernel reads the buffer, and can't wait on memory the GPU holds */
         r = snx_socket_send(s, a ? GP(a) : NULL, n, msg_in(gflags), to);
     }
-    if (to && g_settings.log_level >= 2) {
+    if (guest_to && g_settings.log_level >= 2) {
         char t[64];
-        LOGV("bsd: SendTo(%d) %llu bytes to %s = %lld\n", fd, (unsigned long long)n, addr_text(to, t, sizeof t),
+        LOGV("bsd: SendTo(%d) %llu bytes to %s = %lld\n", fd, (unsigned long long)n, addr_text(guest_to, t, sizeof t),
              (long long)r);
     }
     snx_socket_unref(s);

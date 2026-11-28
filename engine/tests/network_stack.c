@@ -270,12 +270,31 @@ static void names(void) {
     CHECK(n >= 0 && n <= 8);
 }
 
+static void broadcast_dest(void) {
+    static const uint8_t subnet[4] = {127, 255, 255, 255}, lan[4] = {192, 168, 1, 255};
+    static const uint8_t unicast[4] = {127, 0, 0, 1};
+    /* the rule's answer for a datagram to 127.255.255.255 on a 127/8 network: Windows needs the limited broadcast */
+#ifdef _WIN32
+    static const uint8_t expected[4] = {255, 255, 255, 255};
+#else
+    static const uint8_t expected[4] = {127, 255, 255, 255};
+#endif
+    uint8_t out[4];
+    snx_net_broadcast_dest(subnet, subnet, out);
+    CHECK(!memcmp(out, expected, 4));
+    snx_net_broadcast_dest(lan, lan, out);
+    CHECK(!memcmp(out, lan, 4)); /* another subnet's broadcast is unchanged */
+    snx_net_broadcast_dest(unicast, subnet, out);
+    CHECK(!memcmp(out, unicast, 4)); /* a unicast address is unchanged */
+}
+
 int main(void) {
     snx_net_set_log(quiet);
     CHECK(!snx_net_init());
     tcp();
     udp();
     pair_and_event();
+    broadcast_dest();
     cancel();
     icmp();
     names();

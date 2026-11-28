@@ -459,6 +459,24 @@ int snx_net_addr_from_host(const struct sockaddr* in, snx_socklen size, SnxSockA
     return -SNX_EAFNOSUPPORT;
 }
 
+/* ============================================================ broadcast destinations */
+void snx_net_broadcast_dest(const uint8_t to[4], const uint8_t bcast[4], uint8_t out[4]) {
+#ifdef _WIN32
+    static const uint8_t loopback_octet = 127;              /* the first octet of the 127/8 loopback network */
+    static const uint8_t limited[4] = {255, 255, 255, 255}; /* the limited broadcast address */
+    /* Windows refuses a bind to the broadcast address, so the console hears only on its unicast socket, and here a
+       datagram for 127.255.255.255 does not reach a socket bound to 127.0.0.1, while the limited broadcast does
+       when the sender is bound to a 127/8 address. */
+    if (bcast[0] == loopback_octet && !memcmp(to, bcast, 4)) {
+        memcpy(out, limited, 4);
+        return;
+    }
+#else
+    (void)bcast;
+#endif
+    memcpy(out, to, 4);
+}
+
 /* ============================================================ waiting */
 #ifdef _WIN32
 typedef WSAPOLLFD HostPollFd;

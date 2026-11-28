@@ -746,9 +746,11 @@ static int filter_accepts(const SnxLdnScanFilter* f, const SnxLdnNetworkInfo* i)
 }
 int snx_ldn_scan(SnxLdn* l, const SnxLdnScanFilter* filter, SnxLdnNetworkInfo* out, int max, int wait_ms) {
     SnxSockAddr to;
+    uint8_t target[4];
     int64_t deadline = snx_net_now_us() + (int64_t)wait_ms * 1000, first = 0;
     int n = 0;
-    addr_of(&to, l->bcast, SNX_LDN_PORT);
+    snx_net_broadcast_dest(l->bcast, l->bcast, target);
+    addr_of(&to, target, SNX_LDN_PORT);
     snx_lock(&l->lk);
     l->scanning = 1;
     l->nscan = 0;
