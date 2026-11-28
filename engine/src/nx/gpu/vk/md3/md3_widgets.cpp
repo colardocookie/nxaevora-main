@@ -1093,13 +1093,17 @@ bool ExpandHeader(const char* id, const char* label, bool* open) {
 }
 
 void FrameTimeGraph(const char* id, const float* ms, int count, float target_ms, ImVec2 size) {
-    if (id == nullptr || ms == nullptr || count <= 0 || size.x <= 0.0f || size.y <= 0.0f) return;
+    if (id == nullptr || ms == nullptr || size.x <= 0.0f || size.y <= 0.0f) return;
     const Theme& theme = CurrentTheme();
     const float s = theme.scale;
     ImGui::PushID(id);
     const ImVec2 origin = ImGui::GetCursorScreenPos();
+    // Always submit the box, even with no samples: a caller that moved the cursor here
+    // (SetCursorScreenPos in the perf overlay) needs an item, or ImGui 1.93 asserts at
+    // the window's end (ErrorCheckUsingSetCursorPosToExtendParentBoundaries).
     ImGui::Dummy(size);
     ImGui::PopID();
+    if (count <= 0) return;
 
     if (count > kFrameGraphSamples) count = kFrameGraphSamples;
     float max_ms = target_ms > 0.0f ? 2.0f * target_ms : 1.0f;
