@@ -475,22 +475,11 @@ void vpad_draw(SnxUiList* l, const int safe[4]) {
     }
 }
 
-/* the showcase: player 1's controller as the game gets it, in a corner */
+/* the showcase: player 1's controller as the game gets it */
 static u64 g_show_buttons;
 static float g_show_axis[2][2]; /* each stick, -1 to 1 right and down */
 static int g_corner = 3;        /* showcase_corner's, an index of CORNERS */
 static const char* const CORNERS[4] = {"tl", "tr", "bl", "br"};
-/* each control's middle across and down the showcase's box (5:3) and its longer side, of the box's height; none for
-   Capture and Home, which never reach the game, nor for L3 and R3, which press their stick's knob */
-static const float SHOWCASE[SNX_VPAD_COUNT][3] = {
-    [SNX_VPAD_ZL] = {0.13f, 0.11f, 0.22f},      [SNX_VPAD_ZR] = {0.87f, 0.11f, 0.22f},
-    [SNX_VPAD_L] = {0.13f, 0.30f, 0.22f},       [SNX_VPAD_R] = {0.87f, 0.30f, 0.22f},
-    [SNX_VPAD_MINUS] = {0.40f, 0.30f, 0.10f},   [SNX_VPAD_PLUS] = {0.60f, 0.30f, 0.10f},
-    [SNX_VPAD_STICK_L] = {0.22f, 0.60f, 0.34f}, [SNX_VPAD_DPAD] = {0.40f, 0.84f, 0.28f},
-    [SNX_VPAD_STICK_R] = {0.62f, 0.84f, 0.30f}, [SNX_VPAD_X] = {0.80f, 0.44f, 0.13f},
-    [SNX_VPAD_Y] = {0.72f, 0.58f, 0.13f},       [SNX_VPAD_A] = {0.88f, 0.58f, 0.13f},
-    [SNX_VPAD_B] = {0.80f, 0.72f, 0.13f}};
-#define SHOWCASE_BOX 0.30f /* the box's height, of safe's shorter side; its gap to the corner a fifteenth of that */
 
 int vpad_corner(const char* word) {
     int i;
@@ -522,59 +511,15 @@ void vpad_showcase_input(u64 buttons, const i32 sticks[4]) {
         g_show_axis[s][1] = ay;
     }
 }
-int vpad_showcase_fps(u32 presents, u64 now_ns) {
-    static u64 since_ns;
-    static u32 since;
-    static int fps = -1;
-    if (!since_ns || now_ns - since_ns >= 500000000ull) {
-        if (since_ns)
-            fps = (int)(((u64)(presents - since) * 1000000000ull + (now_ns - since_ns) / 2) / (now_ns - since_ns));
-        since_ns = now_ns;
-        since = presents;
-    }
-    return fps;
+void vpad_showcase_state(SnxVpadShowcaseInput* out) {
+    if (out == NULL) return;
+    ui_lock();
+    out->buttons = g_show_buttons;
+    out->lx = g_show_axis[0][0];
+    out->ly = g_show_axis[0][1];
+    out->rx = g_show_axis[1][0];
+    out->ry = g_show_axis[1][1];
+    ui_unlock();
 }
-int vpad_showcase_box(const int safe[4], float box[4]) {
-    float shorter = (float)(safe[2] < safe[3] ? safe[2] : safe[3]), h = SHOWCASE_BOX * shorter, w = h * 5 / 3;
-    int corner = __atomic_load_n(&g_corner, __ATOMIC_RELAXED);
-    if (!__atomic_load_n(&g_settings.showcase, __ATOMIC_RELAXED)) return -1;
-    box[0] = corner & 1 ? (float)(safe[0] + safe[2]) - h / 15 - w : (float)safe[0] + h / 15;
-    box[1] = corner & 2 ? (float)(safe[1] + safe[3]) - h / 15 - h : (float)safe[1] + h / 15;
-    box[2] = w;
-    box[3] = h;
-    return corner;
-}
-void vpad_showcase_draw(SnxUiList* l, const int safe[4], int fps) {
-    const u32 alpha = 230;
-    float box[4], x0, y0, w, h, r[4];
-    int c, scale;
-    char text[24];
-    if (vpad_showcase_box(safe, box) < 0) return;
-    x0 = box[0];
-    y0 = box[1];
-    w = box[2];
-    h = box[3];
-    ui_fill(l, x0, y0, w, h, 0x80000000u);
-    for (c = 0; c < SNX_VPAD_COUNT; ++c) {
-        const unsigned short* sp = snx_controls_sprites[INFO[c].sprite];
-        float big = (float)(sp[2] > sp[3] ? sp[2] : sp[3]), side = SHOWCASE[c][2] * h;
-        if (side <= 0) continue;
-        r[2] = side * (float)sp[2] / big;
-        r[3] = side * (float)sp[3] / big;
-        r[0] = x0 + SHOWCASE[c][0] * w - r[2] / 2;
-        r[1] = y0 + SHOWCASE[c][1] * h - r[3] / 2;
-        if (INFO[c].kind == KIND_DPAD)
-            dpad_draw(l, r, alpha, (u32)g_show_buttons & (DPAD_LEFT | DPAD_UP | DPAD_RIGHT | DPAD_DOWN));
-        else if (INFO[c].kind == KIND_STICK) {
-            int s = stick_of(c);
-            knob_draw(l, r, g_show_axis[s][0], g_show_axis[s][1],
-                      (int)(g_show_buttons >> INFO[s ? SNX_VPAD_R3 : SNX_VPAD_L3].bit & 1), alpha);
-        } else
-            ui_sprite(l, INFO[c].sprite + (int)(g_show_buttons >> INFO[c].bit & 1), r[0], r[1], r[2], r[3], alpha, 0);
-    }
-    if (fps < 0) return;
-    scale = (int)(h * 0.11f / 16 + 0.5f);
-    if (scale < 1) scale = 1;
-    snprintf(text, sizeof text, "%d FPS", fps);
-    ui_text(l, x0 + (w - (float)(strlen(text) * 8 * (size_t)scale)) / 2, y0 + h / 25, scale, text, 0xFFFFFFFFu);
-}
+
+int vpad_showcase_corner(void) { return __atomic_load_n(&g_corner, __ATOMIC_RELAXED); }

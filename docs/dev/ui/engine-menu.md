@@ -23,9 +23,9 @@ These parts stay as they are for now, and the user decides them later:
 - the toasts,
 - the shader prepare screen,
 - the fatal screen,
-- the stats and showcase drawing,
-- the HUD,
 - the on-screen controls drawing.
+
+The performance overlay (the setting `stats`), the input display (the setting `showcase`) and the HUD are not parts of the menu. They are ImGui windows in the MD3 style of the menu, and `engine/src/nx/gpu/vk/debug_overlays.cpp` draws them. They take no input, and they fade out while the menu is open.
 
 The start GUI in `engine/src/gui/` is out of scope. The menu has no UI sounds.
 
@@ -158,7 +158,7 @@ The Tracy rows (`tracy_profiler`, `tracy_sampling`, `tracy_port`, `tracy_capture
 
 The rows use the same widget rules as the other settings pages (section 4).
 
-The hardware values (the GPU, the video memory, the processor and the memory) are read only while the Debug page is on screen. On other pages, no hardware read is requested.
+The hardware values (the GPU, the video memory, the processor and the memory) are read only while the Debug page is on screen, or while the performance overlay (the setting `stats`) is at level Standard or Detailed. In other cases, no hardware read is requested.
 
 ## 5. Theme
 

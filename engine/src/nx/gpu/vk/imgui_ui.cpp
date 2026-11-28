@@ -8,6 +8,10 @@
 #include "nx/gpu/vk/debug_stats.h"
 #include "nx/gpu/vk/engine_menu.h"
 #include "nx/gpu/vk/engine_menu_input.h"
+// The runtime's C headers have no extern "C" guard: a C++ unit needs the block.
+extern "C" {
+#include "nx/runtime/platform/stats.h"
+}
 
 namespace {
 constexpr float BAR_TRIGGER_PX = 24.0f; /* the cursor this close to the top of the picture shows the bar */
@@ -152,23 +156,34 @@ void imgui_ui_reset(void) {
     EngineMenuInputReset();
     keyboard_reset();
     engine_menu_reset();
+    debug_overlay::Reset();
 }
 
-bool imgui_ui_draw(ImguiFrame* f) {
+ImguiUiDraw imgui_ui_draw(ImguiFrame* f) {
+    ImguiUiDraw out{};
     EngineMenuInputFrameBegin();
-    /* the menu is modal: only its panel draws, and the game's windows come back when it closes */
-    if (engine_menu_visible()) {
+    const bool panel_visible = engine_menu_visible();
+    /* the menu is modal: only its panel draws while it shows, and the game's windows come back when it closes */
+    if (panel_visible) {
         engine_menu_draw(f);
-        return true;
+    } else {
+        bool bar_was_shown = g_bar_shown;
+        g_bar_shown = false;
+        if (bar_wanted(bar_was_shown) && ImGui::BeginMainMenuBar()) {
+            g_bar_shown = true;
+            menu_bar();
+            ImGui::EndMainMenuBar();
+        }
+        keyboard_window(f->kb);
     }
-    debug_stats_hardware_demand(nullptr);
-    bool bar_was_shown = g_bar_shown;
-    g_bar_shown = false;
-    if (bar_wanted(bar_was_shown) && ImGui::BeginMainMenuBar()) {
-        g_bar_shown = true;
-        menu_bar();
-        ImGui::EndMainMenuBar();
-    }
-    keyboard_window(f->kb);
-    return g_bar_shown;
+    /* The overlays are in the same ImGui frame as the panel, after it, the menu bar and the keyboard window. They draw
+       only while the panel is closed; the fade target is 0 while it shows. */
+    const bool panel_closed = !engine_menu_visible();
+    out.overlays = debug_overlay::Draw(f, panel_closed);
+    out.menu_shown = g_bar_shown || panel_visible;
+    /* One rule for the machine's poll: the Debug page shows OR the performance overlay is Standard or Detailed. */
+    const bool debug_shown = panel_visible && engine_menu_debug_shown();
+    const bool perf_detailed = stats_level() >= STATS_LEVEL_STANDARD;
+    debug_stats_hardware_demand((debug_shown || perf_detailed) ? f->gpu_uuid : nullptr);
+    return out;
 }

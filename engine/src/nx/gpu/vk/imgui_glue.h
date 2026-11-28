@@ -61,9 +61,12 @@ typedef struct {
 } ImguiFrame;
 int imgui_glue_frame(ImguiFrame* f); /* the keyboard's answer goes in f->kb */
 void imgui_glue_unwanted(void); /* the windows are off: they want no input */
-/* the frame's draw data into cb, inside a rendering scope on the picture. A new texture is uploaded first, on the
+/* The frame's draw data into cb, inside a rendering scope on the picture, in two parts: the overlay windows first,
+   then every other window. Only the first recorded part updates the textures. A new texture is uploaded first, on the
    queue, which the caller keeps idle for it (vk_rec_sync) */
-void imgui_glue_record(VkCommandBuffer cb);
+int imgui_glue_overlay_count(void); /* the overlay lists of this frame */
+void imgui_glue_record_overlays(VkCommandBuffer cb);
+void imgui_glue_record_rest(VkCommandBuffer cb);
 
 #ifdef __cplusplus
 }

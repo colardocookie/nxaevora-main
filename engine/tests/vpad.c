@@ -281,93 +281,22 @@ int main(void) {
         assert(vpad_config()->at[SNX_VPAD_A].size == 110 && stores == 1);
         assert(vpad_down(15, done_x + 2, y + 2, safe) && !vpad_editing());
     }
-    /* the showcase: player 1's controller as the game got it, in showcase_corner's corner, the frames a second over it */
+    /* the input display's copy of the showcase: the buttons and each stick, right and down positive */
     {
-        static const i32 none[4], right[4] = {32767, 0, 0, 0}, up[4] = {0, 32767, 0, 0}, corner[4] = {32767, 32767};
-        const IniOpt* where = ini_find(g_display_ini, "showcase_corner");
-        const SnxUiQuad *ring, *knob, *q;
-        float box[4][2] = {{20, 20}, {1480, 20}, {20, 680}, {1480, 680}}; /* 300 high, 500 wide, 20 from the corner */
-        int i, k, digits;
-        assert(where && !strcmp(g_settings.showcase_corner, "br"));
-        l.q = quads;
-        l.max = 512;
-        l.n = 0;
-        g_settings.showcase = 0;
-        vpad_showcase_draw(&l, safe, 60);
-        assert(!l.n);
-        g_settings.showcase = 1;
-        vpad_showcase_input(0, none);
-        vpad_showcase_draw(&l, safe, 60);
-        assert(l.n > 13 && drawn(&l, SNX_SPRITE_A) && !drawn(&l, SNX_SPRITE_A_PRESSED) && drawn(&l, SNX_SPRITE_DPAD));
-        assert(!drawn(&l, SNX_SPRITE_HOME) && !drawn(&l, SNX_SPRITE_CAPTURE) && !drawn(&l, SNX_SPRITE_L3) &&
-               !drawn(&l, SNX_SPRITE_R3) && !drawn(&l, SNX_SPRITE_STICK_PRESSED));
-        /* "60 FPS" at the box's top, in the font */
-        for (i = digits = 0; i < l.n; ++i)
-            if (l.q[i].v == SNX_CONTROLS_FONT_Y + '6' / 16 * 16 &&
-                (l.q[i].u == SNX_CONTROLS_FONT_X + '6' % 16 * 8 || l.q[i].u == SNX_CONTROLS_FONT_X + '0' % 16 * 8)) {
-                assert(l.q[i].y > 680 && l.q[i].y < 680 + 30);
-                ++digits;
-            }
-        assert(digits == 2);
-        /* each corner holds every quad; one the setting doesn't take keeps the corner, and says which */
-        for (k = 0; k < 4; ++k) {
-            static const char* const name[4] = {"tl", "tr", "bl", "br"};
-            ini_read(where, name[k]);
-            l.n = 0;
-            vpad_showcase_draw(&l, safe, -1);
-            for (i = 0; i < l.n; ++i)
-                assert(l.q[i].x >= box[k][0] - 0.01f && l.q[i].x + l.q[i].w <= box[k][0] + 500.01f &&
-                       l.q[i].y >= box[k][1] - 0.01f && l.q[i].y + l.q[i].h <= box[k][1] + 300.01f);
-            assert(l.q[0].x == box[k][0] && l.q[0].y == box[k][1] && l.q[0].w == 500 && l.q[0].h == 300);
-            for (i = 0; i < l.n; ++i) /* no frames a second before the first half second */
-                assert(!(l.q[i].u == SNX_CONTROLS_FONT_X + 'F' % 16 * 8 &&
-                         l.q[i].v == SNX_CONTROLS_FONT_Y + 'F' / 16 * 16));
-        }
-        ini_read(where, "tl");
-        ini_read(where, "lt");
-        assert(!strcmp(g_settings.showcase_corner, "tl"));
-        assert(!strcmp(logged, "settings: showcase_corner=lt is not tl, tr, bl or br: it keeps tl\n"));
-        ini_read(where, "top"); /* longer than the setting holds: ini.c's own refusal, the corner the same */
-        assert(!strcmp(g_settings.showcase_corner, "tl"));
-        l.n = 0;
-        vpad_showcase_draw(&l, safe, -1);
-        assert(l.q[0].x == 20 && l.q[0].y == 20);
-        /* pressed: A lit, the D-pad's up, the left stick's click and its knob at the ring's edge */
-        vpad_showcase_input(1u << 0 | 1u << 13 | 1u << 4, right);
-        l.n = 0;
-        vpad_showcase_draw(&l, safe, -1);
-        assert(drawn(&l, SNX_SPRITE_A_PRESSED) && !drawn(&l, SNX_SPRITE_A) && drawn(&l, SNX_SPRITE_B));
-        assert((q = drawn(&l, SNX_SPRITE_DPAD_UP)) && q->turn == 0 && !drawn(&l, SNX_SPRITE_DPAD));
-        ring = drawn(&l, SNX_SPRITE_STICK_RANGE);
-        knob = drawn(&l, SNX_SPRITE_STICK_PRESSED);
-        assert(ring && knob && drawn(&l, SNX_SPRITE_STICK)); /* the right stick's knob stays up */
-        assert(fabsf(knob->x + knob->w / 2 - (ring->x + ring->w)) < 0.01f);
-        assert(fabsf(knob->y + knob->h / 2 - (ring->y + ring->h / 2)) < 0.01f);
-        vpad_showcase_input(1u << 14, up); /* up is positive, as the game reads it: the knob goes up the screen */
-        l.n = 0;
-        vpad_showcase_draw(&l, safe, -1);
-        assert((q = drawn(&l, SNX_SPRITE_DPAD_UP)) && q->turn == 1);
-        ring = drawn(&l, SNX_SPRITE_STICK_RANGE);
-        knob = drawn(&l, SNX_SPRITE_STICK);
-        assert(fabsf(knob->y + knob->h / 2 - ring->y) < 0.01f &&
-               fabsf(knob->x + knob->w / 2 - (ring->x + ring->w / 2)) < 0.01f);
-        vpad_showcase_input(0, corner); /* a square of keys: the knob stays on its ring */
-        l.n = 0;
-        vpad_showcase_draw(&l, safe, -1);
-        ring = drawn(&l, SNX_SPRITE_STICK_RANGE);
-        knob = drawn(&l, SNX_SPRITE_STICK);
-        {
-            float dx = knob->x + knob->w / 2 - (ring->x + ring->w / 2),
-                  dy = knob->y + knob->h / 2 - (ring->y + ring->h / 2);
-            assert(fabsf(sqrtf(dx * dx + dy * dy) - ring->w / 2) < 0.01f && dx > 0 && dy < 0);
-        }
-        /* the frames a second: none until half a second is over, then the presents over the last half or more */
-        assert(vpad_showcase_fps(100, 1000000000ull) == -1 && vpad_showcase_fps(115, 1250000000ull) == -1);
-        assert(vpad_showcase_fps(130, 1500000000ull) == 60 && vpad_showcase_fps(131, 1700000000ull) == 60);
-        assert(vpad_showcase_fps(148, 2100000000ull) == 30);
-        assert(vpad_showcase_fps(170, 2700000000ull) == 37); /* 22 in 0.6 s, to the nearest */
-        g_settings.showcase = 0;
-        ini_read(where, "br");
+        static const i32 axes[4] = {16384, -8192, 0, 32767};
+        static const i32 square[4] = {32767, 32767, 0, 0};
+        SnxVpadShowcaseInput in;
+        vpad_showcase_input(1u << 0 | 1u << 13, axes);
+        vpad_showcase_state(&in);
+        assert(in.buttons == (1u << 0 | 1u << 13));
+        assert(fabsf(in.lx - 0.5f) < 0.001f);
+        assert(fabsf(in.ly - 0.25f) < 0.001f);
+        assert(fabsf(in.rx) < 0.001f);
+        assert(fabsf(in.ry + 1.0f) < 0.001f);
+        /* a square of keys is shortened to the ring's radius */
+        vpad_showcase_input(0, square);
+        vpad_showcase_state(&in);
+        assert(fabsf(in.lx * in.lx + in.ly * in.ly - 1.0f) < 0.001f && in.lx > 0.0f && in.ly < 0.0f);
     }
     puts("vpad: buttons, D-pad, sticks, actions, edit mode, .ini keys, drawing and the showcase passed");
     return 0;

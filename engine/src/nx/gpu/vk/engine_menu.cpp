@@ -265,6 +265,7 @@ std::atomic<int> g_state{MENU_CLOSED};
 // its write wins, so a reopen during the close is not lost.
 bool StateMove(int from, int to) { return g_state.compare_exchange_strong(from, to, std::memory_order_acq_rel); }
 float g_panel_alpha; /* the compositor's alpha of the last frame, on the GPU thread */
+bool g_debug_page_shown; /* the Debug page drew in the last frame: the hardware poll needs it */
 MenuState g_ui{};
 
 constexpr const char* PAGE_PLACEHOLDER = "This page moves here in a later change.";
@@ -955,9 +956,16 @@ extern "C" int engine_menu_active(void) { return g_state.load(std::memory_order_
 
 extern "C" float engine_menu_panel_alpha(void) { return g_panel_alpha; }
 
+uint32_t engine_menu_scheme_seed(void) { return kSeed; }
+
+bool engine_menu_reduce_motion(void) { return g_ui.reduce_motion; }
+
+bool engine_menu_debug_shown(void) { return g_debug_page_shown; }
+
 extern "C" void engine_menu_reset(void) {
     g_state.store(MENU_CLOSED, std::memory_order_release);
     g_panel_alpha = 0.0f;
+    g_debug_page_shown = false;
     ResetUiState();
 }
 
@@ -1025,8 +1033,7 @@ bool engine_menu_draw(ImguiFrame* f) {
     const bool show_panel = g_ui.panel_alpha > 0.0f;
     bool debug_page = false;
     if (show_panel) debug_page = DrawPanel(state == MENU_OPEN, f);
-    // One call for each frame: the machine thread resets the values when it sees the flag off.
-    debug_stats_hardware_demand(debug_page ? f->gpu_uuid : nullptr);
+    g_debug_page_shown = debug_page;
     g_panel_alpha = g_ui.panel_alpha;
     if (closing && g_ui.panel_alpha <= 0.0f && StateMove(MENU_CLOSING, MENU_CLOSED)) g_ui.was_visible = false;
 

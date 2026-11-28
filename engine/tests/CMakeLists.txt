@@ -600,6 +600,14 @@ set_target_properties(snx-test-md3-layout PROPERTIES CXX_STANDARD 17 CXX_STANDAR
 snx_test_target(snx-test-md3-layout 11)
 add_test(NAME md3_layout COMMAND snx-test-md3-layout)
 
+# The debug overlays' pure rules (src/nx/gpu/vk/debug_overlays_layout.cpp): the
+# place of each overlay, the rows of each performance level and the HUD line.
+add_executable(snx-test-debug-overlays-layout debug_overlays_layout.cpp
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/debug_overlays_layout.cpp")
+set_target_properties(snx-test-debug-overlays-layout PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+snx_test_target(snx-test-debug-overlays-layout 11)
+add_test(NAME debug_overlays_layout COMMAND snx-test-debug-overlays-layout)
+
 # The engine menu's pure rules: the choice of the menu of a run, the gamepad mapping, the key capture rule and the
 # Debug page's table (src/nx/gpu/vk/engine_menu.cpp, engine_menu_debug.cpp and engine_menu_input.cpp).
 add_executable(snx-test-engine-menu engine_menu_pure.cpp "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/engine_menu.cpp"

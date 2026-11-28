@@ -8,6 +8,7 @@
 #include "nx/runtime/platform/backend.h"
 #include "nx/runtime/platform/gamepad.h"
 #include "nx/runtime/platform/touch.h"
+#include "nx/runtime/platform/stats.h"
 #include "nx/runtime/platform/vpad.h"
 #include "nx/runtime/platform/controls_atlas.h"
 #include "nx/runtime/platform/plat.h"
@@ -424,12 +425,23 @@ int main(void) {
            icon_at(3, 5, GUI_ICON_SAVE) && text_at(6, 5, "Save states") && icon_at(3, 6, GUI_ICON_ACTIVITY) &&
            text_at(6, 6, "Stats") && icon_at(3, 7, GUI_ICON_LOG_OUT) && text_at(1, 7, "\xFE") && text_at(6, 7, "Exit"));
     assert(!icon_at(3, 3, GUI_ICON_SAVE) && !text_at(1, 3, "\xFE On-screen controls"));
-    /* Stats: a tap turns it on and keeps it in the game's .ini, as F12 does, and again off */
+    /* Stats: a tap steps the level up and keeps it in the game's .ini, as F12 does */
     assert(text_at(C - 4, 6, "Off") && !g_settings.stats);
-    assert(tap(3, 3) == OVERLAY_NONE && g_settings.stats && !strcmp(stored, "stats"));
+    assert(tap(3, 3) == OVERLAY_NONE && g_settings.stats == STATS_LEVEL_MINIMAL && !strcmp(stored, "stats"));
     draw();
-    assert(text_at(C - 3, 6, "On"));
-    assert(tap(3, 3) == OVERLAY_NONE && !g_settings.stats);
+    assert(text_at(C - 8, 6, "Minimal"));
+    assert(tap(3, 3) == OVERLAY_NONE && g_settings.stats == STATS_LEVEL_STANDARD);
+    draw();
+    assert(text_at(C - 9, 6, "Standard"));
+    assert(tap(3, 3) == OVERLAY_NONE && g_settings.stats == STATS_LEVEL_DETAILED);
+    draw();
+    assert(text_at(C - 9, 6, "Detailed"));
+    assert(tap(3, 3) == OVERLAY_NONE && g_settings.stats == STATS_LEVEL_OFF);
+    /* the tap left the focus on Stats: step -1 from Off wraps to Detailed, then step 1 back to Off */
+    overlay_side(-1);
+    assert(g_settings.stats == STATS_LEVEL_DETAILED);
+    overlay_side(1);
+    assert(g_settings.stats == STATS_LEVEL_OFF);
     /* a tap on Exit exits; on the title, nothing; outside the panel, it closes */
     assert(tap(4, 3) == OVERLAY_EXIT && tap(-3, 3) == OVERLAY_NONE);
     assert(overlay_tap(5.0f, 5.0f, SW, SH) == OVERLAY_CLOSE);
@@ -552,7 +564,8 @@ int main(void) {
         assert(overlay_controls(1ull << 15, still, 2001 + SNX_OVERLAY_REPEAT_DELAY + SNX_OVERLAY_REPEAT_MS - 1) ==
                OVERLAY_NONE);
         overlay_move(1); /* past Save states, to Stats */
-        assert(overlay_controls(1ull << 0, still, 3000) == OVERLAY_NONE && g_settings.stats); /* A on it */
+        assert(overlay_controls(1ull << 0, still, 3000) == OVERLAY_NONE &&
+               g_settings.stats == STATS_LEVEL_MINIMAL); /* A on it */
         g_settings.stats = 0;
         assert(overlay_controls(1ull << 13, still, 3001) == OVERLAY_NONE &&
                overlay_controls(0, left, 3002) == OVERLAY_NONE);

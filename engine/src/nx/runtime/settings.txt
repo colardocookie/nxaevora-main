@@ -133,29 +133,34 @@ setting Showcase
     int 0 1
     default 0
     words Off|On
-    help 1 = player 1's buttons and sticks, as the game gets them, and the frames a second, drawn in a corner of the
-    help window for a video. F6 turns it on and off
+    help 1 = player 1's buttons and sticks, as the game gets them, drawn in a corner of the window for a video. F6
+    help turns it on and off
+    help The performance overlay, the input display and the debug line draw only with imgui at 1
 setting Showcase corner
     key showcase_corner
     text 3
     default br
     set vpad_showcase_corner_set
     words tl=Top left|tr=Top right|bl=Bottom left|br=Bottom right
-    help The corner showcase draws in: tl top left, tr top right, bl bottom left, br bottom right
+    help The corner the input display draws in: tl top left, tr top right, bl bottom left, br bottom right. In the
+    help performance overlay's corner it goes above or below it
 setting Stats
     key stats
-    int 0 1
+    int 0 3
     default 0
-    words Off|On
-    help 1 = the frames a second, the last frame's time, the processor and memory the game takes and a graph of its
-    help last 120 frames' times, in a corner over the game. F12 or the game's menu turns it on and off
+    words Off|Minimal|Standard|Detailed
+    help The performance overlay's level: 0 off, 1 the frames a second and the last frame's time, 2 also the load, the
+    help memory and a graph of the last 120 frames, 3 also the temperature, the power, the frame costs and the display
+    help settings. F12 or the game's menu steps it
+    help The performance overlay, the input display and the debug line draw only with imgui at 1
 setting Stats corner
     key stats_corner
     text 3
     default tl
     set stats_corner_set
     words tl=Top left|tr=Top right|bl=Bottom left|br=Bottom right
-    help The corner stats draws in, as showcase_corner's; in showcase's own corner it goes beside showcase's box
+    help The corner the performance overlay draws in: tl top left, tr top right, bl bottom left, br bottom right. In
+    help the input display's corner it goes above or below it, and a top corner overlay moves down under the HUD
 
 table g_graphics_ini
 setting Render resolution
@@ -891,6 +896,7 @@ setting Imgui
     words Off|On
     help 1 = the windows of Dear ImGui: a menu bar at the top of the picture, shown when the cursor is there (hold Alt
     help to free the cursor from the mouse look). 0 = none, and they take no input
+    help The performance overlay, the input display and the debug line draw only with imgui at 1
 setting Legacy menu
     key legacy_menu
     int 0 1

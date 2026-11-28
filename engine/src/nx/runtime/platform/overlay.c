@@ -805,7 +805,7 @@ void overlay_scroll(int rows) {
 void overlay_side(int step) {
     if (page == PAGE_MAP)
         map_key(step < 0 ? SNX_PAD_KEY_LEFT : SNX_PAD_KEY_RIGHT);
-    else if (page != PAGE_MAIN)
+    else
         act(focus, step);
 }
 int overlay_pad(u64 button) {

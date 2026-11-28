@@ -70,6 +70,11 @@ void engine_menu_gamepad_axis(int sdl_axis, int value);
 #if !defined(ENGINE_MENU_PURE_TEST)
 /* The GPU thread: draws the menu for the frame and returns whether the panel showed. */
 bool engine_menu_draw(ImguiFrame* f);
+/* The overlays' theme and motion follow the menu's: its colour seed, its reduce motion flag, and whether its Debug
+   page shows this frame. */
+uint32_t engine_menu_scheme_seed(void);
+bool engine_menu_reduce_motion(void);
+bool engine_menu_debug_shown(void);
 #endif
 /* The GPU thread: 1 while the menu is open or closing, before NewFrame. */
 bool engine_menu_visible(void);
