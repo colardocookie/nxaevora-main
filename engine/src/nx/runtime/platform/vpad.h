@@ -5,9 +5,17 @@
    (keys controls and controls_*) */
 #ifndef SNX_VPAD_H
 #define SNX_VPAD_H
-#include "nx/runtime/platform/ui.h"
+#include <stdint.h>
 #include "nx/runtime/ini.h"
 #include "snx_settings.h"
+/* A C++ unit cannot include cpu.h, whose C dialect this codebase keeps, so ui.h stays out of one: the types that
+   the prototypes share take its place, and vpad_draw, the one with a SnxUiList, stays for the C units. */
+#ifdef __cplusplus
+typedef uint64_t u64;
+typedef int32_t i32;
+#else
+#include "nx/runtime/platform/ui.h"
+#endif
 
 /* in the order they are drawn: a finger presses the last one drawn under it */
 enum {
@@ -86,20 +94,22 @@ void vpad_edit(int on);
 int vpad_editing(void);
 int vpad_shown(void); /* drawn: on, or in edit mode */
 
+#ifndef __cplusplus
 /* safe in the pixels of the picture drawn on */
 void vpad_draw(SnxUiList* l, const int safe[4]);
+#endif
 
 /* Showcase (settings.txt's showcase): player 1's buttons (HidNpadButton bits) and sticks (-32767 to 32767, up
-   positive) as the game got them, drawn with these controls' sprites in showcase_corner's corner of safe, and the
-   frames a second (fps, below 0 for none yet) over them. Both under ui_lock */
+   positive) as the game got them. Under ui_lock */
 void vpad_showcase_input(u64 buttons, const i32 sticks[4]);
-/* the frames a second the showcase shows: the game's presents (a count that only grows) over the last half second or
-   more, at now_ns; -1 until the first half second is over */
-int vpad_showcase_fps(u32 presents, u64 now_ns);
-void vpad_showcase_draw(SnxUiList* l, const int safe[4], int fps);
-/* the showcase's box on safe (x, y, w, h into box) and its corner, 0 top left, 1 top right, 2 bottom left, 3 bottom
-   right; -1 while it is off */
-int vpad_showcase_box(const int safe[4], float box[4]);
+/* a copy of that input for the input display: the buttons and each stick, right and down positive. Takes ui_lock */
+typedef struct {
+    u64 buttons;
+    float lx, ly, rx, ry;
+} SnxVpadShowcaseInput;
+void vpad_showcase_state(SnxVpadShowcaseInput* out);
+/* showcase_corner's corner, 0 top left, 1 top right, 2 bottom left, 3 bottom right */
+int vpad_showcase_corner(void);
 /* a corner's word, tl tr bl br, as showcase_corner and stats_corner take them: its index as above, -1 for another */
 int vpad_corner(const char* word);
 const char* vpad_corner_word(int corner);

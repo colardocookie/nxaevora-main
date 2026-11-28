@@ -671,7 +671,6 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game) {
         last_present_ns = now_ns;
         g_vk_present++;
         vk_temporal_gputime_present(); /* SNX_ARCEUS_TEMPORAL_GPUTIME: its window is counted in presents, here */
-        stats_frame(now_ns);
         debug_stats_frame(now_ns, now_ns - show_start_ns, is[3], is[6]);
         nvn_measure_present(now_ns);
         vk_mem_present();

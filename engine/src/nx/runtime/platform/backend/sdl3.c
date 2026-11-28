@@ -26,6 +26,7 @@
 #include "nx/runtime/platform/fatal_screen.h"
 #include "nx/runtime/platform/touch.h"
 #include "nx/runtime/platform/ui.h"
+#include "nx/runtime/platform/stats.h"
 #include "nx/runtime/platform/vpad.h"
 #include "nx/runtime/platform/gamepad.h"
 #include "common/utilities/pad_sdl.h"
@@ -419,7 +420,7 @@ static const char* HELP =
     "  F3  take a screenshot\n"
     "  F4  turn the FPS limit off or back on\n"
     "  F5  write every thread's state to the log\n"
-    "  F6  turn showcase mode on or off\n"
+    "  F6  turn the input display on or off\n"
     "  F7  save the game's state to the selected slot\n"
     "  F8  load the selected slot's state\n"
     "  F9  select the next save state slot\n"
@@ -428,7 +429,7 @@ static const char* HELP =
 #endif
     "  Pause  pause the whole game, and resume it\n"
     "  F11 or Alt+Enter  switch fullscreen\n"
-    "  F12  turn the stats on or off\n"
+    "  F12  step the performance overlay: off, minimal, standard, detailed\n"
     "  Esc  quit the game";
 
 static PadKind gamepad_kind(int type) {
@@ -1015,13 +1016,12 @@ static void hotkey(SDL_Keycode k) {
         case SDLK_F8: state_ask(STATE_LOAD, -1); break;
         case SDLK_F9: state_slot_next(); break;
         case SDLK_F12: {
-            int on = !__atomic_load_n(&g_settings.stats, __ATOMIC_RELAXED);
-            __atomic_store_n(&g_settings.stats, on, __ATOMIC_RELAXED);
-            ini_set("stats", on ? "1" : "0");
-            if (on)
-                LOG("stats: on, stats_corner=%s\n", g_settings.stats_corner);
-            else
-                LOG("stats: off\n");
+            int level = stats_level_next(stats_level());
+            char value[8];
+            __atomic_store_n(&g_settings.stats, level, __ATOMIC_RELAXED);
+            snprintf(value, sizeof value, "%d", level);
+            ini_set("stats", value);
+            LOG("stats: level %d, stats_corner=%s\n", level, g_settings.stats_corner);
             break;
         }
 #if defined(SNX_TRACY)

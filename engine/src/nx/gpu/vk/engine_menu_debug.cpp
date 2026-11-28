@@ -120,6 +120,7 @@ const char* EngineMenuDebugCardName(int card) {
 #include <cstdlib>
 
 #include "imgui.h"
+#include "nx/gpu/vk/debug_overlays.h"
 #include "nx/gpu/vk/debug_stats.h"
 #include "nx/gpu/vk/md3/md3_theme.h"
 #include "nx/gpu/vk/md3/md3_widgets.h"
@@ -130,10 +131,8 @@ extern "C" {
 
 namespace {
 
-// GiB in one MiB, and the frame target of the game's pace (the mockup's 30 FPS).
-constexpr float kMiBPerGiB = 1024.0f;
-constexpr float kGameTargetMs = 1000.0f / 30.0f;
-constexpr float kMillisecondsPerSecond = 1000.0f;
+// The shared line format and target helpers of the Debug page and the performance overlay (debug_overlays.h).
+// The missing row, the counters and the card ids stay here.
 constexpr int kValueTextMax = 32;
 constexpr int kLineTextMax = 192;
 constexpr int kCardIdMax = 48;
@@ -142,20 +141,6 @@ const char* const kUnknownValue = "\xE2\x80\x94"; // em dash
 
 void MissingRow(const char* key) {
     LOG_LIMIT(kMissingRowLogMax, "engine menu: the Debug page has no row for %s\n", key);
-}
-
-void DashedInt(char* out, size_t n, int value, const char* format) {
-    if (value < 0)
-        std::snprintf(out, n, "%s", kUnknownValue);
-    else
-        std::snprintf(out, n, format, value);
-}
-
-void DashedTenths(char* out, size_t n, float value) {
-    if (value < 0.0f)
-        std::snprintf(out, n, "%s", kUnknownValue);
-    else
-        std::snprintf(out, n, "%.1f", static_cast<double>(value));
 }
 
 bool ReadDebugRow(const EngineMenuDebugEntry& entry, ImguiSettingRow* row) {
@@ -187,78 +172,26 @@ void DrawOverlaysCard() {
     md3::CardEnd();
 }
 
-void GpuLine(const DebugStats& stats, char* line, size_t n) {
-    char load[kValueTextMax], temp[kValueTextMax], power[kValueTextMax];
-    DashedInt(load, sizeof load, stats.gpu_load, "%d %%");
-    DashedInt(temp, sizeof temp, stats.gpu_temp, "%d \xC2\xB0" "C");
-    DashedInt(power, sizeof power, stats.gpu_power, "%d W");
-    std::snprintf(line, n, "GPU  %s, %s, %s", load, temp, power);
-}
-
-void VramLine(const DebugStats& stats, char* line, size_t n) {
-    if (stats.vram_used_mb < 0 || stats.vram_total_mb < 0) {
-        std::snprintf(line, n, "VRAM  %s / %s", kUnknownValue, kUnknownValue);
-        return;
-    }
-    std::snprintf(line, n, "VRAM  %.1f / %.1f GB", static_cast<double>(stats.vram_used_mb) / kMiBPerGiB,
-                  static_cast<double>(stats.vram_total_mb) / kMiBPerGiB);
-}
-
-void CpuLine(const DebugStats& stats, char* line, size_t n) {
-    char load[kValueTextMax], temp[kValueTextMax], power[kValueTextMax];
-    DashedInt(load, sizeof load, stats.cpu_load, "%d %%");
-    DashedInt(temp, sizeof temp, stats.cpu_temp, "%d \xC2\xB0" "C");
-    DashedInt(power, sizeof power, stats.cpu_power, "%d W");
-    std::snprintf(line, n, "CPU  %s, %s, %s", load, temp, power);
-}
-
-void RamLine(const DebugStats& stats, char* line, size_t n) {
-    if (stats.ram_used_mb < 0 || stats.ram_total_mb < 0 || stats.game_ram_mb < 0) {
-        std::snprintf(line, n, "RAM  %s / %s, game %s", kUnknownValue, kUnknownValue, kUnknownValue);
-        return;
-    }
-    std::snprintf(line, n, "RAM  %.1f / %.1f GB, game %.1f GB", static_cast<double>(stats.ram_used_mb) / kMiBPerGiB,
-                  static_cast<double>(stats.ram_total_mb) / kMiBPerGiB,
-                  static_cast<double>(stats.game_ram_mb) / kMiBPerGiB);
-}
-
 void DrawHardwareCard(const DebugStats& stats) {
     char line[kLineTextMax];
     md3::CardBegin("##debug_hardware_card");
     md3::SectionTitle(EngineMenuDebugCardName(ENGINE_MENU_DEBUG_HARDWARE));
-    GpuLine(stats, line, sizeof line);
+    debug_overlay::GpuLine(stats, line, sizeof line);
     md3::BodyText(line);
-    VramLine(stats, line, sizeof line);
+    debug_overlay::VramLine(stats, line, sizeof line);
     md3::BodyText(line);
-    CpuLine(stats, line, sizeof line);
+    debug_overlay::CpuLine(stats, line, sizeof line);
     md3::BodyText(line);
-    RamLine(stats, line, sizeof line);
+    debug_overlay::RamLine(stats, line, sizeof line);
     md3::BodyText(line);
     md3::CardEnd();
 }
 
-// The frame target of fps_limit's text: the game's pace, a number of frames a
-// second, or no line at 0 and Unlimited.
-float FrameTargetMs(const char* fps_limit) {
-    if (fps_limit == nullptr) return 0.0f;
-    if (std::strcmp(fps_limit, "game") == 0) return kGameTargetMs;
-    const int fps = std::atoi(fps_limit);
-    return fps > 0 ? kMillisecondsPerSecond / static_cast<float>(fps) : 0.0f;
-}
-
-void FrameLine(const DebugStats& stats, char* line, size_t n) {
-    char fps[kValueTextMax], last[kValueTextMax], max[kValueTextMax];
-    DashedTenths(fps, sizeof fps, stats.fps);
-    DashedTenths(last, sizeof last, stats.frame_last_ms);
-    DashedTenths(max, sizeof max, stats.frame_max_ms);
-    std::snprintf(line, n, "%s FPS, last frame %s ms, max %s ms", fps, last, max);
-}
-
 void CostLines(const DebugStats& stats, char* prep, size_t prep_n, char* wait, size_t wait_n) {
     char prepared[kValueTextMax], busy[kValueTextMax], waits[kValueTextMax];
-    DashedTenths(prepared, sizeof prepared, stats.prep_ms);
-    DashedTenths(busy, sizeof busy, stats.cpu_ms);
-    DashedTenths(waits, sizeof waits, stats.pipeline_wait_ms);
+    debug_overlay::DashedTenths(prepared, sizeof prepared, stats.prep_ms);
+    debug_overlay::DashedTenths(busy, sizeof busy, stats.cpu_ms);
+    debug_overlay::DashedTenths(waits, sizeof waits, stats.pipeline_wait_ms);
     std::snprintf(prep, prep_n, "CPU frame prep %s ms, CPU busy %s ms", prepared, busy);
     if (stats.texture_uploads < 0.0f)
         std::snprintf(wait, wait_n, "Pipeline waits %s ms, texture uploads %s", waits, kUnknownValue);
@@ -273,10 +206,10 @@ void DrawFrameCard(const DebugStats& stats, const ImguiFrame* frame) {
     char line[kLineTextMax], prep[kLineTextMax], wait[kLineTextMax];
     md3::CardBegin("##debug_frame_card");
     md3::SectionTitle(EngineMenuDebugCardName(ENGINE_MENU_DEBUG_FRAME));
-    FrameLine(stats, line, sizeof line);
+    debug_overlay::FrameLine(stats, line, sizeof line);
     md3::BodyText(line);
     md3::FrameTimeGraph("##debug_frame_graph", stats.frame_ms, stats.frame_count,
-                        FrameTargetMs(frame != nullptr ? frame->fps_limit : nullptr),
+                        debug_overlay::FrameTargetMs(frame != nullptr ? frame->fps_limit : nullptr),
                         ImVec2(ImGui::GetContentRegionAvail().x, md3::kFrameGraphHeightPx * s));
     CostLines(stats, prep, sizeof prep, wait, sizeof wait);
     md3::BodyText(prep);

@@ -13,12 +13,38 @@
 
 namespace {
 constexpr uint32_t TEXTURE_SLOTS = 16; /* sampler descriptors: the font atlas and a few more images */
+/* Two draw parts are recorded in a frame (the overlays and the rest), so each swapchain image needs two buffers: the
+   backend moves to the next buffer at each call, and a buffer that a frame in flight still reads must not be written. */
+constexpr uint32_t BUFFERS_PER_IMAGE = 2;
 bool g_ready;
 bool g_vk_failed; /* the backend got an error result: set on the frame's thread, under vk_lock */
 ImGuiContext* g_ctx;
+debug_overlay::OverlayDrawLists g_overlays{};
 
 void check_vk_result(VkResult r) {
     if (r < 0) g_vk_failed = true;
+}
+
+bool IsOverlayList(const ImDrawList* list) {
+    for (int i = 0; i < g_overlays.count; ++i)
+        if (g_overlays.lists[i] == list) return true;
+    return false;
+}
+
+/* The draw data of one part: the overlay lists, or every other list. */
+void BuildPart(ImDrawData* out, bool overlays) {
+    const ImDrawData* all = ImGui::GetDrawData();
+    out->DisplayPos = all->DisplayPos;
+    out->DisplaySize = all->DisplaySize;
+    out->FramebufferScale = all->FramebufferScale;
+    out->OwnerViewport = all->OwnerViewport;
+    out->Valid = true;
+    if (overlays) {
+        for (int i = 0; i < g_overlays.count; ++i) out->AddDrawList(g_overlays.lists[i]);
+        return;
+    }
+    for (ImDrawList* list : all->CmdLists)
+        if (!IsOverlayList(list)) out->AddDrawList(list);
 }
 
 bool add_fonts(const ImguiGlueInit* in) {
@@ -64,7 +90,7 @@ extern "C" int imgui_glue_init(const ImguiGlueInit* in) {
     vi.Queue = in->queue;
     vi.DescriptorPoolSize = TEXTURE_SLOTS;
     vi.MinImageCount = 2;
-    vi.ImageCount = in->image_count < 2 ? 2 : in->image_count;
+    vi.ImageCount = BUFFERS_PER_IMAGE * (in->image_count < 2 ? 2 : in->image_count);
     vi.UseDynamicRendering = true;
     vi.CheckVkResultFn = check_vk_result;
     vi.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
@@ -111,18 +137,38 @@ extern "C" int imgui_glue_frame(ImguiFrame* f) {
     imgui_events_feed();
     ImGui_ImplVulkan_NewFrame();
     ImGui::NewFrame();
-    bool menu = imgui_ui_draw(f);
+    const ImguiUiDraw ui = imgui_ui_draw(f);
+    g_overlays = ui.overlays;
     ImGui::Render(); /* the end of the frame: the IME callback has run */
-    imgui_events_publish(menu);
+    imgui_events_publish(ui.menu_shown);
     return ImGui::GetDrawData()->TotalVtxCount > 0;
 }
 
 extern "C" void imgui_glue_unwanted(void) {
     imgui_ui_reset();
+    g_overlays = debug_overlay::OverlayDrawLists{};
     ImguiWants none = {};
     imgui_input_publish(&none);
 }
 
-extern "C" void imgui_glue_record(VkCommandBuffer cb) {
-    if (g_ready) ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cb);
+extern "C" int imgui_glue_overlay_count(void) { return g_overlays.count; }
+
+extern "C" void imgui_glue_record_overlays(VkCommandBuffer cb) {
+    if (!g_ready || g_overlays.count <= 0) return;
+    ImDrawData part;
+    BuildPart(&part, true);
+    /* This part always carries the texture updates, so it draws at 0 vertices too: a 0-vertex
+       overlay list (a fade at alpha 0) must not lose them. */
+    part.Textures = ImGui::GetDrawData()->Textures;
+    ImGui_ImplVulkan_RenderDrawData(&part, cb);
+}
+
+extern "C" void imgui_glue_record_rest(VkCommandBuffer cb) {
+    if (!g_ready) return;
+    ImDrawData part;
+    BuildPart(&part, false);
+    /* The overlays went first, so they carry the texture updates: a second list would repeat them. */
+    part.Textures = g_overlays.count > 0 ? nullptr : ImGui::GetDrawData()->Textures;
+    /* Only a part without Textures may skip at 0 vertices; the part that carries them always draws. */
+    if (part.Textures != nullptr || part.TotalVtxCount > 0) ImGui_ImplVulkan_RenderDrawData(&part, cb);
 }

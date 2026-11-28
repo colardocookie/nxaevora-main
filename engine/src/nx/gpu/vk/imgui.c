@@ -309,7 +309,7 @@ static void menu_record(VkCommandBuffer cb, VkImage sc, VkImageView view) {
                               .colorAttachmentCount = 1,
                               .pColorAttachments = &at};
         vkCmdBeginRendering(cb, &ri);
-        imgui_glue_record(cb);
+        imgui_glue_record_rest(cb);
         vkCmdEndRendering(cb);
     }
     vk_render_forget_state();
@@ -413,6 +413,33 @@ void vk_imgui_draw(VkCommandBuffer cb, VkImage sc, u32 game_w, u32 game_h) {
     if (!drawn) return; /* nothing shows: no drain, no pass */
     vk_rec_sync();
     if (engine_menu_active() && menu_image_ready()) { /* the panel fades as one picture through the offscreen layer */
+        if (imgui_glue_overlay_count() > 0) {
+            /* the overlays first, straight to the swapchain image, so the panel covers them while they fade out */
+            image_barrier(cb, sc, VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                          VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                          VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+            {
+                VkRenderingAttachmentInfo at = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                                                .imageView = view,
+                                                .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                                .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
+                                                .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
+                VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+                                      .renderArea = {{0, 0}, g_vk.sc_extent},
+                                      .layerCount = 1,
+                                      .colorAttachmentCount = 1,
+                                      .pColorAttachments = &at};
+                vkCmdBeginRendering(cb, &ri);
+                imgui_glue_record_overlays(cb);
+                vkCmdEndRendering(cb);
+            }
+            vk_render_forget_state();
+            image_barrier(cb, sc, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                          VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                          VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        }
         menu_record(cb, sc, view);
         return;
     }
@@ -432,7 +459,8 @@ void vk_imgui_draw(VkCommandBuffer cb, VkImage sc, u32 game_w, u32 game_h) {
                               .colorAttachmentCount = 1,
                               .pColorAttachments = &at};
         vkCmdBeginRendering(cb, &ri);
-        imgui_glue_record(cb);
+        imgui_glue_record_overlays(cb); /* first, so that it updates the textures and the rest does not repeat them */
+        imgui_glue_record_rest(cb);
         vkCmdEndRendering(cb);
     }
     vk_render_forget_state(); /* ImGui bound its own pipeline and buffers */
