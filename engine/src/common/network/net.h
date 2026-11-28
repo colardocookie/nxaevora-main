@@ -142,6 +142,9 @@ int snx_net_getnameinfo(const SnxSockAddr* addr, char* host, size_t host_size, c
                         int flags);
 const char* snx_net_gai_strerror(int error);
 int snx_net_parse_ipv4(const char* text, uint8_t out[4]); /* 1 for a dotted IPv4 address */
+/* Where a datagram to the 127/8 broadcast address goes: on Windows the limited broadcast, because a socket bound to a
+   127/8 address hears that and not one for 127.255.255.255. Elsewhere out is to. */
+void snx_net_broadcast_dest(const uint8_t to[4], const uint8_t bcast[4], uint8_t out[4]);
 
 /* The host's network (net_iface.c): its interfaces with an IPv4 address that are up, loopback left out, the one with
    the default route first */
