@@ -14,12 +14,13 @@ extern "C" {
 #endif
 
 enum {
-    MENU_WIDGET_COMBO = 0,  /* a choice of words or presets */
-    MENU_WIDGET_NUMBER,     /* a number field */
-    MENU_WIDGET_SWITCH,     /* an int from 0 to 1 */
-    MENU_WIDGET_SLIDER,     /* an int whose range is at most 64 steps */
-    MENU_WIDGET_TEXT_ONLY,  /* a text with no words: the supporting line alone */
-    MENU_WIDGET_UNSUPPORTED /* a FLOAT row: no widget of these pages draws it */
+    MENU_WIDGET_COMBO = 0,   /* a choice of words or presets */
+    MENU_WIDGET_NUMBER,      /* a number field */
+    MENU_WIDGET_SWITCH,      /* an int from 0 to 1 */
+    MENU_WIDGET_SLIDER,      /* an int whose range is at most 64 steps */
+    MENU_WIDGET_TEXT_FIELD,  /* a text with no words: the field edits the line */
+    MENU_WIDGET_TEXT_ONLY,   /* a text with no words and no field: the supporting line alone */
+    MENU_WIDGET_UNSUPPORTED  /* a FLOAT row: no widget of these pages draws it */
 };
 
 /* The widget of a row, from its type, flags, range, step, words and presets. A NULL row has no widget. */

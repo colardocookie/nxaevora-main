@@ -5,6 +5,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 
 #include "nx/gpu/vk/md3/md3_layout.h"
 
@@ -90,6 +91,187 @@ const ScrollCase kScrollCases[] = {
     {"bottom above top", {200.0f, 150.0f, 100.0f, 0.0f, 500.0f, false, false}, 100.0},
 };
 
+// The field edit state of the number and text fields. The expected values come
+// from decisions 1 to 4 of the Debug page brief.
+bool FieldEditCases() {
+    const unsigned int field_a = 101;
+    const unsigned int field_b = 102;
+
+    {
+        // Field A starts an edit, then nine other field ids draw in the same
+        // frame: A still edits and keeps its line, because only the owner has
+        // the state.
+        md3::FieldEdit edit{};
+        md3::FieldEditStart(edit, field_a, 1, "line-a");
+        for (int i = 0; i < 9; ++i) {
+            const unsigned int other = field_b + static_cast<unsigned int>(i);
+            if (md3::FieldEditBegin(edit, other, 1)) {
+                std::printf("FAIL nine fields: %u took the edit\n", other);
+                return false;
+            }
+        }
+        if (!md3::FieldEditBegin(edit, field_a, 1)) {
+            std::printf("FAIL nine fields: A lost the state\n");
+            return false;
+        }
+        if (!edit.editing || std::strcmp(edit.text, "line-a") != 0) {
+            std::printf("FAIL nine fields: A lost the edit or the line\n");
+            return false;
+        }
+    }
+
+    {
+        // A second field that starts an edit takes the state, so A is not
+        // editing and its line is gone.
+        md3::FieldEdit edit{};
+        md3::FieldEditStart(edit, field_a, 1, "line-a");
+        md3::FieldEditStart(edit, field_b, 1, "line-b");
+        if (md3::FieldEditOwnedBy(edit, field_a) || !md3::FieldEditOwnedBy(edit, field_b)) {
+            std::printf("FAIL second field: the state did not move\n");
+            return false;
+        }
+        if (!edit.editing || std::strcmp(edit.text, "line-b") != 0) {
+            std::printf("FAIL second field: the edit or the line did not move\n");
+            return false;
+        }
+    }
+
+    {
+        // A field that the page did not draw in the last frame loses its edit.
+        md3::FieldEdit edit{};
+        md3::FieldEditStart(edit, field_a, 1, "line-a");
+        md3::FieldEditBegin(edit, field_a, 2);
+        if (!edit.editing) {
+            std::printf("FAIL missing frame: the edit ended too early\n");
+            return false;
+        }
+        md3::FieldEditBegin(edit, field_a, 4);
+        if (edit.editing) {
+            std::printf("FAIL missing frame: the edit survived a missing frame\n");
+            return false;
+        }
+    }
+
+    {
+        // The error stays with the owner after the edit ends and goes when
+        // another field starts an edit.
+        md3::FieldEdit edit{};
+        md3::FieldEditStart(edit, field_a, 1, "12");
+        md3::FieldEditEnd(edit, true);
+        if (edit.editing || !edit.error || !md3::FieldEditOwnedBy(edit, field_a)) {
+            std::printf("FAIL error owner: the error did not stay with A\n");
+            return false;
+        }
+        md3::FieldEditBegin(edit, field_a, 2);
+        if (!edit.error) {
+            std::printf("FAIL error owner: the error went at the next draw\n");
+            return false;
+        }
+        md3::FieldEditStart(edit, field_b, 3, "34");
+        if (edit.error || md3::FieldEditOwnedBy(edit, field_a)) {
+            std::printf("FAIL error owner: the error survived a new edit\n");
+            return false;
+        }
+    }
+
+    return true;
+}
+
+// The leaving entry of a field that a take-over replaced (decisions 1 to 5 of
+// the field edit brief).
+bool FieldLeaveCases() {
+    const unsigned int field_a = 201;
+    const unsigned int field_b = 202;
+    const unsigned int field_c = 203;
+    char line[md3::kTextFieldMax];
+
+    {
+        // B takes the state in the frame of A's edit, so B owns it and A can
+        // take its own line one time.
+        md3::FieldEdit edit{};
+        md3::FieldEditStart(edit, field_a, 1, "line-a");
+        md3::FieldEditStart(edit, field_b, 1, "line-b");
+        if (!md3::FieldEditOwnedBy(edit, field_b) || !edit.editing) {
+            std::printf("FAIL leaving take: B does not own the state\n");
+            return false;
+        }
+        if (!md3::FieldEditTakeLeaving(edit, field_a, 1, line, sizeof line)) {
+            std::printf("FAIL leaving take: A cannot take its line\n");
+            return false;
+        }
+        if (std::strcmp(line, "line-a") != 0) {
+            std::printf("FAIL leaving take: A took '%s'\n", line);
+            return false;
+        }
+        if (md3::FieldEditTakeLeaving(edit, field_a, 1, line, sizeof line)) {
+            std::printf("FAIL leaving take: the entry survived the first take\n");
+            return false;
+        }
+    }
+
+    {
+        // A does not edit when B starts, so there is no leaving entry for A.
+        md3::FieldEdit edit{};
+        md3::FieldEditStart(edit, field_a, 1, "line-a");
+        md3::FieldEditEnd(edit, false);
+        md3::FieldEditStart(edit, field_b, 1, "line-b");
+        if (md3::FieldEditTakeLeaving(edit, field_a, 1, line, sizeof line)) {
+            std::printf("FAIL leaving idle: a stale entry for A\n");
+            return false;
+        }
+    }
+
+    {
+        // The entry is valid in the next frame and gone two frames after.
+        md3::FieldEdit edit{};
+        md3::FieldEditStart(edit, field_a, 1, "line-a");
+        md3::FieldEditStart(edit, field_b, 1, "line-b");
+        if (!md3::FieldEditTakeLeaving(edit, field_a, 2, line, sizeof line)) {
+            std::printf("FAIL leaving next frame: the entry went too early\n");
+            return false;
+        }
+        md3::FieldEditStart(edit, field_a, 1, "line-a");
+        md3::FieldEditStart(edit, field_b, 1, "line-b");
+        if (md3::FieldEditTakeLeaving(edit, field_a, 3, line, sizeof line)) {
+            std::printf("FAIL leaving two frames: the entry survived\n");
+            return false;
+        }
+    }
+
+    {
+        // A different id cannot take A's line, and A keeps the entry.
+        md3::FieldEdit edit{};
+        md3::FieldEditStart(edit, field_a, 1, "line-a");
+        md3::FieldEditStart(edit, field_b, 1, "line-b");
+        if (md3::FieldEditTakeLeaving(edit, field_c, 1, line, sizeof line)) {
+            std::printf("FAIL leaving owner: another id took the line\n");
+            return false;
+        }
+        if (!md3::FieldEditTakeLeaving(edit, field_a, 1, line, sizeof line)) {
+            std::printf("FAIL leaving owner: A lost the entry to another id\n");
+            return false;
+        }
+    }
+
+    {
+        // CancelTextEditing clears the leaving entry as well as the edit.
+        md3::FieldEdit edit{};
+        md3::FieldEditStart(edit, field_a, 1, "line-a");
+        md3::FieldEditStart(edit, field_b, 1, "line-b");
+        md3::FieldEditCancel(edit);
+        if (edit.editing || edit.error) {
+            std::printf("FAIL leaving cancel: the edit survived\n");
+            return false;
+        }
+        if (md3::FieldEditTakeLeaving(edit, field_a, 1, line, sizeof line)) {
+            std::printf("FAIL leaving cancel: the entry survived\n");
+            return false;
+        }
+    }
+
+    return true;
+}
+
 } // namespace
 
 int main() {
@@ -102,6 +284,8 @@ int main() {
     for (const ScrollCase& test : kScrollCases) {
         if (!Near(test.name, md3::PageScrollTarget(test.in), test.expected)) return 1;
     }
+    if (!FieldEditCases()) return 1;
+    if (!FieldLeaveCases()) return 1;
 
     std::printf("md3_layout_test: all cases passed\n");
     return 0;

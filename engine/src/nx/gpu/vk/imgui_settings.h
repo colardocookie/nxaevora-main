@@ -30,6 +30,7 @@ typedef struct {
     int ivalue;        /* INT */
     float fvalue;      /* FLOAT */
     char text[IMGUI_SETTING_TEXT_MAX]; /* TEXT: the value; a TEXT with has_words is a choice of imgui_settings_text_word */
+    size_t text_size;                  /* TEXT: the size of the .ini's field; 0 for other types */
 } ImguiSettingRow;
 
 /* the window that shows pages: the engine menu */
@@ -42,6 +43,8 @@ int imgui_settings_page_window(int page);
 int imgui_settings_rows(int page);
 /* row i of page into r: 1, or 0 for an index outside the page */
 int imgui_settings_row(int page, int i, ImguiSettingRow* r);
+/* the row of a key in any section, even a hidden one: 1, or 0 for a key that no table has */
+int imgui_settings_row_key(const char* key, ImguiSettingRow* r);
 /* the word of an int choice's value v (the number when it has none) */
 void imgui_settings_word(const char* key, int v, char* out, size_t n);
 /* preset i of a setting that is chosen from a list (the resolution, the anisotropic filtering, the FPS limit): its
@@ -53,6 +56,9 @@ int imgui_settings_fits(const char* key, double number);
 /* word i of a text setting that is a choice (value=label between '|'): its value and its label. 1, or 0 for an index
    past the last */
 int imgui_settings_text_word(const char* key, int i, char* value, size_t vn, char* label, size_t ln);
+/* the full text of a TEXT setting: 1 with the value in out, or 0 for an unknown key, a key that is not TEXT, or
+   a value that does not fit in n (out is "") */
+int imgui_settings_text(const char* key, char* out, size_t n);
 /* key set to value (the .ini's text). The main thread applies it and saves it, so the row shows the old value for a
    moment */
 void imgui_settings_set(const char* key, const char* value);

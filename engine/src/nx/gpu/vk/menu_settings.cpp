@@ -45,7 +45,7 @@ extern "C" int menu_settings_widget(const ImguiSettingRow* row) {
         }
         return MENU_WIDGET_NUMBER;
     }
-    if (row->type == IMGUI_SETTING_TEXT) return MENU_WIDGET_TEXT_ONLY;
+    if (row->type == IMGUI_SETTING_TEXT) return MENU_WIDGET_TEXT_FIELD;
     return MENU_WIDGET_UNSUPPORTED;
 }
 

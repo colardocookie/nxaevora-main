@@ -41,6 +41,7 @@ constexpr TweenId kComboAlphaSalt = 0x6C8E9CF5u;
 constexpr TweenId kSliderLabelSalt = 0xD3A2646Cu;
 constexpr TweenId kRowHoverSalt = 0xFD7046C5u;
 constexpr TweenId kDialogAlphaSalt = 0x51ED270Bu;
+constexpr TweenId kExpandSalt = 0x7A3B1C4Du;
 
 // The dialog keeps a small visible alpha at 0, so that BeginPopupModal still
 // opens the window and the fade can close it from inside. A zero style alpha
@@ -65,51 +66,23 @@ ImGuiID g_dialog_pair_id = 0;
 float g_dialog_pair_alpha = 1.0f;
 bool g_dialog_pair_closing = false;
 
-// The number fields keep their line and error across frames. One entry per
-// field; the oldest goes to a new field when all are taken.
-constexpr int kNumberFieldCount = 8;
+// The line and error of the one number or text field that edits. ImGui has one
+// active item at a time, so one state serves every field.
 constexpr int kNumberFieldTextMax = 16;
-struct NumberFieldState {
-    ImGuiID id;
-    int frame;
-    char text[kNumberFieldTextMax];
-    bool editing;
-    bool error;
-};
-NumberFieldState g_number_fields[kNumberFieldCount]{};
-ImGuiContext* g_number_field_context = nullptr;
+FieldEdit g_field{};
+ImGuiContext* g_field_context = nullptr;
 
-// A new context makes the stored ids and frames meaningless.
-void SyncNumberFieldContext() {
+// A new context makes the stored id, frame and line meaningless.
+void SyncFieldContext() {
     ImGuiContext* context = ImGui::GetCurrentContext();
-    if (context == g_number_field_context) return;
-    for (NumberFieldState& state : g_number_fields) state = NumberFieldState{};
-    g_number_field_context = context;
+    if (context == g_field_context) return;
+    g_field = FieldEdit{};
+    g_field_context = context;
 }
 
-NumberFieldState* NumberFieldStateFor(ImGuiID id) {
-    NumberFieldState* free_slot = nullptr;
-    for (NumberFieldState& state : g_number_fields) {
-        if (state.id == id) return &state;
-        if (state.id == 0 && free_slot == nullptr) free_slot = &state;
-    }
-    NumberFieldState* slot = free_slot;
-    if (slot == nullptr) {
-        slot = &g_number_fields[0];
-        for (NumberFieldState& state : g_number_fields)
-            if (state.frame < slot->frame) slot = &state;
-    }
-    *slot = NumberFieldState{};
-    slot->id = id;
-    return slot;
-}
-
-bool AnyNumberFieldEditing() {
-    SyncNumberFieldContext();
-    const int frame = ImGui::GetFrameCount();
-    for (const NumberFieldState& state : g_number_fields)
-        if (state.editing && (state.frame == frame || state.frame == frame - 1)) return true;
-    return false;
+bool AnyFieldEditing() {
+    SyncFieldContext();
+    return FieldEditEditing(g_field, ImGui::GetFrameCount());
 }
 
 DialogFade* FindDialogFade(ImGuiID id) {
@@ -956,18 +929,13 @@ bool SliderInt(const char* id, int* value, int min, int max, int step, const cha
 
 bool NumberField(const char* id, int* value, int lo, int hi, int step) {
     if (id == nullptr || value == nullptr || lo > hi) return false;
-    SyncNumberFieldContext();
+    SyncFieldContext();
     const Theme& theme = CurrentTheme();
     const float s = theme.scale;
     const ImGuiID item_id = ImGui::GetID(id);
-    NumberFieldState* state = NumberFieldStateFor(item_id);
     const int frame = ImGui::GetFrameCount();
-    // A field that the page did not draw last frame does not keep an old edit.
-    if (state->editing && state->frame < frame - 1) {
-        state->editing = false;
-        state->error = false;
-    }
-    state->frame = frame;
+    const bool owner = FieldEditBegin(g_field, item_id, frame);
+    const bool editing = owner && g_field.editing;
 
     const float width = ImGui::GetContentRegionAvail().x;
     const float height = kDropdownHeightPx * s;
@@ -977,25 +945,36 @@ bool NumberField(const char* id, int* value, int lo, int hi, int step) {
     const int increment = step > 0 ? step : 1;
     bool changed = false;
 
-    if (state->editing) {
+    // A field that a take-over replaced before it could commit still writes its
+    // line when it lost the focus, so a click from one field to another keeps it.
+    if (!owner && !item.pressed && !item.focused) {
+        char leaving[kTextFieldMax];
+        if (FieldEditTakeLeaving(g_field, item_id, frame, leaving, sizeof leaving)) {
+            int parsed = 0;
+            // A refused leaving value is dropped: the field keeps its value, no error.
+            if (menu_parse_number(leaving, lo, hi, &parsed)) {
+                *value = parsed;
+                changed = true;
+            }
+        }
+    }
+
+    if (editing) {
         const bool cancel = ImGui::IsKeyPressed(ImGuiKey_Escape, false) ||
                             ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false);
         const bool commit = ImGui::IsKeyPressed(ImGuiKey_Enter, false) ||
                             ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false);
         if (cancel) {
-            state->editing = false;
-            state->error = false;
+            FieldEditEnd(g_field, false);
         } else if (commit || !item.focused) {
             int parsed = 0;
-            if (menu_parse_number(state->text, lo, hi, &parsed)) {
+            if (menu_parse_number(g_field.text, lo, hi, &parsed)) {
                 *value = parsed;
                 changed = true;
-                state->editing = false;
-                state->error = false;
+                FieldEditEnd(g_field, false);
             } else {
                 // The field keeps the old value and shows the error colour.
-                state->editing = false;
-                state->error = true;
+                FieldEditEnd(g_field, true);
             }
         } else {
             static const ImGuiKey kDigitKeys[10] = {ImGuiKey_0, ImGuiKey_1, ImGuiKey_2, ImGuiKey_3, ImGuiKey_4,
@@ -1003,25 +982,25 @@ bool NumberField(const char* id, int* value, int lo, int hi, int step) {
             static const ImGuiKey kKeypadKeys[10] = {
                 ImGuiKey_Keypad0, ImGuiKey_Keypad1, ImGuiKey_Keypad2, ImGuiKey_Keypad3, ImGuiKey_Keypad4,
                 ImGuiKey_Keypad5, ImGuiKey_Keypad6, ImGuiKey_Keypad7, ImGuiKey_Keypad8, ImGuiKey_Keypad9};
-            const size_t length = std::strlen(state->text);
+            const size_t length = std::strlen(g_field.text);
             for (int digit = 0; digit < 10; ++digit) {
                 if (!ImGui::IsKeyPressed(kDigitKeys[digit], true) && !ImGui::IsKeyPressed(kKeypadKeys[digit], true))
                     continue;
-                if (length + 1 < sizeof state->text) {
-                    state->text[length] = static_cast<char>('0' + digit);
-                    state->text[length + 1] = '\0';
+                if (length + 1 < static_cast<size_t>(kNumberFieldTextMax)) {
+                    g_field.text[length] = static_cast<char>('0' + digit);
+                    g_field.text[length + 1] = '\0';
                 }
                 break;
             }
             if (ImGui::IsKeyPressed(ImGuiKey_Backspace, true)) {
-                const size_t now = std::strlen(state->text);
-                if (now > 0) state->text[now - 1] = '\0';
+                const size_t now = std::strlen(g_field.text);
+                if (now > 0) g_field.text[now - 1] = '\0';
             }
         }
     } else if (item.pressed) {
-        std::snprintf(state->text, sizeof state->text, "%d", *value);
-        state->editing = true;
-        state->error = false;
+        char line[kNumberFieldTextMax];
+        std::snprintf(line, sizeof line, "%d", *value);
+        FieldEditStart(g_field, item_id, frame, line);
         // A mouse click must keep the focus too, so the commit on the loss of the focus can see it.
         ImGui::SetFocusID(item_id, ImGui::GetCurrentWindow());
         ImGui::NavMoveRequestCancel();
@@ -1041,7 +1020,8 @@ bool NumberField(const char* id, int* value, int lo, int hi, int step) {
         }
     }
 
-    const ImU32 accent = ToImU32(state->error ? theme.scheme.error : theme.scheme.outline);
+    const bool shows_error = FieldEditOwnedBy(g_field, item_id) && g_field.error;
+    const ImU32 accent = ToImU32(shows_error ? theme.scheme.error : theme.scheme.outline);
     ImDrawList* draw = ImGui::GetWindowDrawList();
     draw->AddRectFilled(box.Min, box.Max, FadeColor(ToImU32(theme.scheme.surface_container_highest)),
                         kDropdownCornerPx * s);
@@ -1051,17 +1031,18 @@ bool NumberField(const char* id, int* value, int lo, int hi, int step) {
                             FadeColor(StateLayerOver(ToImU32(theme.scheme.on_surface), layer)), kDropdownCornerPx * s);
     draw->AddRect(box.Min, box.Max, FadeColor(accent), kDropdownCornerPx * s, 0, kTextFieldOutlinePx * s);
 
+    const bool shows_edit = FieldEditOwnedBy(g_field, item_id) && g_field.editing;
     char value_text[kNumberFieldTextMax];
-    const char* text = state->text;
-    if (!state->editing) {
+    const char* text = g_field.text;
+    if (!shows_edit) {
         std::snprintf(value_text, sizeof value_text, "%d", *value);
         text = value_text;
     }
     const ImVec2 text_size = TextSize(text, theme.body_large);
     const ImVec2 text_pos(box.Min.x + kDropdownPaddingPx * s, box.Min.y + (height - text_size.y) * 0.5f);
     DrawTextAt(text, text_pos, theme.body_large,
-               ToImU32(state->error ? theme.scheme.error : theme.scheme.on_surface));
-    if (state->editing) {
+               ToImU32(shows_error ? theme.scheme.error : theme.scheme.on_surface));
+    if (shows_edit) {
         const float caret_x = text_pos.x + text_size.x + kTextFieldCaretPx * s;
         draw->AddLine(ImVec2(caret_x, box.Min.y + kDropdownPaddingPx * s),
                       ImVec2(caret_x, box.Max.y - kDropdownPaddingPx * s), FadeColor(ToImU32(theme.scheme.primary)),
@@ -1069,6 +1050,178 @@ bool NumberField(const char* id, int* value, int lo, int hi, int step) {
     }
     DrawFocusRing(box, kDropdownCornerPx * s, theme, item.focus_visible);
     return changed;
+}
+
+bool ExpandHeader(const char* id, const char* label, bool* open) {
+    if (id == nullptr || label == nullptr || open == nullptr) return false;
+    const Theme& theme = CurrentTheme();
+    const float s = theme.scale;
+    const float height = kRowHeightPx * s;
+    const float width = ImGui::GetContentRegionAvail().x;
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    const ImRect box(origin, ImVec2(origin.x + width, origin.y + height));
+    const ImGuiID item_id = ImGui::GetID(id);
+    const ItemState state = RunItem(box, item_id);
+    if (state.pressed) *open = !*open;
+
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    const float layer = TweenLayerAlpha(item_id, state);
+    if (layer > 0.0f) {
+        draw->AddRectFilled(box.Min, box.Max,
+                            FadeColor(StateLayerOver(ToImU32(theme.scheme.on_surface), 0.5f * layer)),
+                            theme.corner_small);
+    }
+
+    const float pad = kRowPaddingPx * s;
+    const ImVec2 label_size = TextSize(label, theme.body_large);
+    DrawTextAt(label, ImVec2(box.Min.x + pad, box.Min.y + (height - label_size.y) * 0.5f),
+               theme.body_large, ToImU32(theme.scheme.on_surface));
+
+    const float open_t = Tween(item_id ^ kExpandSalt, *open ? 1.0f : 0.0f, kDurationShortLongMs, kCurveStandard);
+    const float icon = kIconSizePx * s;
+    const ImVec2 icon_center(box.Max.x - pad - icon * 0.5f, box.Min.y + height * 0.5f);
+    const int first_vertex = draw->VtxBuffer.Size;
+    char utf8[5];
+    EncodeUtf8(icon::kExpandMore, utf8);
+    DrawTextAt(utf8, ImVec2(icon_center.x - icon * 0.5f, icon_center.y - icon * 0.5f), icon,
+               ToImU32(theme.scheme.on_surface_variant));
+    const float angle = 3.14159265f * open_t;
+    ImGui::ShadeVertsTransformPos(draw, first_vertex, draw->VtxBuffer.Size, icon_center, std::cos(angle),
+                                  std::sin(angle), icon_center);
+    DrawFocusRing(box, theme.corner_small, theme, state.focus_visible);
+    return state.pressed;
+}
+
+void FrameTimeGraph(const char* id, const float* ms, int count, float target_ms, ImVec2 size) {
+    if (id == nullptr || ms == nullptr || count <= 0 || size.x <= 0.0f || size.y <= 0.0f) return;
+    const Theme& theme = CurrentTheme();
+    const float s = theme.scale;
+    ImGui::PushID(id);
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    ImGui::Dummy(size);
+    ImGui::PopID();
+
+    if (count > kFrameGraphSamples) count = kFrameGraphSamples;
+    float max_ms = target_ms > 0.0f ? 2.0f * target_ms : 1.0f;
+    for (int i = 0; i < count; ++i) {
+        if (ms[i] > max_ms) max_ms = ms[i];
+    }
+    if (max_ms <= 0.0f) max_ms = 1.0f;
+    const float x_step = count > 1 ? size.x / static_cast<float>(count - 1) : 0.0f;
+    const auto y_for = [&](float value) {
+        const float clamped = std::clamp(value, 0.0f, max_ms);
+        return origin.y + size.y - clamped / max_ms * size.y;
+    };
+
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    const ImU32 primary = ToImU32(theme.scheme.primary);
+    const ImU32 error = ToImU32(theme.scheme.error);
+    const float spike = target_ms * kFrameGraphSpikeFactor;
+    for (int i = 1; i < count; ++i) {
+        const float x0 = count > 1 ? origin.x + x_step * static_cast<float>(i - 1) : origin.x;
+        const float x1 = origin.x + x_step * static_cast<float>(i);
+        const bool hot = ms[i - 1] > spike || ms[i] > spike;
+        const ImVec2 points[2] = {ImVec2(x0, y_for(ms[i - 1])), ImVec2(x1, y_for(ms[i]))};
+        draw->AddPolyline(points, 2, FadeColor(hot ? error : primary), 0, kFrameGraphLinePx * s);
+    }
+
+    if (target_ms > 0.0f) {
+        const float target_y = y_for(target_ms);
+        const ImU32 outline = ToImU32(theme.scheme.outline);
+        const float dash = kFrameGraphDashPx * s;
+        const float step = dash + kFrameGraphDashGapPx * s;
+        for (float x = origin.x; x < origin.x + size.x; x += step) {
+            const float end = ImMin(x + dash, origin.x + size.x);
+            draw->AddLine(ImVec2(x, target_y), ImVec2(end, target_y), FadeColor(outline), 1.0f * s);
+        }
+        char label[32];
+        std::snprintf(label, sizeof(label), "%.1f ms", target_ms);
+        const float label_width = TextSize(label, theme.body_medium).x;
+        DrawTextAt(label,
+                   ImVec2(origin.x + size.x - label_width,
+                          target_y - theme.body_medium - kFrameGraphLabelGapPx * s),
+                   theme.body_medium, ToImU32(theme.scheme.on_surface_variant));
+    }
+}
+
+bool TextField(const char* id, char* value, size_t size) {
+    if (id == nullptr || value == nullptr || size < 2 || size > kTextFieldMax) return false;
+    SyncFieldContext();
+    const Theme& theme = CurrentTheme();
+    const float s = theme.scale;
+    const ImGuiID item_id = ImGui::GetID(id);
+    const int frame = ImGui::GetFrameCount();
+    const bool owner = FieldEditBegin(g_field, item_id, frame);
+    const bool was_editing = owner && g_field.editing;
+
+    const size_t capacity = size < sizeof g_field.text ? size : sizeof g_field.text;
+    // Only the owner edits, so it uses the shared line. Another field draws its
+    // value from a local line and takes the state when it becomes active.
+    char local[kTextFieldMax];
+    char* line = g_field.text;
+    if (!owner) {
+        std::snprintf(local, capacity, "%s", value);
+        line = local;
+    } else if (!was_editing) {
+        std::snprintf(g_field.text, capacity, "%s", value);
+    }
+
+    const float width = ImGui::GetContentRegionAvail().x;
+    const float height = kDropdownHeightPx * s;
+    PushFontSize(kBodyLargePx);
+    const float line_height = ImGui::GetTextLineHeight();
+    const float pad_y = (height - line_height) * 0.5f;
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
+                        ImVec2(kDropdownPaddingPx * s, pad_y > 0.0f ? pad_y : 0.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, kDropdownCornerPx * s);
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, kTextFieldOutlinePx * s);
+    ImGui::PushStyleColor(ImGuiCol_Border, ToImU32(theme.scheme.outline));
+    ImGui::SetNextItemWidth(width);
+    const bool entered = ImGui::InputText(id, line, capacity, ImGuiInputTextFlags_EnterReturnsTrue);
+    const bool active = ImGui::IsItemActive();
+    const bool deactivated = ImGui::IsItemDeactivated();
+    const bool focused = ImGui::IsItemFocused();
+    const ImRect box(ImGui::GetItemRectMin(), ImGui::GetItemRectMax());
+    ImGui::PopStyleColor();
+    ImGui::PopStyleVar(3);
+    ImGui::PopFont();
+    if (!owner && active) {
+        FieldEditStart(g_field, item_id, frame, line);
+    } else if (owner) {
+        g_field.editing = active;
+    }
+
+    // The nav scroll of the page needs the row box, which RunItem registers for
+    // the widgets of its own; a text field is an ImGui item of its own.
+    if (focused && g_row.active && ImGui::GetCurrentWindow() == g_row.window) {
+        ImGuiWindow* page = PageWindow();
+        if (page != nullptr) {
+            g_focused_row.valid = true;
+            g_focused_row.nav_id = item_id;
+            g_focused_row.top = g_row.min.y - page->DC.CursorStartPos.y;
+            g_focused_row.bottom = g_row.max.y - page->DC.CursorStartPos.y;
+            g_focused_row.index = g_row.index;
+        }
+    }
+    DrawFocusRing(box, kDropdownCornerPx * s, theme, focused && NavCursorVisible());
+
+    // A field that a take-over replaced before it could commit still writes its
+    // line when it lost the focus, so a click from one field to another keeps it.
+    if (!owner && (!active || !focused)) {
+        char leaving[kTextFieldMax];
+        if (FieldEditTakeLeaving(g_field, item_id, frame, leaving, sizeof leaving)) {
+            if (std::strcmp(value, leaving) == 0) return false;
+            std::snprintf(value, size, "%s", leaving);
+            return true;
+        }
+    }
+
+    const bool cancel = was_editing && (ImGui::IsKeyPressed(ImGuiKey_Escape, false) ||
+                                        ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false));
+    if (!was_editing || !FieldEditOwnedBy(g_field, item_id) || cancel || !(entered || deactivated)) return false;
+    if (std::strcmp(value, g_field.text) == 0) return false;
+    std::snprintf(value, size, "%s", g_field.text);
+    return true;
 }
 
 void Chip(const char* text) {
@@ -1165,14 +1318,11 @@ bool AnyPopupOpen() {
     return ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
 }
 
-bool TextEditing() { return AnyNumberFieldEditing(); }
+bool TextEditing() { return AnyFieldEditing(); }
 
 void CancelTextEditing() {
-    SyncNumberFieldContext();
-    for (NumberFieldState& state : g_number_fields) {
-        state.editing = false;
-        state.error = false;
-    }
+    SyncFieldContext();
+    FieldEditCancel(g_field);
 }
 
 void BeginNavAnchorCapture() {

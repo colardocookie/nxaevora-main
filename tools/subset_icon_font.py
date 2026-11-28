@@ -50,6 +50,7 @@ ICONS = {
     "kRestart": 0xE5D5,           # refresh
     "kArrowDropDown": 0xE5C5,     # arrow_drop_down
     "kArrowDropUp": 0xE5C7,       # arrow_drop_up
+    "kExpandMore": 0xE5CF,        # expand_more
 }
 
 

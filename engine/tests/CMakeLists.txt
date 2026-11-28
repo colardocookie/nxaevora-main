@@ -600,9 +600,10 @@ set_target_properties(snx-test-md3-layout PROPERTIES CXX_STANDARD 17 CXX_STANDAR
 snx_test_target(snx-test-md3-layout 11)
 add_test(NAME md3_layout COMMAND snx-test-md3-layout)
 
-# The engine menu's pure rules: the choice of the menu of a run, the gamepad mapping and the key capture rule
-# (src/nx/gpu/vk/engine_menu.cpp and engine_menu_input.cpp).
+# The engine menu's pure rules: the choice of the menu of a run, the gamepad mapping, the key capture rule and the
+# Debug page's table (src/nx/gpu/vk/engine_menu.cpp, engine_menu_debug.cpp and engine_menu_input.cpp).
 add_executable(snx-test-engine-menu engine_menu_pure.cpp "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/engine_menu.cpp"
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/engine_menu_debug.cpp"
     "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/engine_menu_input.cpp")
 set_target_properties(snx-test-engine-menu PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 target_compile_definitions(snx-test-engine-menu PRIVATE ENGINE_MENU_PURE_TEST)

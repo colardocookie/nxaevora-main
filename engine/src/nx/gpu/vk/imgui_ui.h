@@ -6,7 +6,7 @@
 #define SNX_IMGUI_UI_H
 #include "nx/gpu/vk/imgui_glue.h"
 
-/* Returns whether the menu bar shows this frame. f->open_test is the test window's first state, from the .ini */
+/* Returns whether the menu bar shows this frame. */
 bool imgui_ui_draw(ImguiFrame* f);
 /* the windows start again from a closed state: after the context is made again or the windows were off */
 void imgui_ui_reset(void);

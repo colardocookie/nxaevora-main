@@ -7,9 +7,12 @@
 
 #pragma once
 
+#include <stddef.h>
+
 #include <cstdint>
 
 #include "imgui.h"
+#include "nx/gpu/vk/md3/md3_layout.h"
 
 struct ImGuiWindow;
 
@@ -35,6 +38,7 @@ inline constexpr uint32_t kBuild = 0xF8CD;            // build (wrench)
 inline constexpr uint32_t kRestart = 0xE5D5;          // refresh
 inline constexpr uint32_t kArrowDropDown = 0xE5C5;    // arrow_drop_down
 inline constexpr uint32_t kArrowDropUp = 0xE5C7;      // arrow_drop_up
+inline constexpr uint32_t kExpandMore = 0xE5CF;       // expand_more
 } // namespace icon
 
 // Sizes in pixels at 1080p. Each one is multiplied by the theme scale.
@@ -87,6 +91,16 @@ inline constexpr float kMenuItemPaddingPx = 12.0f;
 inline constexpr float kMenuVerticalPaddingPx = 8.0f;
 // Distance of the menu to the edge of the visible area of the page.
 inline constexpr float kMenuEdgeMarginPx = 8.0f;
+
+// Frame time graph: the line over the last samples, the dashed target line.
+inline constexpr int kFrameGraphSamples = 120;
+inline constexpr float kFrameGraphHeightPx = 48.0f;
+inline constexpr float kFrameGraphLinePx = 1.5f;
+inline constexpr float kFrameGraphDashPx = 4.0f;
+inline constexpr float kFrameGraphDashGapPx = 4.0f;
+inline constexpr float kFrameGraphLabelGapPx = 2.0f;
+// A sample above this factor of the target is drawn in the error color.
+inline constexpr float kFrameGraphSpikeFactor = 1.5f;
 
 // Slider (decision 6 of the UI brief).
 inline constexpr float kSliderItemHeightPx = 32.0f;
@@ -148,6 +162,23 @@ bool Combo(const char* id, int* index, const char* const* items, int count);
 // A slider with an optional step. Returns true on a change.
 bool SliderInt(const char* id, int* value, int min, int max, int step, const char* format);
 
+// A full-width row that opens and closes a section. The expand_more icon at
+// the right turns 180 degrees with the open state. Returns true on a toggle.
+bool ExpandHeader(const char* id, const char* label, bool* open);
+
+// Draws the last count samples of ms in a primary line, a dashed reference
+// line at target_ms with its value at the right end, and each sample above
+// 1.5 x target_ms in the error color. It takes no input.
+void FrameTimeGraph(const char* id, const float* ms, int count, float target_ms, ImVec2 size);
+
+// An MD3 outlined text field of the dropdown height, the same look as the
+// number field. A click, Enter or A starts the edit. Enter or a loss of focus
+// commits into value (size of the line, as snprintf takes it), Esc cancels. A
+// page change commits the edit and a menu close cancels it. Returns true on a
+// commit whose text differs from value. A size above kTextFieldMax draws
+// nothing and returns false.
+bool TextField(const char* id, char* value, size_t size);
+
 // An MD3 outlined number field of the dropdown height. A click, Enter or A
 // starts the edit. Enter or a loss of focus commits, Esc cancels, and only
 // digits go in. A page change commits the edit and a menu close cancels it.
@@ -169,10 +200,10 @@ void DialogEnd(bool open);
 // True when any ImGui popup or dialog is open (a dropdown or a dialog).
 bool AnyPopupOpen();
 
-// True while a NumberField of this frame or the frame before takes the text keys.
+// True while a number or text field of this frame or the frame before takes the text keys.
 bool TextEditing();
 
-// Cancels every number field edit without a commit. Call it when the menu closes.
+// Cancels every number and text field edit without a commit. Call it when the menu closes.
 void CancelTextEditing();
 
 // The id and screen box of the first nav item drawn inside the page. The rail

@@ -102,7 +102,7 @@ Each row takes its widget from the model alone. The first rule that matches pick
 3. An int from 0 to 1 without words is a switch.
 4. An int whose range has at most 64 steps (`kSliderMaxSteps`) is a slider.
 5. Any other int is a number field.
-6. A text row without words shows only its supporting text, "Edit it in the .ini file".
+6. A text row without words is a text field. A text field starts, commits and cancels an edit as a number field does, but it takes any text and has no arrow-key steps. A value of 64 bytes or more is refused with a log line when the menu sets it. A text row whose buffer is larger than 1024 bytes (`kTextFieldMax`) has no field and shows only its supporting text, "Edit it in the .ini file".
 7. A float row without presets is not drawn. No row of these two pages is a float row.
 
 The model gives `heap_max_mb`, a text setting, as an int row, so it gets a number field (`NUMBER_TEXT` in `imgui_settings.c`).
@@ -137,6 +137,28 @@ Bind starts a wait for one key. The backend reads the key before ImGui does, so 
 The Controllers page first shows the rows of the model page Controllers, in model order. Then it shows the button map: a section title, a help text and one row for each of the 16 controls. Each row has a dropdown of the Switch button that the control sends. A button "Reset to the console's layout" ends the list. The button is enabled only when the map is custom. When the command line sets `gamepad_map`, the map is disabled, and a line on the page says so. This page has no button capture.
 
 The Keyboard and Controllers pages are drawn in `engine/src/nx/gpu/vk/engine_menu_input.cpp`, which also owns the capture state of the Keyboard page. The capture rule is a pure part, `EngineMenuKeyCapture`, with the host test `engine_menu`. The backend part of the capture is in `engine/src/nx/runtime/platform/backend/sdl3.c`.
+
+### Debug page
+
+The Debug page shows its cards in this order:
+
+1. Overlays: the rows of the performance overlay and the input display, and the corner of each.
+2. Hardware: the GPU load, temperature and power, the video memory, the processor, the memory of the machine and the memory that the game takes. This card has no settings row.
+3. Frame: the frames a second, the last frame's time, the longest frame time, a graph of the recent frame times and the costs of a frame. This card has no settings row.
+4. Display: the window size, the game resolution, the scaling filter, the anti-aliasing, the frame limit and the V-sync mode. This card has no settings row.
+5. Logs and IPC: the rows `log`, `log_max` and `auto_stub_ipc`.
+6. Textures: the rows `native_astc`, `native_bc` and `native_etc2`.
+7. Developer: a full-width row with the `expand_more` icon (Material Symbols Rounded, U+E5CF). The row starts closed, and it opens and closes the five cards below it: Recompiler and memory, Vulkan, NVN diagnostics, Macros, and Profilers and captures.
+
+The labels of the rows come from the table in `engine/src/nx/gpu/vk/engine_menu_debug.cpp`. The table gives each row its card, and the page shows its label in place of the name in `settings.txt`. The rows of a card follow the order of the table.
+
+The settings `imgui` and `legacy_menu` have no row, because the engine menu reads them at the start of the run. The showcase and the stats overlay rows are on this page and not on the Display page.
+
+The Tracy rows (`tracy_profiler`, `tracy_sampling`, `tracy_port`, `tracy_capture_tool` and `tracy_open_trace`) show only in a build with `SNX_TRACY`. In another build the page skips them and logs nothing.
+
+The rows use the same widget rules as the other settings pages (section 4).
+
+The hardware values (the GPU, the video memory, the processor and the memory) are read only while the Debug page is on screen. On other pages, no hardware read is requested.
 
 ## 5. Theme
 
@@ -267,7 +289,7 @@ These parts of the old overlay share data or input with the engine menu. Check e
 - The keyboard box: `overlay_keyboard_*` in `overlay.c`.
 - The open rule of the old menu: `overlay_menu_opens` in `overlay.c` and `overlay.h`, with the `legacy_menu` setting in `settings.txt`.
 - `gamepad_map`: the old GUI and the ImGui settings both edit it (`gamepad.c`, `imgui_settings.c`, `sdl3.c`, `settings.txt`).
-- `stats` and `showcase`: the F12 and F6 hotkeys in `sdl3.c` and the legacy menu set them.
+- `stats` and `showcase`: the F12 and F6 hotkeys in `sdl3.c`, the legacy menu and the rows of the Debug page set them.
 - The input gate `owned`: `imgui_sdl_event` in `imgui_sdl.c` and `imgui_sdl.h`.
 - The `imgui` setting in `settings.txt`: no menu is left with `imgui=0`. This is an open decision.
 
@@ -279,6 +301,6 @@ The base and the move of the functions are units 4 to 6 of phase 7.5 in `ROADMAP
 2. Unit 5, the move of the functions: one screen or one group per pull request. The old screen is deleted in the same pull request. The game never switches between the old and the new UI.
 3. Unit 6, the removal of the rest of the old UI, and the finish of the docs.
 
-The first move of unit 5 moves the Display and Performance pages to the engine menu. These two pages leave the old Display window in the same pull request, so the old window keeps only its Graphics tab. The second move of unit 5 moves the Graphics page to the engine menu, and the old Display window is deleted in the same pull request. The third move of unit 5 moves the Mouse, Keyboard and Controllers pages to the engine menu, and the old Controller&Keyboard window and its Settings menu are deleted in the same pull request.
+The first move of unit 5 moves the Display and Performance pages to the engine menu. These two pages leave the old Display window in the same pull request, so the old window keeps only its Graphics tab. The second move of unit 5 moves the Graphics page to the engine menu, and the old Display window is deleted in the same pull request. The third move of unit 5 moves the Mouse, Keyboard and Controllers pages to the engine menu, and the old Controller&Keyboard window and its Settings menu are deleted in the same pull request. The fourth move of unit 5 moves the Debug window to the Debug page of the engine menu, and the old Debug window, the Test window and the Debug menu of the menu bar are deleted in the same pull request.
 
 The third-party parts go into `docs/CREDITS.md` in unit 4. These parts are the HCT port and the fonts.

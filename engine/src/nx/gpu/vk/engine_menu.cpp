@@ -129,6 +129,8 @@ extern "C" EngineMenuPointer engine_menu_pointer(int phase, uint64_t id, float f
 #include <cstdio>
 
 #include "imgui_internal.h"
+#include "nx/gpu/vk/debug_stats.h"
+#include "nx/gpu/vk/engine_menu_debug.h"
 #include "nx/gpu/vk/engine_menu_input.h"
 #include "nx/gpu/vk/imgui_events.h"
 #include "nx/gpu/vk/imgui_input.h"
@@ -140,6 +142,10 @@ extern "C" EngineMenuPointer engine_menu_pointer(int phase, uint64_t id, float f
 #include "nx/gpu/vk/md3/md3_theme.h"
 #include "nx/gpu/vk/md3/md3_widgets.h"
 #include "nx/gpu/vk/menu_settings.h"
+// log.h holds C functions and has no extern "C" guard: a C++ unit needs the block.
+extern "C" {
+#include "nx/runtime/platform/log.h"
+}
 
 namespace {
 
@@ -151,6 +157,7 @@ constexpr int kPagePerformance = 3;
 constexpr int kPageMouse = 4;
 constexpr int kPageKeyboard = 5;
 constexpr int kPageControllers = 6;
+constexpr int kPageDebug = 8;
 
 constexpr float kTopBarHeightPx = 64.0f;
 constexpr float kRailWidthPx = 112.0f;
@@ -199,6 +206,7 @@ constexpr double kPresetEpsilon = 1e-6;
 constexpr int kMenuRowMax = 64;
 constexpr int kMenuComboMax = 40;
 constexpr int kMenuValueMax = 96;
+constexpr int kTextFieldLogMax = 1;
 constexpr float kRightWidthComboPx = 240.0f;
 constexpr float kRightWidthNumberPx = 240.0f;
 constexpr float kRightWidthSliderPx = 280.0f;
@@ -530,6 +538,10 @@ void DrawNumberRow(const ImguiSettingRow& row) {
         SetSettingInt(row, value);
 }
 
+void DrawTextFieldRow(const ImguiSettingRow& row, char* text) {
+    if (md3::TextField("##value", text, row.text_size)) imgui_settings_set(row.key, text);
+}
+
 void DrawIntWordsRow(const ImguiSettingRow& row) {
     const int step = row.step > 0 ? row.step : 1;
     const int lo = static_cast<int>(row.lo);
@@ -636,8 +648,15 @@ void DrawPresetRow(const ImguiSettingRow& row) {
 }
 
 void DrawSettingRow(const ImguiSettingRow& row) {
-    const int widget = menu_settings_widget(&row);
+    int widget = menu_settings_widget(&row);
     if (widget == MENU_WIDGET_UNSUPPORTED) return; // no FLOAT row of these pages today
+    char field_text[md3::kTextFieldMax] = {};
+    if (widget == MENU_WIDGET_TEXT_FIELD &&
+        (row.text_size == 0 || row.text_size > md3::kTextFieldMax ||
+         !imgui_settings_text(row.key, field_text, sizeof field_text))) {
+        LOG_LIMIT(kTextFieldLogMax, "engine menu: %s has no text field of size %zu\n", row.key, row.text_size);
+        widget = MENU_WIDGET_TEXT_ONLY;
+    }
     const md3::Theme& theme = md3::CurrentTheme();
     const float s = theme.scale;
     const bool locked = (row.flags & IMGUI_SETTING_LOCKED) != 0;
@@ -651,6 +670,7 @@ void DrawSettingRow(const ImguiSettingRow& row) {
             right_height = md3::kDropdownHeightPx * s;
             break;
         case MENU_WIDGET_NUMBER:
+        case MENU_WIDGET_TEXT_FIELD:
             right_width = kRightWidthNumberPx * s;
             right_height = md3::kDropdownHeightPx * s;
             break;
@@ -687,6 +707,9 @@ void DrawSettingRow(const ImguiSettingRow& row) {
             break;
         case MENU_WIDGET_NUMBER:
             DrawNumberRow(row);
+            break;
+        case MENU_WIDGET_TEXT_FIELD:
+            DrawTextFieldRow(row, field_text);
             break;
         case MENU_WIDGET_SLIDER:
             DrawSliderRow(row);
@@ -726,7 +749,11 @@ void DrawPerformanceSettings() {
     for (int i = 0; i < advanced_count; ++i) DrawSettingRow(rows[advanced[i]]);
 }
 
-void DrawPage(int page, bool menu_open) {
+bool DrawPage(int page, bool menu_open, const ImguiFrame* frame) {
+    if (page == kPageDebug) {
+        EngineMenuDrawDebugPage(frame);
+        return true;
+    }
     md3::CardBegin("##page_card");
     md3::SectionTitle(kRailLabels[page]);
     if (page == kPageDisplay) {
@@ -750,9 +777,10 @@ void DrawPage(int page, bool menu_open) {
         md3::BodyText(PAGE_PLACEHOLDER);
     }
     md3::CardEnd();
+    return false;
 }
 
-void DrawPanel(bool menu_open) {
+bool DrawPanel(bool menu_open, const ImguiFrame* frame) {
     const md3::Theme& theme = md3::CurrentTheme();
     const float s = theme.scale;
     ImGuiViewport* viewport = ImGui::GetMainViewport();
@@ -839,7 +867,7 @@ void DrawPanel(bool menu_open) {
         g_ui.page_scroll_animating = false;
     }
     md3::BeginNavAnchorCapture();
-    DrawPage(g_ui.page, menu_open);
+    const bool debug_page = DrawPage(g_ui.page, menu_open, frame);
     g_ui.page_anchor = md3::EndNavAnchorCapture();
     g_ui.page_anchor_page = g_ui.page;
 
@@ -866,6 +894,7 @@ void DrawPanel(bool menu_open) {
     ImGui::End();
     ImGui::PopStyleColor();
     ImGui::PopStyleVar(3);
+    return debug_page;
 }
 
 bool HandlePageKeys() {
@@ -994,7 +1023,10 @@ bool engine_menu_draw(ImguiFrame* f) {
     g_ui.panel_offset = md3::Tween(kPanelOffsetTweenId, closing ? kPanelSlidePx : 0.0f, duration, curve);
 
     const bool show_panel = g_ui.panel_alpha > 0.0f;
-    if (show_panel) DrawPanel(state == MENU_OPEN);
+    bool debug_page = false;
+    if (show_panel) debug_page = DrawPanel(state == MENU_OPEN, f);
+    // One call for each frame: the machine thread resets the values when it sees the flag off.
+    debug_stats_hardware_demand(debug_page ? f->gpu_uuid : nullptr);
     g_panel_alpha = g_ui.panel_alpha;
     if (closing && g_ui.panel_alpha <= 0.0f && StateMove(MENU_CLOSING, MENU_CLOSED)) g_ui.was_visible = false;
 
@@ -1006,5 +1038,7 @@ bool engine_menu_draw(ImguiFrame* f) {
 // page with this menu's widget code, so the helper keeps one copy here.
 
 void EngineMenuDrawSettingsPage(const char* model_page_name) { DrawSettingsPage(model_page_name); }
+
+void EngineMenuDrawDebugSettingRow(const ImguiSettingRow& row) { DrawSettingRow(row); }
 
 #endif // ENGINE_MENU_PURE_TEST

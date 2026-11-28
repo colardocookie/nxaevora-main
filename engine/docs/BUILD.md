@@ -126,7 +126,7 @@ pass `-DSNX_SYSTEM_SDL3=OFF` for CPM's pinned SDL3 source build instead.
 ### Configure and build
 
 ```sh
-git clone https://github.com/nxaevora/nxaevora-main.git && cd nxaevora-main/engine &&
+git clone https://github.com/nxaevora/NXAevora.git && cd NXAevora/engine &&
 cmake --preset default -B build && cmake --build build
 # -> build/{nxaevora-engine,snx-shaderc}
 ```
@@ -181,9 +181,9 @@ If that directory was configured with a different compiler or generator, use a n
 ```powershell
 & {
     $ErrorActionPreference = 'Stop'
-    git clone https://github.com/nxaevora/nxaevora-main.git
+    git clone https://github.com/nxaevora/NXAevora.git
     if ($LASTEXITCODE) { throw 'Clone failed' }
-    Set-Location nxaevora-main/engine
+    Set-Location NXAevora/engine
     powershell -ExecutionPolicy Bypass -File scripts\bootstrap.ps1
     if ($LASTEXITCODE) { throw 'Bootstrap failed' }
     Set-ExecutionPolicy -Scope Process Bypass
@@ -228,8 +228,8 @@ runtime must not mix with another LLVM build.
 3. Clone to a path without spaces:
 
    ```sh
-   git clone --depth=1 https://github.com/nxaevora/nxaevora-main.git
-   cd nxaevora-main/engine
+   git clone --depth=1 https://github.com/nxaevora/NXAevora.git
+   cd NXAevora/engine
    ```
 
 4. Configure and build. These options give
@@ -400,7 +400,7 @@ cmake --preset default -B build/appimage -DSNX_DEPLOY=OFF -DCMAKE_INSTALL_PREFIX
   -DLLVM_DIR="$HOME/linux-llvm/lib/cmake/llvm" -DSNX_A64_DISASM=OFF &&
 cmake --build build/appimage &&
 cmake --install build/appimage &&
-GITHUB_REPOSITORY=nxaevora/nxaevora-main scripts/make-appimage.sh
+GITHUB_REPOSITORY=nxaevora/NXAevora scripts/make-appimage.sh
 # -> dist/ScarletNX-linux-<arch>.AppImage
 ```
 

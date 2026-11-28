@@ -37,6 +37,7 @@ void backend_padmap_request(int control, int bit) { (void)control, (void)bit; }
 /* ---- the tables ---- */
 static int g_showcase, g_fullscreen = 1, g_language, g_vsync = 1, g_aniso, g_resolution = 1;
 static char g_fps_text[16] = "game", g_heap_text[32] = "512", g_jit_text[2] = "2";
+static char g_renderdoc_text[80] = "";
 
 #define NO_SET NULL
 static const IniOpt DISPLAY[] = {
@@ -44,8 +45,16 @@ static const IniOpt DISPLAY[] = {
     {"fullscreen", "1", "shown", INI_INT, 0, &g_fullscreen, 0, 1, NULL, "Fullscreen", "Off|On", 0, 0, 0},
     {"language", "1", "the game's own", INI_INT, INI_IN_GAME, &g_language, 0, 17, NULL, "Language", NULL, 0, 0, 0},
     {"gamepad_p1_device", "", "a player's", INI_INT, 0, &g_language, 0, 1, NULL, "Device", NULL, 0, 0, 0},
+    {"stats", "0", "hidden", INI_INT, 0, &g_showcase, 0, 1, NULL, "Stats", "Off|On", 0, 0, 0},
     {"stats_corner", "tl", "hidden", INI_TEXT, 0, g_jit_text, 0, 0, NULL, "Stats corner", "tl=Top left|tr=Top right", 0,
      0, sizeof g_jit_text},
+    {NULL, NULL, NULL, 0, 0, NULL, 0, 0, NULL, NULL, NULL, 0, 0, 0}};
+static const IniOpt DEBUG[] = {
+    {"log", "1", "the log", INI_INT, 0, &g_language, 0, 2, NULL, "Log level", NULL, 0, 0, 0},
+    {"imgui", "1", "the windows", INI_INT, 0, &g_fullscreen, 0, 1, NULL, "Imgui", "Off|On", 0, 0, 0},
+    {"legacy_menu", "0", "the old menu", INI_INT, 0, &g_fullscreen, 0, 1, NULL, "Legacy menu", "Off|On", 0, 0, 0},
+    {"renderdoc", "", "the captures", INI_TEXT, INI_STARTUP, g_renderdoc_text, 0, 0, NULL, "RenderDoc captures",
+     NULL, 0, 0, sizeof g_renderdoc_text},
     {NULL, NULL, NULL, 0, 0, NULL, 0, 0, NULL, NULL, NULL, 0, 0, 0}};
 static const IniOpt GRAPHICS[] = {
     {"render_resolution", "1", "the size", INI_INT, INI_STARTUP, &g_resolution, 0, 3, NULL, "Render resolution",
@@ -66,7 +75,8 @@ const IniSection g_ini_sections[] = {{"Mouse", 0, {NULL}, {NULL}},
                                      {"Controllers", 0, {NULL}, {NULL}},
                                      {"Display", 0, {DISPLAY}, {NULL}},
                                      {"Graphics", 0, {GRAPHICS}, {NULL}},
-                                     {"Performance", 0, {PERFORMANCE}, {NULL}}};
+                                     {"Performance", 0, {PERFORMANCE}, {NULL}},
+                                     {"Debug", 0, {DEBUG}, {NULL}}};
 const int g_ini_sections_count = sizeof g_ini_sections / sizeof *g_ini_sections;
 
 static void check(int ok, const char* what) {
@@ -94,15 +104,15 @@ int main(void) {
     double number;
 
     /* the pages and the window of each */
-    check(imgui_settings_pages() == 6, "six pages");
+    check(imgui_settings_pages() == 7, "seven pages");
     for (int p = 0; p < imgui_settings_pages(); ++p)
         check(imgui_settings_page_window(p) == IMGUI_WINDOW_ENGINE_MENU, "a page of the engine menu");
     check(imgui_settings_page_window(99) == -1, "a page outside the list has no window");
 
-    /* the pages of the engine menu, in the model's order */
+    /* the pages of the engine menu, in the model's order; Debug is the last */
     {
-        static const char* const model_pages[] = {"Mouse",    "Keyboard", "Controllers",
-                                                  "Display",  "Graphics", "Performance"};
+        static const char* const model_pages[] = {"Mouse",    "Keyboard", "Controllers", "Display",
+                                                  "Graphics", "Performance", "Debug"};
         const int model_max = (int)(sizeof model_pages / sizeof model_pages[0]);
         int count = 0;
         for (int p = 0; p < imgui_settings_pages(); ++p) {
@@ -112,16 +122,31 @@ int main(void) {
             ++count;
         }
         check(count == model_max, "the page count of the engine menu");
+        check(!strcmp(imgui_settings_page_name(imgui_settings_pages() - 1), "Debug"), "Debug is the last page");
     }
 
     /* the rows: the game's own, a player's, and the ones with a row of their own do not show */
     check(imgui_settings_rows(page_of("Display")) == 1 && row_of("Display", "fullscreen", &r), "the Display rows");
-    check(!row_of("Display", "showcase", &r) && !row_of("Display", "stats_corner", &r) &&
-              !row_of("Display", "language", &r) && !row_of("Display", "gamepad_p1_device", &r),
+    check(!row_of("Display", "showcase", &r) && !row_of("Display", "stats", &r) &&
+              !row_of("Display", "stats_corner", &r) && !row_of("Display", "language", &r) &&
+              !row_of("Display", "gamepad_p1_device", &r),
           "hidden rows");
+    check(!row_of("Debug", "imgui", &r) && !row_of("Debug", "legacy_menu", &r) &&
+              !row_of("Debug", "imgui_test", &r) && row_of("Debug", "log", &r),
+          "imgui and legacy_menu are hidden, imgui_test is gone");
     check(imgui_settings_rows(page_of("Performance")) == 3 && !imgui_settings_row(page_of("Display"), 1, &r) &&
               !imgui_settings_row(-1, 0, &r),
           "the end of a page");
+
+    /* a row by key finds a hidden row and refuses an unknown key */
+    check(imgui_settings_row_key("stats", &r) && !strcmp(r.key, "stats") && r.type == IMGUI_SETTING_INT &&
+              r.has_words,
+          "the by-key read of a hidden row");
+    check(imgui_settings_row_key("renderdoc", &r) && r.type == IMGUI_SETTING_TEXT && !r.has_words,
+          "the by-key read of a Debug row");
+    check(!imgui_settings_row_key("nothing", &r) && !imgui_settings_row_key(NULL, &r) &&
+              !imgui_settings_row_key("imgui_test", &r),
+          "an unknown key has no row");
 
     /* an int with words, an int with presets */
     check(row_of("Display", "fullscreen", &r) && r.type == IMGUI_SETTING_INT && r.has_words && r.ivalue == 1 &&
@@ -220,6 +245,24 @@ int main(void) {
     check(row_of("Performance", "jit_opt", &r) && !strcmp(r.text, "2") && !(r.flags & IMGUI_SETTING_RESTART),
           "a saved text that is the running one");
     g_saved_key = NULL;
+
+    /* the full value of a text row, which a row's 64 bytes cut: the row gives the field's size */
+    {
+        static const char* const long_value = "C:/captures/arceus/a-long-renderdoc-capture-name-over-64-bytes.rdc";
+        char full[128];
+        snprintf(g_renderdoc_text, sizeof g_renderdoc_text, "%s", long_value);
+        check(imgui_settings_row_key("renderdoc", &r) && r.text_size == sizeof g_renderdoc_text,
+              "a text row gives the size of its field");
+        check(strlen(long_value) > 64 && strlen(long_value) < sizeof full, "the value is longer than 64 bytes");
+        check(imgui_settings_text("renderdoc", full, sizeof full) && !strcmp(full, long_value),
+              "the full value of a long text");
+        strcpy(full, "x");
+        check(!imgui_settings_text("renderdoc", full, 64) && full[0] == 0, "a buffer that is too small");
+        strcpy(full, "x");
+        check(!imgui_settings_text("log", full, sizeof full) && full[0] == 0, "an int key has no text");
+        strcpy(full, "x");
+        check(!imgui_settings_text("nothing", full, sizeof full) && full[0] == 0, "an unknown key has no text");
+    }
 
     /* a text that holds a whole number of megabytes is a number */
     check(row_of("Performance", "heap_max_mb", &r) && r.type == IMGUI_SETTING_INT && r.ivalue == 512 && r.lo == 0 &&
