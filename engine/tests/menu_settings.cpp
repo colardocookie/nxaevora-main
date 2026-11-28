@@ -57,7 +57,8 @@ int main() {
     CheckWidget(Row(IMGUI_SETTING_INT, 0, 10, 1, 0, 0), MENU_WIDGET_SLIDER, "a short int range is a slider");
     CheckWidget(Row(IMGUI_SETTING_INT, 0, 100, 1, 0, 0), MENU_WIDGET_NUMBER, "a long int range is a number field");
     CheckWidget(Row(IMGUI_SETTING_FLOAT, 0, 1, 1, 0, 0), MENU_WIDGET_UNSUPPORTED, "a float has no widget");
-    CheckWidget(Row(IMGUI_SETTING_TEXT, 0, 0, 1, 0, 0), MENU_WIDGET_TEXT_ONLY, "a text with no words is text only");
+    CheckWidget(Row(IMGUI_SETTING_TEXT, 0, 0, 1, 0, 0), MENU_WIDGET_TEXT_FIELD, "a text with no words is a text field");
+    CheckWidget(Row(IMGUI_SETTING_TEXT, 0, 0, 1, 1, 0), MENU_WIDGET_COMBO, "a text with words stays a combo");
     Check(menu_settings_widget(nullptr) == MENU_WIDGET_UNSUPPORTED, "a null row has no widget");
 
     // The edge of the slider: 64 steps is a slider, 65 is a number field. A step of 0 does not divide.

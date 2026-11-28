@@ -7,7 +7,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Read [ROADMAP.md](https://github.com/nxaevora/nxaevora-main/blob/main/ROADMAP.md) first. Game enhancements such as higher frame rates come after the native port works. Such requests stay open until then.
+        Read [ROADMAP.md](https://github.com/nxaevora/NXAevora/blob/main/ROADMAP.md) first. Game enhancements such as higher frame rates come after the native port works. Such requests stay open until then.
   - type: dropdown
     id: area
     attributes:

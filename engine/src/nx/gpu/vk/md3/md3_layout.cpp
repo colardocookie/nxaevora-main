@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 
 namespace md3 {
 namespace {
@@ -61,6 +62,60 @@ float PageScrollTarget(const PageScrollInput& in) {
         }
     }
     return std::clamp(target, 0.0f, max_scroll);
+}
+
+bool FieldEditBegin(FieldEdit& state, unsigned int id, int frame) {
+    if (state.editing && state.frame < frame - 1) state.editing = false;
+    if (state.leave.id != 0 && state.leave.frame < frame - 1) state.leave = FieldLeave{};
+    if (state.id != id) return false;
+    state.frame = frame;
+    return true;
+}
+
+bool FieldEditOwnedBy(const FieldEdit& state, unsigned int id) { return state.id == id; }
+
+bool FieldEditEditing(const FieldEdit& state, int frame) {
+    return state.editing && (state.frame == frame || state.frame == frame - 1);
+}
+
+void FieldEditStart(FieldEdit& state, unsigned int id, int frame, const char* text) {
+    if (state.id != id && state.editing) {
+        state.leave.id = state.id;
+        state.leave.frame = frame;
+        std::snprintf(state.leave.text, sizeof state.leave.text, "%s", state.text);
+    } else {
+        state.leave = FieldLeave{};
+    }
+    state.id = id;
+    state.frame = frame;
+    state.editing = true;
+    state.error = false;
+    if (text != nullptr) {
+        std::snprintf(state.text, sizeof state.text, "%s", text);
+    } else {
+        state.text[0] = '\0';
+    }
+}
+
+void FieldEditEnd(FieldEdit& state, bool error) {
+    state.editing = false;
+    state.error = error;
+}
+
+bool FieldEditTakeLeaving(FieldEdit& state, unsigned int id, int frame, char* line, size_t size) {
+    if (state.leave.id == 0 || state.leave.id != id) return false;
+    if (state.leave.frame < frame - 1) {
+        state.leave = FieldLeave{};
+        return false;
+    }
+    if (line != nullptr && size > 0) std::snprintf(line, size, "%s", state.leave.text);
+    state.leave = FieldLeave{};
+    return true;
+}
+
+void FieldEditCancel(FieldEdit& state) {
+    FieldEditEnd(state, false);
+    state.leave = FieldLeave{};
 }
 
 } // namespace md3

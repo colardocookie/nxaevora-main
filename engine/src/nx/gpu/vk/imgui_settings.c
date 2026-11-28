@@ -25,7 +25,8 @@ typedef struct {
 } Page;
 static const Page PAGES[] = {{"Mouse", IMGUI_WINDOW_ENGINE_MENU},      {"Keyboard", IMGUI_WINDOW_ENGINE_MENU},
                              {"Controllers", IMGUI_WINDOW_ENGINE_MENU}, {"Display", IMGUI_WINDOW_ENGINE_MENU},
-                             {"Graphics", IMGUI_WINDOW_ENGINE_MENU},    {"Performance", IMGUI_WINDOW_ENGINE_MENU}};
+                             {"Graphics", IMGUI_WINDOW_ENGINE_MENU},    {"Performance", IMGUI_WINDOW_ENGINE_MENU},
+                             {"Debug", IMGUI_WINDOW_ENGINE_MENU}};
 enum { PAGE_COUNT = sizeof PAGES / sizeof PAGES[0] };
 
 /* Settings that the window shows as a choice from a list, not a slider: the anisotropic filtering and the FPS limit. A
@@ -52,14 +53,15 @@ static const Preset PRESETS[] = {
 
 /* keyboard_map and gamepad_map have their own rows in place of a text field. mouse_native_address is the guest address
    of a word that a code patch of the game reads: a value that is not 8 aligned and mapped breaks the mouse look, so
-   only the launcher that installs the patch sets it. The showcase and the stats overlay have the F6 and F12 keys and
-   the Debug window, so they have no rows */
+   only the launcher that installs the patch sets it. imgui and legacy_menu have no row: the engine menu reads them at
+   the start of the run. The showcase and the stats overlay have their rows on the Debug page, so the Display page
+   leaves them out */
 /* A text setting that holds a whole number of megabytes: the window shows it as a number field */
 static const char* const NUMBER_TEXT[] = {"heap_max_mb"};
 enum { NUMBER_TEXT_MAX = 1048576 };
 
 static const char* const HIDDEN[] = {"keyboard_map", "mouse_native_address", "gamepad_map", "showcase",
-                                     "showcase_corner", "stats", "stats_corner"};
+                                     "showcase_corner", "stats", "stats_corner", "imgui", "legacy_menu"};
 
 /* The rows of each player (gamepad_p1_device and the like) are left out: the window edits the settings every player
    shares and their button map */
@@ -96,12 +98,13 @@ static const IniOpt* row_of(const IniSection* sec, int i) {
     return NULL;
 }
 
+/* the row of a key in any section, even a hidden one: the Debug page shows the overlay rows, whose words and presets
+   are read by the same key */
 static const IniOpt* find(const char* key) {
-    for (int p = 0; p < PAGE_COUNT; p++) {
-        const IniSection* sec = section_of(p);
-        for (int i = 0; sec && row_of(sec, i); i++)
-            if (!strcmp(row_of(sec, i)->key, key)) return row_of(sec, i);
-    }
+    for (int s = 0; s < g_ini_sections_count; s++)
+        for (int t = 0; t < 3 && g_ini_sections[s].table[t]; t++)
+            for (const IniOpt* o = g_ini_sections[s].table[t]; o->key; o++)
+                if (!strcmp(o->key, key)) return o;
     return NULL;
 }
 
@@ -159,16 +162,24 @@ static void saved_value(const IniOpt* o, ImguiSettingRow* r) {
     }
 }
 
-/* a text setting's value: the saved one when this run changed a startup setting, else what the game read. A text that
-   holds a number (NUMBER_TEXT) becomes an int row */
+/* a text setting's value: the saved one when this run changed a startup setting, else what the game read */
+static const char* text_value(const IniOpt* o, char* saved, size_t n, int* from_restart) {
+    const char* value = (const char*)o->var;
+    *from_restart = 0;
+    if ((o->flags & INI_STARTUP) && options_restart_value(o->key, saved, n) && strcmp(saved, value)) {
+        *from_restart = 1;
+        return saved;
+    }
+    return value;
+}
+
+/* a text setting's value in the row. A text that holds a number (NUMBER_TEXT) becomes an int row */
 static void text_row(const IniOpt* o, ImguiSettingRow* r) {
     char saved[SAVED_VALUE_MAX];
+    int from_restart = 0;
     if (r->type != IMGUI_SETTING_TEXT || !o->var || !o->size) return;
-    snprintf(r->text, sizeof r->text, "%s", (const char*)o->var);
-    if ((o->flags & INI_STARTUP) && options_restart_value(o->key, saved, sizeof saved) && strcmp(saved, r->text)) {
-        snprintf(r->text, sizeof r->text, "%s", saved);
-        r->flags |= IMGUI_SETTING_RESTART;
-    }
+    snprintf(r->text, sizeof r->text, "%s", text_value(o, saved, sizeof saved, &from_restart));
+    if (from_restart) r->flags |= IMGUI_SETTING_RESTART;
     for (size_t k = 0; k < sizeof NUMBER_TEXT / sizeof *NUMBER_TEXT; k++)
         if (!strcmp(o->key, NUMBER_TEXT[k])) {
             r->type = IMGUI_SETTING_INT;
@@ -189,10 +200,7 @@ static void fps_limit_row(ImguiSettingRow* r) {
     r->ivalue = __atomic_load_n(&g_opt_fps, __ATOMIC_RELAXED);
 }
 
-int imgui_settings_row(int page, int i, ImguiSettingRow* r) {
-    const IniSection* sec = section_of(page);
-    const IniOpt* o = sec ? row_of(sec, i) : NULL;
-    if (!o) return 0;
+static void make_row(const IniOpt* o, ImguiSettingRow* r) {
     *r = (ImguiSettingRow){.key = o->key,
                            .name = o->name ? o->name : o->key,
                            .help = o->help ? o->help : "",
@@ -203,12 +211,43 @@ int imgui_settings_row(int page, int i, ImguiSettingRow* r) {
                            .hi = o->hi,
                            .step = o->step > 0 ? o->step : 1,
                            .has_words = o->words && !strchr(o->words, '#'),
-                           .presets = preset_count(o->key)};
+                           .presets = preset_count(o->key),
+                           .text_size = o->type == INI_TEXT ? o->size : 0};
     if (!strcmp(o->key, FPS_LIMIT_KEY)) fps_limit_row(r);
     if (o->type == INI_INT) r->ivalue = __atomic_load_n((const int*)o->var, __ATOMIC_RELAXED);
     if (o->type == INI_FLOAT) r->fvalue = *(const float*)o->var;
     saved_value(o, r);
     text_row(o, r);
+}
+
+int imgui_settings_row(int page, int i, ImguiSettingRow* r) {
+    const IniSection* sec = section_of(page);
+    const IniOpt* o = sec ? row_of(sec, i) : NULL;
+    if (!o) return 0;
+    make_row(o, r);
+    return 1;
+}
+
+int imgui_settings_row_key(const char* key, ImguiSettingRow* r) {
+    if (key == NULL || r == NULL) return 0;
+    const IniOpt* o = find(key);
+    if (!o) return 0;
+    make_row(o, r);
+    return 1;
+}
+
+int imgui_settings_text(const char* key, char* out, size_t n) {
+    const IniOpt* o;
+    char saved[SAVED_VALUE_MAX];
+    int from_restart;
+    const char* value;
+    if (out == NULL || n == 0) return 0;
+    out[0] = 0;
+    o = find(key);
+    if (!o || o->type != INI_TEXT || !o->var) return 0;
+    value = text_value(o, saved, sizeof saved, &from_restart);
+    if (strlen(value) >= n) return 0;
+    snprintf(out, n, "%s", value);
     return 1;
 }
 

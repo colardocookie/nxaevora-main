@@ -7,8 +7,8 @@
 </p>
 
 <p align="center">
-<a href="https://github.com/nxaevora/nxaevora-main/actions/workflows/ci.yml"><img src="https://github.com/nxaevora/nxaevora-main/actions/workflows/ci.yml/badge.svg?branch=main" alt="Build NXAevora (Windows)"></a>
-<a href="https://github.com/nxaevora/nxaevora-main/actions/workflows/repo-checks.yml"><img src="https://github.com/nxaevora/nxaevora-main/actions/workflows/repo-checks.yml/badge.svg?branch=main" alt="Repository checks"></a>
+<a href="https://github.com/nxaevora/NXAevora/actions/workflows/ci.yml"><img src="https://github.com/nxaevora/NXAevora/actions/workflows/ci.yml/badge.svg?branch=main" alt="Build NXAevora (Windows)"></a>
+<a href="https://github.com/nxaevora/NXAevora/actions/workflows/repo-checks.yml"><img src="https://github.com/nxaevora/NXAevora/actions/workflows/repo-checks.yml/badge.svg?branch=main" alt="Repository checks"></a>
 <br>
 <img src="https://img.shields.io/badge/Platform-Windows%20x64%20%7C%20Linux%20x64%20(Planned)-blue?style=flat" alt="Badge">
 <img src="https://img.shields.io/badge/Upscaler-DLSS%20%7C%20FSR3.1%20%7C%20XeSS-green?style=flat" alt="Badge">
@@ -35,7 +35,7 @@ The game's code is compiled using <a href="https://github.com/scarletnx/ScarletN
 
 Have you found a bug or issue in NXAevora that the developers are not aware of? Or do you have a suggestion about the code?
 
-We certainly welcome both. If you find a bug or issue, please open an [Issue](https://github.com/nxaevora/nxaevora-main/issues/new/choose). If you have a suggestion, please submit a [Pull Request](https://github.com/nxaevora/nxaevora-main/pulls)!
+We certainly welcome both. If you find a bug or issue, please open an [Issue](https://github.com/nxaevora/NXAevora/issues/new/choose). If you have a suggestion, please submit a [Pull Request](https://github.com/nxaevora/NXAevora/pulls)!
 
 If you would like to contribute, please read the [CONTRIBUTING.md](CONTRIBUTING.md) first. It will help you.
 

@@ -43,7 +43,7 @@ top level), without changing that project's `BUILD_TESTING`:
 
 ```cmake
 CPMAddPackage(NAME ScarletNX
-              GIT_REPOSITORY https://github.com/nxaevora/nxaevora-main.git
+              GIT_REPOSITORY https://github.com/nxaevora/NXAevora.git
               SOURCE_SUBDIR engine
               GIT_TAG main   # a commit, for a reproducible build
               GIT_SHALLOW YES

@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright 2026 the NXAevora contributors
-// The pure layout rules of the engine menu's settings rows and page scroll.
-// No ImGui, so the layout test links this file alone.
+// The pure layout and field edit rules of the engine menu. No ImGui, so the
+// layout test links this file alone.
 
 #pragma once
+
+#include <stddef.h>
 
 namespace md3 {
 
@@ -48,5 +50,59 @@ struct PageScrollInput {
 // the view scrolls to its top, a row below the view to its bottom, and a row
 // already visible keeps the scroll. The result is clamped to 0..max_scroll.
 float PageScrollTarget(const PageScrollInput& in);
+
+// The most text that a text field keeps, and the size of its stored line.
+inline constexpr size_t kTextFieldMax = 1024;
+
+// The line of a field that lost the edit state to another field, kept for the
+// frame of the take-over and the next one.
+struct FieldLeave {
+    unsigned int id; // the field that left, 0 when there is none
+    int frame;       // the frame of the take-over
+    char text[kTextFieldMax];
+};
+
+// The edit state of the number and text fields. One item is active at a time,
+// so one state serves every field: it belongs to the field that started the
+// edit and keeps that field's line and error after the edit ends. A field whose
+// id is not the id here is not editing and has no error. The leaving entry
+// keeps the line of a field that a take-over replaced before it could commit.
+struct FieldEdit {
+    unsigned int id; // the owner field id, 0 when there is none
+    int frame;       // the frame of the owner's last draw
+    char text[kTextFieldMax];
+    bool editing;
+    bool error;
+    FieldLeave leave;
+};
+
+// The draw start of field id on frame. An edit of the owner that the page did
+// not draw in the last frame ends, and then id records this frame when it owns
+// the state. Returns true when id owns the state.
+bool FieldEditBegin(FieldEdit& state, unsigned int id, int frame);
+
+// True when id owns the state.
+bool FieldEditOwnedBy(const FieldEdit& state, unsigned int id);
+
+// True while the owner edits and drew in this frame or the frame before, so the
+// text keys stay with it and a commit of the deactivated item can land.
+bool FieldEditEditing(const FieldEdit& state, int frame);
+
+// Starts an edit of field id with line text and no error. The field takes the
+// state from an other owner that edits into the leaving entry, because only one
+// item is active; with no such owner the leaving entry is cleared.
+void FieldEditStart(FieldEdit& state, unsigned int id, int frame, const char* text);
+
+// Copies the leaving line of id into line and clears the entry. Returns false
+// when id is not the leaving field or the entry is older than the next frame.
+bool FieldEditTakeLeaving(FieldEdit& state, unsigned int id, int frame, char* line, size_t size);
+
+// Ends the owner's edit and sets error. The owner id stays, so the error stays
+// with the field until another field starts an edit.
+void FieldEditEnd(FieldEdit& state, bool error);
+
+// Ends the owner's edit without error and clears the leaving entry, for a menu
+// close that cancels the edits.
+void FieldEditCancel(FieldEdit& state);
 
 } // namespace md3

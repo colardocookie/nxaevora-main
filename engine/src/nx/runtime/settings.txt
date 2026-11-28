@@ -898,13 +898,6 @@ setting Legacy menu
     words Off|On
     help 1 = the game's old menu (F2, Back, Home) opens even while the Dear ImGui windows run. It has pages that the
     help windows do not have yet: the gamepads' button map and the save states. 0 = only the windows
-setting Imgui test
-    key imgui_test
-    int 0 1
-    default 0
-    words Off|On
-    help 1 = the Dear ImGui test window is open at the start (also in the menu bar's Debug menu), to check the backend
-    help and the fonts (fonts/ in the data folder)
 setting RenderDoc captures
     key renderdoc
     text 1024

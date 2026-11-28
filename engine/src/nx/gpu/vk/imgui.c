@@ -391,7 +391,6 @@ void vk_imgui_draw(VkCommandBuffer cb, VkImage sc, u32 game_w, u32 game_h) {
     frame.w = (float)g_vk.sc_extent.width;
     frame.h = (float)g_vk.sc_extent.height;
     frame.dt = dt;
-    frame.open_test = __atomic_load_n(&g_settings.imgui_test, __ATOMIC_RELAXED);
     frame.window_w = g_vk.sc_win_w;
     frame.window_h = g_vk.sc_win_h;
     frame.display_scale = (float)overlay_display_percent() / 100.0f;

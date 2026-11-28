@@ -31,7 +31,7 @@ int imgui_glue_init(const ImguiGlueInit* in); /* 1 when ready */
 void imgui_glue_shutdown(void);               /* the device is idle */
 int imgui_glue_ready(void);
 int imgui_glue_vk_failed(void); /* the backend got a Vulkan error since init: the caller shuts it down */
-/* one frame for a picture w x h, dt seconds after the last one. open_test is the test window's first state. Returns 1
+/* one frame for a picture w x h, dt seconds after the last one. Returns 1
    when there is something to draw */
 /* the game's keyboard box, as the window shows it (overlay.h's OverlayKeyboardView) and what the window answers. The
    sizes are those of the box's texts */
@@ -48,8 +48,7 @@ typedef struct {
 } ImguiKeyboard;
 typedef struct {
     float w, h, dt;
-    int open_test;
-    /* what the Debug window reports of the display and the game */
+    /* what the Debug page reports of the display and the game */
     int window_w, window_h;
     int game_w, game_h;     /* the game's picture, as the renderer makes it: the console's size times the render scale */
     float display_scale;    /* the display's scale, 1.0 for none: the engine menu's UI scale (overlay_display_percent) */

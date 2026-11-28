@@ -12,11 +12,13 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
 #include <SDL3/SDL_gamepad.h>
 
 #include "imgui.h"
 #include "nx/gpu/vk/engine_menu.h"
+#include "nx/gpu/vk/engine_menu_debug.h"
 #include "nx/gpu/vk/engine_menu_input.h"
 
 namespace {
@@ -94,6 +96,98 @@ void CheckKeyCapture() {
     EngineMenuKeyCaptureReset(capture);
     Check(capture.row == kEngineMenuKeyCaptureNone && !capture.drawn && !capture.unnamed,
           "a reset stops the capture");
+}
+
+// The keys of the Debug section of settings.txt, but imgui, legacy_menu and
+// imgui_test, which the page does not show. The list is written here because
+// the test has no settings.txt: each key must appear in the page once.
+const char* const kDebugKeys[] = {
+    "log",         "log_max",          "auto_stub_ipc",     "diag",            "vk_validation",
+    "native_astc", "native_bc",        "native_etc2",       "slp_vectorizer",  "fpsr_flags",
+    "volatile_memory", "gdb_jit",      "alias_pool",        "profile",         "nvn_trace",
+    "nvn_legacy",  "nvn_drawrec",      "nvn_measure",       "nvn_native_missing", "nvn_selftest",
+    "nvn_selftest_mutate", "nvn_exectest", "shader_corpus", "gpu_trace_target", "vk_gpu_profile",
+    "vk_buffer_stats", "vk_record",    "compute",           "vk_max_allocation_mb", "vk_budget_mb",
+    "mme_hle",     "mme_jit",          "mme_verify",        "renderdoc",       "renderdoc_frames",
+    "tracy_profiler", "tracy_sampling", "tracy_port",       "tracy_capture_tool", "tracy_open_trace",
+};
+constexpr int kDebugKeyCount = static_cast<int>(sizeof kDebugKeys / sizeof kDebugKeys[0]);
+constexpr int kOverlayKeyCount = 4;
+
+void CheckDebugPage() {
+    int count = 0;
+    const EngineMenuDebugEntry* entries = EngineMenuDebugEntries(&count);
+    Check(entries != nullptr && count == kDebugKeyCount + kOverlayKeyCount,
+          "the Debug page has the Debug rows and the Overlays rows");
+
+    // Each key of the Debug section is on the page exactly once.
+    for (int k = 0; k < kDebugKeyCount; ++k) {
+        int found = 0;
+        for (int i = 0; i < count; ++i)
+            if (std::strcmp(entries[i].key, kDebugKeys[k]) == 0) ++found;
+        Check(found == 1, kDebugKeys[k]);
+    }
+
+    // imgui, legacy_menu and the deleted imgui_test are not on the page.
+    Check(EngineMenuDebugEntryOfKey("imgui") == nullptr, "imgui stays off the page");
+    Check(EngineMenuDebugEntryOfKey("legacy_menu") == nullptr, "legacy_menu stays off the page");
+    Check(EngineMenuDebugEntryOfKey("imgui_test") == nullptr, "imgui_test is gone");
+    Check(EngineMenuDebugEntryOfKey(nullptr) == nullptr, "a null key is not on the page");
+
+    // The keys of the SNX_TRACY blocks of settings.txt, written from settings.txt:
+    // a build without SNX_TRACY leaves these out, so only they are marked.
+    static const char* const build_optional_keys[] = {
+        "tracy_profiler", "tracy_sampling", "tracy_port", "tracy_capture_tool", "tracy_open_trace",
+    };
+    constexpr int kBuildOptionalKeyCount = static_cast<int>(sizeof build_optional_keys / sizeof build_optional_keys[0]);
+    int marked = 0;
+    for (int i = 0; i < count; ++i) {
+        if (!entries[i].build_optional) continue;
+        ++marked;
+        int expected = 0;
+        for (int k = 0; k < kBuildOptionalKeyCount; ++k)
+            if (std::strcmp(entries[i].key, build_optional_keys[k]) == 0) ++expected;
+        Check(expected == 1, entries[i].key);
+    }
+    Check(marked == kBuildOptionalKeyCount, "5 keys a build can leave out are marked");
+    const EngineMenuDebugEntry* log_entry = EngineMenuDebugEntryOfKey("log");
+    Check(log_entry != nullptr && !log_entry->build_optional, "log is not a key a build leaves out");
+
+    // The 4 overlay keys are in the Overlays card in the page's order.
+    static const char* const overlay_keys[kOverlayKeyCount] = {"stats", "stats_corner", "showcase",
+                                                               "showcase_corner"};
+    int overlay_count = 0;
+    const EngineMenuDebugEntry* overlays = EngineMenuDebugCardEntries(ENGINE_MENU_DEBUG_OVERLAYS, &overlay_count);
+    Check(overlays != nullptr && overlay_count == kOverlayKeyCount, "4 keys in the Overlays card");
+    for (int i = 0; i < overlay_count; ++i) Check(std::strcmp(overlays[i].key, overlay_keys[i]) == 0,
+                                                  "the Overlays keys in the page's order");
+
+    // The read-only cards have no settings row.
+    for (int card = ENGINE_MENU_DEBUG_HARDWARE; card <= ENGINE_MENU_DEBUG_DISPLAY; ++card) {
+        int read_only = -1;
+        Check(EngineMenuDebugCardEntries(card, &read_only) == nullptr && read_only == 0,
+              "a read-only card has no row");
+    }
+
+    // The cards in the order of the page.
+    static const char* const card_names[ENGINE_MENU_DEBUG_CARD_COUNT] = {
+        "Overlays",   "Hardware",      "Frame",           "Display",           "Logs and IPC",
+        "Textures",   "Recompiler and memory", "Vulkan",   "NVN diagnostics",   "Macros",
+        "Profilers and captures",
+    };
+    for (int card = 0; card < ENGINE_MENU_DEBUG_CARD_COUNT; ++card)
+        Check(std::strcmp(EngineMenuDebugCardName(card), card_names[card]) == 0, "the card order");
+    Check(std::strcmp(EngineMenuDebugCardName(-1), "") == 0 &&
+              std::strcmp(EngineMenuDebugCardName(ENGINE_MENU_DEBUG_CARD_COUNT), "") == 0,
+          "a card outside the list has no title");
+
+    // Three labels, written from the mockup.
+    const EngineMenuDebugEntry* log = EngineMenuDebugEntryOfKey("log");
+    const EngineMenuDebugEntry* mme = EngineMenuDebugEntryOfKey("mme_hle");
+    const EngineMenuDebugEntry* stats = EngineMenuDebugEntryOfKey("stats");
+    Check(log != nullptr && std::strcmp(log->label, "Log level") == 0, "the log label");
+    Check(mme != nullptr && std::strcmp(mme->label, "Native macros") == 0, "the mme_hle label");
+    Check(stats != nullptr && std::strcmp(stats->label, "Performance overlay") == 0, "the stats label");
 }
 
 } // namespace
@@ -174,6 +268,7 @@ int main() {
     CheckTrigger(SDL_GAMEPAD_AXIS_RIGHT_TRIGGER, 32767, ImGuiKey_GamepadR2, true, "right trigger down");
 
     CheckKeyCapture();
+    CheckDebugPage();
 
     std::puts("engine_menu: ok");
     return 0;

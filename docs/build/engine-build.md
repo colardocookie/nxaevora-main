@@ -36,7 +36,7 @@ If `pacman -Syu` closes the shell, see the Troubleshooting section.
 Clone the repository and open its `engine` folder. Every command in the following steps runs in that folder.
 
 ```sh
-git clone https://github.com/nxaevora/nxaevora-main.git nxaevora
+git clone https://github.com/nxaevora/NXAevora.git nxaevora
 cd nxaevora/engine
 ```
 
