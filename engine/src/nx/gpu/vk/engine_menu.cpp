@@ -129,6 +129,7 @@ extern "C" EngineMenuPointer engine_menu_pointer(int phase, uint64_t id, float f
 #include <cstdio>
 
 #include "imgui_internal.h"
+#include "nx/gpu/vk/engine_menu_input.h"
 #include "nx/gpu/vk/imgui_events.h"
 #include "nx/gpu/vk/imgui_input.h"
 #include "nx/gpu/vk/imgui_settings.h"
@@ -147,6 +148,9 @@ constexpr int kPageGame = 0;
 constexpr int kPageDisplay = 1;
 constexpr int kPageGraphics = 2;
 constexpr int kPagePerformance = 3;
+constexpr int kPageMouse = 4;
+constexpr int kPageKeyboard = 5;
+constexpr int kPageControllers = 6;
 
 constexpr float kTopBarHeightPx = 64.0f;
 constexpr float kRailWidthPx = 112.0f;
@@ -183,6 +187,8 @@ const char* const kRestartMark = "\xEE\x97\x95";
 constexpr const char* kDisplayPageName = "Display";
 constexpr const char* kGraphicsPageName = "Graphics";
 constexpr const char* kPerformancePageName = "Performance";
+constexpr const char* kMousePageName = "Mouse";
+constexpr const char* kControllersPageName = "Controllers";
 constexpr const char* kRestartSupporting = "Saved. Applies after a restart.";
 constexpr const char* kTextOnlySupporting = "Edit it in the .ini file";
 constexpr double kPresetEpsilon = 1e-6;
@@ -720,7 +726,7 @@ void DrawPerformanceSettings() {
     for (int i = 0; i < advanced_count; ++i) DrawSettingRow(rows[advanced[i]]);
 }
 
-void DrawPage(int page) {
+void DrawPage(int page, bool menu_open) {
     md3::CardBegin("##page_card");
     md3::SectionTitle(kRailLabels[page]);
     if (page == kPageDisplay) {
@@ -734,13 +740,19 @@ void DrawPage(int page) {
         DrawSettingsPage(kGraphicsPageName);
     } else if (page == kPagePerformance) {
         DrawPerformanceSettings();
+    } else if (page == kPageMouse) {
+        DrawSettingsPage(kMousePageName);
+    } else if (page == kPageKeyboard) {
+        EngineMenuDrawKeyboardPage(menu_open);
+    } else if (page == kPageControllers) {
+        EngineMenuDrawControllersPage(kControllersPageName);
     } else {
         md3::BodyText(PAGE_PLACEHOLDER);
     }
     md3::CardEnd();
 }
 
-void DrawPanel() {
+void DrawPanel(bool menu_open) {
     const md3::Theme& theme = md3::CurrentTheme();
     const float s = theme.scale;
     ImGuiViewport* viewport = ImGui::GetMainViewport();
@@ -827,7 +839,7 @@ void DrawPanel() {
         g_ui.page_scroll_animating = false;
     }
     md3::BeginNavAnchorCapture();
-    DrawPage(g_ui.page);
+    DrawPage(g_ui.page, menu_open);
     g_ui.page_anchor = md3::EndNavAnchorCapture();
     g_ui.page_anchor_page = g_ui.page;
 
@@ -982,12 +994,17 @@ bool engine_menu_draw(ImguiFrame* f) {
     g_ui.panel_offset = md3::Tween(kPanelOffsetTweenId, closing ? kPanelSlidePx : 0.0f, duration, curve);
 
     const bool show_panel = g_ui.panel_alpha > 0.0f;
-    if (show_panel) DrawPanel();
+    if (show_panel) DrawPanel(state == MENU_OPEN);
     g_panel_alpha = g_ui.panel_alpha;
     if (closing && g_ui.panel_alpha <= 0.0f && StateMove(MENU_CLOSING, MENU_CLOSED)) g_ui.was_visible = false;
 
     ImGui::GetStyle() = saved;
     return show_panel;
 }
+
+// The input pages of engine_menu_input.cpp draw the rows of a settings model
+// page with this menu's widget code, so the helper keeps one copy here.
+
+void EngineMenuDrawSettingsPage(const char* model_page_name) { DrawSettingsPage(model_page_name); }
 
 #endif // ENGINE_MENU_PURE_TEST

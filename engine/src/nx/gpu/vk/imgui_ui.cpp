@@ -10,15 +10,13 @@
 #include "imgui.h"
 #include "nx/gpu/vk/debug_stats.h"
 #include "nx/gpu/vk/engine_menu.h"
-#include "nx/gpu/vk/imgui_settings.h"
+#include "nx/gpu/vk/engine_menu_input.h"
 
 namespace {
 constexpr float BAR_TRIGGER_PX = 24.0f; /* the cursor this close to the top of the picture shows the bar */
 bool g_bar_shown;
 bool g_show_test;
 bool g_show_debug;
-bool g_show_input_settings;
-constexpr const char* INPUT_SETTINGS_TITLE = "Controller&Keyboard"; /* the menu entries and the windows */
 constexpr float DEBUG_WIDTH = 380.0f, DEBUG_HEIGHT = 520.0f, DEBUG_MIN_WIDTH = 300.0f, DEBUG_MIN_HEIGHT = 200.0f;
 constexpr float GRAPH_HEIGHT = 56.0f, GRAPH_TOP_MS = 50.0f;
 constexpr float MB_PER_GB = 1024.0f;
@@ -48,10 +46,6 @@ void unavailable(const char* what) {
 void menu_bar() {
     if (ImGui::BeginMenu("About")) {
         ImGui::TextUnformatted("NXAevora");
-        ImGui::EndMenu();
-    }
-    if (ImGui::BeginMenu("Settings")) {
-        ImGui::MenuItem(INPUT_SETTINGS_TITLE, nullptr, &g_show_input_settings);
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("Mods")) {
@@ -192,382 +186,6 @@ void debug_window(const ImguiFrame& f) {
     ImGui::End();
 }
 
-/* ---- the Controller&Keyboard window: a page for each section of imgui_settings.h, a row for each setting ---- */
-constexpr float SETTINGS_WIDTH = 460.0f, SETTINGS_HEIGHT = 420.0f, SETTINGS_MIN_WIDTH = 320.0f, SETTINGS_MIN_HEIGHT = 160.0f;
-constexpr float SETTINGS_HELP_WIDTH = 28.0f; /* in font heights: the help tooltip wraps here */
-constexpr double SLIDER_RANGE_MAX = 100000.0; /* a wider range is typed, not dragged */
-constexpr int WORD_MAX = 64;
-constexpr double PRESET_EPSILON = 1e-6; /* two values of a preset list that differ less are the same */
-constexpr int ARROW_COARSE = 10;          /* Shift: this many steps for a press of an arrow */
-constexpr float ARROW_FLOAT_STEPS = 200.0f; /* a float's step is its range over this */
-constexpr float ARROW_FLOAT_FINE = 10.0f;   /* Ctrl: a step over this */
-
-void setting_help(const ImguiSettingRow& r) {
-    char note[160] = "";
-    if (r.flags & IMGUI_SETTING_STARTUP) snprintf(note, sizeof note, "Applies when the game starts again.");
-    if (r.flags & IMGUI_SETTING_LOCKED) snprintf(note, sizeof note, "Set on the command line for this run.");
-    if (!r.help[0] && !note[0]) return;
-    if (!ImGui::BeginItemTooltip()) return;
-    ImGui::PushTextWrapPos(ImGui::GetFontSize() * SETTINGS_HELP_WIDTH);
-    if (r.help[0]) ImGui::TextUnformatted(r.help);
-    if (note[0]) ImGui::TextDisabled("%s", note);
-    ImGui::PopTextWrapPos();
-    ImGui::EndTooltip();
-}
-
-/* Left and Right while the pointer is over the item just drawn: -1, 0 or 1, a held key repeating. The game gets no key
-   while the pointer is there (the arrows are its D-pad) */
-int arrow_direction() {
-    if (!ImGui::IsItemHovered()) return 0;
-    ImGui::SetNextFrameWantCaptureKeyboard(true);
-    return (int)ImGui::IsKeyPressed(ImGuiKey_RightArrow) - (int)ImGui::IsKeyPressed(ImGuiKey_LeftArrow);
-}
-
-/* one press of an arrow moves an int slider by the setting's step, ten of them with Shift, one unit with Ctrl */
-int arrow_amount(int step) {
-    const ImGuiIO& io = ImGui::GetIO();
-    return io.KeyCtrl ? 1 : io.KeyShift ? step * ARROW_COARSE : step;
-}
-
-/* the three setting_* below return whether the row changed, and then the new value as the .ini writes it in out */
-bool setting_choice(const ImguiSettingRow& r, char* out, size_t n) {
-    char word[WORD_MAX];
-    int count = (int)((r.hi - r.lo) / r.step) + 1;
-    bool changed = false;
-    imgui_settings_word(r.key, r.ivalue, word, sizeof word);
-    bool open = ImGui::BeginCombo("##value", word);
-    int dir = arrow_direction();
-    if (dir) {
-        int to = (r.ivalue - (int)r.lo) / r.step + dir;
-        if (to >= 0 && to < count) {
-            snprintf(out, n, "%d", (int)r.lo + to * r.step);
-            changed = true;
-        }
-    }
-    if (!open) return changed;
-    for (int k = 0; k < count; ++k) {
-        int v = (int)r.lo + k * r.step;
-        imgui_settings_word(r.key, v, word, sizeof word);
-        if (ImGui::Selectable(word, v == r.ivalue) && v != r.ivalue) {
-            snprintf(out, n, "%d", v);
-            changed = true;
-        }
-    }
-    ImGui::EndCombo();
-    return changed;
-}
-
-/* the row whose "Custom" entry was picked: its number field shows even when the value is one of the presets */
-const char* g_custom_key = nullptr;
-
-/* the number field under a preset choice that takes any value of lo to hi (the FPS limit) */
-bool setting_custom_field(const ImguiSettingRow& r, double now, char* out, size_t n) {
-    int v = now >= r.lo ? (int)now : (int)r.lo;
-    ImGui::SetNextItemWidth(-FLT_MIN);
-    if (!ImGui::InputInt("##custom", &v, 1, ARROW_COARSE, ImGuiInputTextFlags_EnterReturnsTrue)) return false;
-    snprintf(out, n, "%d", v < (int)r.lo ? (int)r.lo : v > (int)r.hi ? (int)r.hi : v);
-    return true;
-}
-
-/* a choice from the short list of imgui_settings_preset; a value that is not in it shows as custom, and Left and Right
-   go to the nearest preset from it. A row with IMGUI_SETTING_CUSTOM also has the entry Custom and a number field */
-bool setting_preset(const ImguiSettingRow& r, char* out, size_t n) {
-    char value[WORD_MAX], label[WORD_MAX], shown[WORD_MAX];
-    const double now = r.type == IMGUI_SETTING_FLOAT ? (double)r.fvalue : (double)r.ivalue;
-    const bool custom_row = (r.flags & IMGUI_SETTING_CUSTOM) != 0;
-    double number;
-    int at = -1, below = -1, count = r.presets;
-    for (int i = 0; i < count; ++i) {
-        imgui_settings_preset(r.key, i, value, sizeof value, label, sizeof label, &number);
-        if (fabs(number - now) < PRESET_EPSILON) at = i;
-        if (number < now) below = i;
-    }
-    const bool custom_on = custom_row && (at < 0 || g_custom_key == r.key);
-    if (at >= 0 && !custom_on)
-        imgui_settings_preset(r.key, at, value, sizeof value, shown, sizeof shown, &number);
-    else if (custom_row)
-        snprintf(shown, sizeof shown, "Custom");
-    else
-        snprintf(shown, sizeof shown, "%g (custom%s)", now,
-                 imgui_settings_fits(r.key, now) ? "" : ", too much GPU memory");
-    bool open = ImGui::BeginCombo("##value", shown);
-    int dir = arrow_direction();
-    int to = at >= 0 ? at + dir : dir > 0 ? below + 1 : below;
-    bool changed = false;
-    if (dir && to >= 0 && to < count) {
-        imgui_settings_preset(r.key, to, out, n, label, sizeof label, &number);
-        g_custom_key = nullptr;
-        changed = true;
-    }
-    if (open) {
-        for (int i = 0; i < count; ++i) {
-            imgui_settings_preset(r.key, i, value, sizeof value, label, sizeof label, &number);
-            if (ImGui::Selectable(label, i == at && !custom_on) && (i != at || custom_on)) {
-                snprintf(out, n, "%s", value);
-                g_custom_key = nullptr;
-                changed = true;
-            }
-        }
-        if (custom_row && ImGui::Selectable("Custom", custom_on)) g_custom_key = r.key;
-        ImGui::EndCombo();
-    }
-    if (custom_on) changed = setting_custom_field(r, now, out, n) || changed;
-    return changed;
-}
-
-/* a text setting that is a choice of values (value=label words): the label of the one on, Left and Right move through
-   the list */
-bool setting_text_choice(const ImguiSettingRow& r, char* out, size_t n) {
-    char value[WORD_MAX], label[WORD_MAX], shown[WORD_MAX];
-    int at = -1, count = 0;
-    while (imgui_settings_text_word(r.key, count, value, sizeof value, label, sizeof label)) {
-        if (!strcmp(value, r.text)) at = count;
-        ++count;
-    }
-    if (at >= 0)
-        imgui_settings_text_word(r.key, at, value, sizeof value, shown, sizeof shown);
-    else
-        snprintf(shown, sizeof shown, "%s (custom)", r.text);
-    bool open = ImGui::BeginCombo("##value", shown);
-    int dir = arrow_direction();
-    bool changed = false;
-    if (dir && at >= 0 && at + dir >= 0 && at + dir < count) {
-        imgui_settings_text_word(r.key, at + dir, out, n, label, sizeof label);
-        changed = true;
-    }
-    if (!open) return changed;
-    for (int i = 0; i < count; ++i) {
-        imgui_settings_text_word(r.key, i, value, sizeof value, label, sizeof label);
-        if (ImGui::Selectable(label, i == at) && i != at) {
-            snprintf(out, n, "%s", value);
-            changed = true;
-        }
-    }
-    ImGui::EndCombo();
-    return changed;
-}
-
-bool setting_number(const ImguiSettingRow& r, char* out, size_t n) {
-    int v = r.ivalue;
-    bool edited;
-    if (r.hi - r.lo <= SLIDER_RANGE_MAX) {
-        edited = ImGui::SliderInt("##value", &v, (int)r.lo, (int)r.hi, "%d", ImGuiSliderFlags_AlwaysClamp);
-        int dir = arrow_direction();
-        if (dir) {
-            v += dir * arrow_amount(r.step);
-            edited = true;
-        }
-    } else
-        edited = ImGui::InputInt("##value", &v, r.step, r.step * ARROW_COARSE, ImGuiInputTextFlags_EnterReturnsTrue);
-    if (!edited || v == r.ivalue) return false;
-    snprintf(out, n, "%d", v < (int)r.lo ? (int)r.lo : v > (int)r.hi ? (int)r.hi : v);
-    return true;
-}
-
-bool setting_float(const ImguiSettingRow& r, char* out, size_t n) {
-    float v = r.fvalue, step = (float)(r.hi - r.lo) / ARROW_FLOAT_STEPS;
-    const ImGuiIO& io = ImGui::GetIO();
-    bool edited = ImGui::SliderFloat("##value", &v, (float)r.lo, (float)r.hi, "%.3f", ImGuiSliderFlags_AlwaysClamp);
-    int dir = arrow_direction();
-    if (dir) {
-        v += dir * (io.KeyCtrl ? step / ARROW_FLOAT_FINE : io.KeyShift ? step * ARROW_COARSE : step);
-        v = v < (float)r.lo ? (float)r.lo : v > (float)r.hi ? (float)r.hi : v;
-        edited = true;
-    }
-    if (!edited || v == r.fvalue) return false;
-    snprintf(out, n, "%g", v);
-    return true;
-}
-
-void setting_row(const ImguiSettingRow& r) {
-    char value[WORD_MAX] = "";
-    bool changed = false;
-    ImGui::TableNextRow();
-    ImGui::TableNextColumn();
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted(r.name);
-    setting_help(r);
-    ImGui::TableNextColumn();
-    ImGui::PushID(r.key);
-    ImGui::SetNextItemWidth(-FLT_MIN);
-    ImGui::BeginDisabled((r.flags & IMGUI_SETTING_LOCKED) != 0);
-    if (r.presets)
-        changed = setting_preset(r, value, sizeof value);
-    else if (r.type == IMGUI_SETTING_TEXT && r.has_words)
-        changed = setting_text_choice(r, value, sizeof value);
-    else if (r.type == IMGUI_SETTING_TEXT)
-        ImGui::TextDisabled("Edit it in the .ini file");
-    else if (r.type == IMGUI_SETTING_FLOAT)
-        changed = setting_float(r, value, sizeof value);
-    else if (r.has_words)
-        changed = setting_choice(r, value, sizeof value);
-    else
-        changed = setting_number(r, value, sizeof value);
-    ImGui::EndDisabled();
-    if (r.flags & IMGUI_SETTING_RESTART)
-        ImGui::TextColored(ImGui::GetStyle().Colors[ImGuiCol_CheckMark], "Saved. Start the game again to apply it.");
-    ImGui::PopID();
-    if (changed) imgui_settings_set(r.key, value);
-}
-
-/* ---- the key bindings of the Keyboard page: the row waiting for a key is g_capture_row ---- */
-constexpr const char* KEYBIND_PAGE = "Keyboard";
-constexpr int NO_ROW = -1;
-constexpr int KEY_NAME_MAX = 48;
-constexpr int CAPTURE_CANCELLED = -1; /* imgui_keybind_captured: Esc or a loss of the focus; -2 is an unnamed key */
-int g_capture_row = NO_ROW;
-bool g_capture_drawn;      /* the bindings showed this frame: a tab or a window that went away ends the capture */
-bool g_capture_unnamed;    /* the last key pressed has no name that keyboard_map can hold */
-
-void capture_stop() {
-    if (g_capture_row == NO_ROW) return;
-    imgui_keybind_capture(0);
-    g_capture_row = NO_ROW;
-}
-
-/* the key that the capture took goes to the row that asked for it; a cancel or an unnamed key ends the wait */
-void capture_take(const ImguiKeybind* v) {
-    if (g_capture_row == NO_ROW) return;
-    char key[KEY_NAME_MAX];
-    int result = imgui_keybind_captured(key, sizeof key);
-    if (!result) return;
-    if (result > 0) imgui_keybind_set(v[g_capture_row].button, key);
-    g_capture_unnamed = result < 0 && result != CAPTURE_CANCELLED;
-    g_capture_row = NO_ROW;
-}
-
-void keybind_row(const ImguiKeybind& k, int i) {
-    ImGui::TableNextRow();
-    ImGui::TableNextColumn();
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted(k.button);
-    ImGui::TableNextColumn();
-    if (g_capture_row == i)
-        ImGui::TextColored(ImGui::GetStyle().Colors[ImGuiCol_CheckMark], "Press a key (Esc cancels)");
-    else if (k.custom)
-        ImGui::TextUnformatted(k.keys);
-    else
-        ImGui::TextDisabled("%s", k.keys);
-    ImGui::TableNextColumn();
-    ImGui::PushID(i);
-    if (ImGui::SmallButton(g_capture_row == i ? "Cancel" : "Bind")) {
-        if (g_capture_row == i) {
-            capture_stop();
-        } else {
-            g_capture_row = i;
-            g_capture_unnamed = false;
-            imgui_keybind_capture(1);
-        }
-    }
-    ImGui::SameLine();
-    if (ImGui::SmallButton("None")) imgui_keybind_set(k.button, "None");
-    ImGui::SameLine();
-    ImGui::BeginDisabled(!k.custom);
-    if (ImGui::SmallButton("Default")) imgui_keybind_set(k.button, nullptr);
-    ImGui::EndDisabled();
-    ImGui::PopID();
-}
-
-void keybinds() {
-    ImguiKeybind v[IMGUI_KEYBIND_COUNT];
-    imgui_keybind_view(v);
-    capture_take(v);
-    g_capture_drawn = true;
-    ImGui::SeparatorText("Key bindings");
-    ImGui::TextWrapped("Bind, then press the key. A key the list shows dimmed is the default of its button. "
-                       "Esc cancels, and F1 to F12, Pause and Alt cannot be bound.");
-    if (g_capture_unnamed)
-        ImGui::TextColored(ImGui::GetStyle().Colors[ImGuiCol_CheckMark], "That key has no name that can be saved, so it cannot be bound.");
-    bool locked = v[0].locked != 0;
-    if (locked) ImGui::TextDisabled("keyboard_map is set on the command line for this run.");
-    ImGui::BeginDisabled(locked);
-    if (ImGui::BeginTable("##keys", 3, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg)) {
-        ImGui::TableSetupColumn("Button", ImGuiTableColumnFlags_WidthStretch, 0.8f);
-        ImGui::TableSetupColumn("Keys", ImGuiTableColumnFlags_WidthStretch, 1.2f);
-        ImGui::TableSetupColumn("##actions", ImGuiTableColumnFlags_WidthFixed);
-        for (int i = 0; i < IMGUI_KEYBIND_COUNT; ++i) keybind_row(v[i], i);
-        ImGui::EndTable();
-    }
-    if (ImGui::Button("Reset all to the defaults")) imgui_keybind_set(nullptr, nullptr);
-    ImGui::EndDisabled();
-}
-
-/* ---- the button map of the Controllers page: a choice of the console's button for each control ---- */
-constexpr const char* PADMAP_PAGE = "Controllers";
-void padmap_row(int control, int bit) {
-    ImGui::TableNextRow();
-    ImGui::TableNextColumn();
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted(imgui_padmap_control_name(control));
-    ImGui::TableNextColumn();
-    ImGui::PushID(control);
-    ImGui::SetNextItemWidth(-FLT_MIN);
-    if (ImGui::BeginCombo("##button", imgui_padmap_button_name(bit))) {
-        for (int b = IMGUI_PADMAP_NONE; b < IMGUI_PADMAP_BUTTONS; ++b)
-            if (ImGui::Selectable(imgui_padmap_button_name(b), b == bit) && b != bit) imgui_padmap_set(control, b);
-        ImGui::EndCombo();
-    }
-    ImGui::PopID();
-}
-
-void padmap() {
-    ImguiPadMap m;
-    imgui_padmap_view(&m);
-    ImGui::SeparatorText("Button map");
-    ImGui::TextWrapped("The Switch button that each control of a gamepad sends. A button that another control sends "
-                       "goes to this one's old control, so no button is lost. This is the map of every player "
-                       "(a player's own gamepad_pN_map in the .ini goes over it).");
-    if (m.locked) ImGui::TextDisabled("gamepad_map is set on the command line for this run.");
-    ImGui::BeginDisabled(m.locked != 0);
-    if (ImGui::BeginTable("##padmap", 2, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg)) {
-        ImGui::TableSetupColumn("Control", ImGuiTableColumnFlags_WidthStretch, 1.0f);
-        ImGui::TableSetupColumn("Sends", ImGuiTableColumnFlags_WidthStretch, 1.2f);
-        for (int c = 0; c < IMGUI_PADMAP_CONTROLS; ++c) padmap_row(c, m.bit[c]);
-        ImGui::EndTable();
-    }
-    ImGui::BeginDisabled(!m.custom);
-    if (ImGui::Button("Reset to the console's layout")) imgui_padmap_reset();
-    ImGui::EndDisabled();
-    ImGui::EndDisabled();
-}
-
-void settings_page(int page) {
-    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
-    ImGui::TextWrapped("Pointer over a slider or a choice: Left and Right change it. Shift moves ten steps, Ctrl one unit.");
-    ImGui::PopStyleColor();
-    if (ImGui::BeginTable("##rows", 2, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg)) {
-        ImGui::TableSetupColumn("Setting", ImGuiTableColumnFlags_WidthStretch, 1.0f);
-        ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch, 1.2f);
-        ImguiSettingRow r;
-        for (int i = 0; imgui_settings_row(page, i, &r); ++i) setting_row(r);
-        ImGui::EndTable();
-    }
-    if (!strcmp(imgui_settings_page_name(page), KEYBIND_PAGE)) keybinds();
-    if (!strcmp(imgui_settings_page_name(page), PADMAP_PAGE)) padmap();
-}
-
-/* a window with the tabs of the pages that window shows; the second window opens where the first does not hide it */
-void settings_window(const char* title, int window, bool* shown, float offset) {
-    ImGui::SetNextWindowPos(ImVec2(80 + offset, 80 + offset), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(SETTINGS_WIDTH, SETTINGS_HEIGHT), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSizeConstraints(ImVec2(SETTINGS_MIN_WIDTH, SETTINGS_MIN_HEIGHT), ImVec2(FLT_MAX, FLT_MAX));
-    if (ImGui::Begin(title, shown) && ImGui::BeginTabBar("##pages")) {
-        for (int p = 0; p < imgui_settings_pages(); ++p)
-            if (imgui_settings_page_window(p) == window && ImGui::BeginTabItem(imgui_settings_page_name(p))) {
-                settings_page(p);
-                ImGui::EndTabItem();
-            }
-        ImGui::EndTabBar();
-    }
-    ImGui::End();
-}
-
-void input_settings_window() {
-    g_capture_drawn = false;
-    settings_window(INPUT_SETTINGS_TITLE, IMGUI_WINDOW_INPUT, &g_show_input_settings, 0.0f);
-    if (!g_capture_drawn) capture_stop();
-}
-
 /* ---- the game's software keyboard (the player's name): the box that overlay.c keeps the state of ---- */
 constexpr float KEYBOARD_FIELD_WIDTH = 420.0f;
 constexpr unsigned UTF16_PAIR_MIN = 0x10000; /* a character from here on is two UTF-16 units, as the game counts them */
@@ -669,13 +287,13 @@ void keyboard_window(ImguiKeyboard& k) {
 void imgui_ui_reset(void) {
     g_bar_shown = false;
     g_open_test_was = -1;
-    g_show_input_settings = false;
-    capture_stop();
+    EngineMenuInputReset();
     keyboard_reset();
     engine_menu_reset();
 }
 
 bool imgui_ui_draw(ImguiFrame* f) {
+    EngineMenuInputFrameBegin();
     /* the menu is modal: only its panel draws, and the game's windows come back when it closes */
     if (engine_menu_visible()) {
         engine_menu_draw(f);
@@ -696,10 +314,6 @@ bool imgui_ui_draw(ImguiFrame* f) {
         debug_window(*f);
     else
         debug_stats_hardware_demand(nullptr);
-    if (g_show_input_settings)
-        input_settings_window();
-    else
-        capture_stop();
     if (g_show_test) test_window(f->dt);
     keyboard_window(f->kb);
     return g_bar_shown;

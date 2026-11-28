@@ -93,7 +93,7 @@ The game software keyboard is its own centered dialog. It is not a rail page.
 
 ### Display, Graphics and Performance pages
 
-The Display, Graphics and Performance pages show the rows of the settings model. The model is generated from `engine/src/nx/runtime/settings.txt`, and the Controller&Keyboard window and the command line read the same model. The Display page shows the rows of its table in their order. The Graphics page shows all rows of the model page Graphics in model order, with no title below the page title, the same as the Display page. The Performance page shows the rows of its table, in the groups that this part describes below. A page reads at most 64 rows of its table.
+The Display, Graphics and Performance pages show the rows of the settings model. The model is generated from `engine/src/nx/runtime/settings.txt`, and the engine menu and the command line read the same model. The Display page shows the rows of its table in their order. The Graphics page shows all rows of the model page Graphics in model order, with no title below the page title, the same as the Display page. The Performance page shows the rows of its table, in the groups that this part describes below. A page reads at most 64 rows of its table.
 
 Each row takes its widget from the model alone. The first rule that matches picks the widget:
 
@@ -125,6 +125,18 @@ A number field edits as follows:
 - A page change ends an open edit the same way as a loss of focus.
 - A menu close cancels an open edit.
 - With the nav focus on the field and no edit open, the arrow keys or the D-pad change the value by the step of the row, within the range, at once.
+
+### Mouse, Keyboard and Controllers pages
+
+The Mouse page shows all rows of the model page Mouse in model order, with no title below the page title, the same as the Display page.
+
+The Keyboard page has no rows of the model. Its only setting, `keyboard_map`, is not drawn as a row, and the page shows the key bindings instead. The page has a section title, a help text and one row for each of the 24 buttons, with the keys that send the button. A key that is the default of its button has the mark (default) after it. Each row has the buttons Bind, None and Default. The Bind button shows Cancel during the capture of its row. The Default button is enabled only for a custom bind. A button "Reset all to the defaults" ends the list. When the command line sets `keyboard_map`, the list is disabled, and a line on the page says so.
+
+Bind starts a wait for one key. The backend reads the key before ImGui does, so Esc cancels the wait and does not close the menu. F1 to F12, Pause and Alt cannot be bound. A key without a name that `keyboard_map` can hold is refused, and the page shows a note. The wait ends in the first frame after a frame in which the Keyboard page did not draw, for example after a page change or the close of the menu. A reset of the ImGui windows ends it too. The wait also ends when the menu starts to close, by any path, and Bind is disabled until the menu is open again. The backend also cancels the wait when the window loses the focus.
+
+The Controllers page first shows the rows of the model page Controllers, in model order. Then it shows the button map: a section title, a help text and one row for each of the 16 controls. Each row has a dropdown of the Switch button that the control sends. A button "Reset to the console's layout" ends the list. The button is enabled only when the map is custom. When the command line sets `gamepad_map`, the map is disabled, and a line on the page says so. This page has no button capture.
+
+The Keyboard and Controllers pages are drawn in `engine/src/nx/gpu/vk/engine_menu_input.cpp`, which also owns the capture state of the Keyboard page. The capture rule is a pure part, `EngineMenuKeyCapture`, with the host test `engine_menu`. The backend part of the capture is in `engine/src/nx/runtime/platform/backend/sdl3.c`.
 
 ## 5. Theme
 
@@ -267,6 +279,6 @@ The base and the move of the functions are units 4 to 6 of phase 7.5 in `ROADMAP
 2. Unit 5, the move of the functions: one screen or one group per pull request. The old screen is deleted in the same pull request. The game never switches between the old and the new UI.
 3. Unit 6, the removal of the rest of the old UI, and the finish of the docs.
 
-The first move of unit 5 moves the Display and Performance pages to the engine menu. These two pages leave the old Display window in the same pull request, so the old window keeps only its Graphics tab. The second move of unit 5 moves the Graphics page to the engine menu, and the old Display window is deleted in the same pull request.
+The first move of unit 5 moves the Display and Performance pages to the engine menu. These two pages leave the old Display window in the same pull request, so the old window keeps only its Graphics tab. The second move of unit 5 moves the Graphics page to the engine menu, and the old Display window is deleted in the same pull request. The third move of unit 5 moves the Mouse, Keyboard and Controllers pages to the engine menu, and the old Controller&Keyboard window and its Settings menu are deleted in the same pull request.
 
 The third-party parts go into `docs/CREDITS.md` in unit 4. These parts are the HCT port and the fonts.

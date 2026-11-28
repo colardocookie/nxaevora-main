@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the NXAevora contributors */
-/* The Settings window's view of g_ini_sections (imgui_settings.h). Only the pages in PAGES show; the rest of the
+/* The engine menu's view of g_ini_sections (imgui_settings.h). Only the pages in PAGES show; the rest of the
    sections wait for their own work (docs/records/ui/imgui-plan.md). A row of the game's own (INI_IN_GAME) is left out. */
 #include "nx/gpu/vk/imgui_settings.h"
 #include <ctype.h>
@@ -23,9 +23,9 @@ typedef struct {
     const char* name; /* the section of settings.txt */
     int window;       /* the window that shows it */
 } Page;
-static const Page PAGES[] = {{"Mouse", IMGUI_WINDOW_INPUT},       {"Keyboard", IMGUI_WINDOW_INPUT},
-                             {"Controllers", IMGUI_WINDOW_INPUT}, {"Display", IMGUI_WINDOW_ENGINE_MENU},
-                             {"Graphics", IMGUI_WINDOW_ENGINE_MENU}, {"Performance", IMGUI_WINDOW_ENGINE_MENU}};
+static const Page PAGES[] = {{"Mouse", IMGUI_WINDOW_ENGINE_MENU},      {"Keyboard", IMGUI_WINDOW_ENGINE_MENU},
+                             {"Controllers", IMGUI_WINDOW_ENGINE_MENU}, {"Display", IMGUI_WINDOW_ENGINE_MENU},
+                             {"Graphics", IMGUI_WINDOW_ENGINE_MENU},    {"Performance", IMGUI_WINDOW_ENGINE_MENU}};
 enum { PAGE_COUNT = sizeof PAGES / sizeof PAGES[0] };
 
 /* Settings that the window shows as a choice from a list, not a slider: the anisotropic filtering and the FPS limit. A

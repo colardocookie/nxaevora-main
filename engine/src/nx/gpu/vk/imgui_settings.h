@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the NXAevora contributors */
-/* The game's settings as the Settings window reads them: pages from the .ini's sections (settings.txt), rows from their
-   tables, so the window and the file cannot differ. Plain C, so that the window (C++) includes no runtime header. */
+/* The game's settings as the engine menu reads them: pages from the .ini's sections (settings.txt), rows from their
+   tables, so the menu and the file cannot differ. Plain C, so that the menu (C++) includes no runtime header. */
 #ifndef SNX_IMGUI_SETTINGS_H
 #define SNX_IMGUI_SETTINGS_H
 #include <stddef.h>
@@ -32,8 +32,8 @@ typedef struct {
     char text[IMGUI_SETTING_TEXT_MAX]; /* TEXT: the value; a TEXT with has_words is a choice of imgui_settings_text_word */
 } ImguiSettingRow;
 
-/* the windows that show pages: Controller&Keyboard and the engine menu */
-enum { IMGUI_WINDOW_INPUT, IMGUI_WINDOW_ENGINE_MENU };
+/* the window that shows pages: the engine menu */
+enum { IMGUI_WINDOW_ENGINE_MENU };
 
 int imgui_settings_pages(void);
 const char* imgui_settings_page_name(int page);
