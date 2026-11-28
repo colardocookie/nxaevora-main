@@ -131,6 +131,7 @@ extern "C" EngineMenuPointer engine_menu_pointer(int phase, uint64_t id, float f
 #include "imgui_internal.h"
 #include "nx/gpu/vk/debug_stats.h"
 #include "nx/gpu/vk/engine_menu_debug.h"
+#include "nx/gpu/vk/engine_menu_game.h"
 #include "nx/gpu/vk/engine_menu_input.h"
 #include "nx/gpu/vk/imgui_events.h"
 #include "nx/gpu/vk/imgui_input.h"
@@ -754,6 +755,10 @@ bool DrawPage(int page, bool menu_open, const ImguiFrame* frame) {
     if (page == kPageDebug) {
         EngineMenuDrawDebugPage(frame);
         return true;
+    }
+    if (page == kPageGame) {
+        EngineMenuDrawGamePage();
+        return false;
     }
     md3::CardBegin("##page_card");
     md3::SectionTitle(kRailLabels[page]);

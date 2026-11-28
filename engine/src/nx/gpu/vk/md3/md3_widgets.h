@@ -193,7 +193,10 @@ void DialogOpen(const char* id);
 // Starts the close fade of the dialog that DialogBegin began. Call it in place
 // of ImGui::CloseCurrentPopup().
 void DialogClose();
-bool DialogBegin(const char* id, const char* header);
+// content_width_px fixes the content width before the first measure frame, so the
+// wrapped body text has its final width when the window sizes itself. 0 keeps the
+// width from the measured content.
+bool DialogBegin(const char* id, const char* header, float content_width_px = 0.0f);
 // Must be called once for each DialogBegin; it pops only what BeginPopup pushed.
 void DialogEnd(bool open);
 

@@ -19,6 +19,7 @@
 #include "imgui.h"
 #include "nx/gpu/vk/engine_menu.h"
 #include "nx/gpu/vk/engine_menu_debug.h"
+#include "nx/gpu/vk/engine_menu_game.h"
 #include "nx/gpu/vk/engine_menu_input.h"
 
 namespace {
@@ -190,6 +191,45 @@ void CheckDebugPage() {
     Check(stats != nullptr && std::strcmp(stats->label, "Performance overlay") == 0, "the stats label");
 }
 
+// The Game page's pure text rules (src/nx/gpu/vk/engine_menu_game.cpp): the play time as H:MM:SS with no limit on the
+// hours, the title ID as 16 upper-case hex digits, and its six row labels in the page's order.
+void CheckGamePage() {
+    struct TimeCase {
+        uint64_t ns;
+        const char* text;
+    };
+    // The four values come from the decision, not from the format: 0 ns, 59.999 s, 3661 s and 100 h.
+    static const TimeCase times[] = {
+        {0ull, "0:00:00"},
+        {59999000000ull, "0:00:59"},
+        {3661000000000ull, "1:01:01"},
+        {360000000000000ull, "100:00:00"},
+    };
+    for (const TimeCase& c : times) {
+        char out[32];
+        EngineMenuGamePlayTime(c.ns, out, sizeof out);
+        Check(std::strcmp(out, c.text) == 0, "the play time format");
+    }
+
+    // 0x01001F5010DFA000 and 0x1, in 16 upper-case hex digits.
+    {
+        char out[17];
+        EngineMenuGameTitleId(0x01001F5010DFA000ull, out, sizeof out);
+        Check(std::strcmp(out, "01001F5010DFA000") == 0, "the title ID of the game");
+        EngineMenuGameTitleId(0x1ull, out, sizeof out);
+        Check(std::strcmp(out, "0000000000000001") == 0, "a title ID of 1");
+    }
+
+    // The six labels of the card, in the page's order.
+    static const char* const labels[ENGINE_MENU_GAME_ROW_COUNT] = {"Title", "Version", "Title ID",
+                                                                   "Content", "Play time", "Build"};
+    for (int row = 0; row < ENGINE_MENU_GAME_ROW_COUNT; ++row)
+        Check(std::strcmp(EngineMenuGameRowLabel(row), labels[row]) == 0, "the Game card row labels");
+    Check(std::strcmp(EngineMenuGameRowLabel(-1), "") == 0 &&
+              std::strcmp(EngineMenuGameRowLabel(ENGINE_MENU_GAME_ROW_COUNT), "") == 0,
+          "a row outside the list has no label");
+}
+
 } // namespace
 
 int main() {
@@ -269,6 +309,7 @@ int main() {
 
     CheckKeyCapture();
     CheckDebugPage();
+    CheckGamePage();
 
     std::puts("engine_menu: ok");
     return 0;

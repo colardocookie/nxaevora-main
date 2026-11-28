@@ -15,7 +15,7 @@ The engine menu holds all current ImGui screens and the functions of the legacy 
 - the on-screen controls setup,
 - the save states,
 - the stats and the showcase on and off,
-- the exit.
+- the exit, on the Game page.
 
 The legacy overlay menu is deleted. The menu has one shell for all these functions.
 
@@ -90,6 +90,10 @@ The navigation rail has these pages, in this order:
 Each rail item has an icon and a label. A selected item has a pill indicator behind the icon.
 
 The game software keyboard is its own centered dialog. It is not a rail page.
+
+### Game page
+
+The Game page is the first page of the rail. The Game card has six rows: Title, Version, Title ID, Content, Play time and Build. The title is the module's title, or the program's name. The title ID has 16 upper-case hexadecimal digits. Content lists the update and the DLCs, or "Base game". Play time is the guest time since the start, as `H:MM:SS`. Build is the engine build line. A value that is not known shows "Unknown". Below the card, the Pause switch does what the Pause key does, with the paused mark in the window title. The Exit button opens a confirm dialog with the focus on Cancel. Exit ends the game, as the legacy menu's Exit did. Pause and Exit are requests to the frontend's loop. The save states card comes in a later change, between the Game card and the Pause switch.
 
 ### Display, Graphics and Performance pages
 

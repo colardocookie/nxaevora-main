@@ -11,6 +11,8 @@
 int game_pause(void);
 void game_resume(void);
 int game_paused(void); /* any thread */
+/* the player's pause (the menu's Pause, the Pause key) alone, without the unattended ones, for any thread */
+int game_player_paused(void);
 /* the player's pause (the menu's Pause, the Pause key), on or off */
 void game_pause_toggle(void);
 /* an unattended run's pauses (the pause setting), at each pass of the frontend's loop */

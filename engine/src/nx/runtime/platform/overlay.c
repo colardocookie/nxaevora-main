@@ -17,7 +17,7 @@
 
 enum { FIRST = 3, VISIBLE = OVERLAY_ROWS - FIRST - 1 }; /* the items' first row, and how many show at once */
 enum { PAGE_MAIN, PAGE_CONTROLS, PAGE_BUTTONS, PAGE_PADS, PAGE_MAP, PAGE_STATES, PAGE_SLOT, PAGE_ASK };
-enum { M_CONTROLS, M_PADS, M_STATES, M_STATS, M_EXIT, M_COUNT }; /* the first page's items */
+enum { M_CONTROLS, M_PADS, M_STATES, M_STATS, M_COUNT }; /* the first page's items */
 enum { S_SAVE, S_LOAD, S_DELETE, S_BACK, S_COUNT };              /* a slot's page's, the auto slot without Save */
 enum { P_PLAYER, P_SWAP, P_DEADZONE, P_RUMBLE, P_BACKGROUND, P_MAP, P_BACK, P_COUNT }; /* the gamepads' page's */
 /* the controls page's items */
@@ -129,10 +129,9 @@ static void label(int i, char* text, size_t size, char* value, size_t vsize) {
         return;
     }
     if (page == PAGE_MAIN) {
-        static const char* const main_items[M_COUNT] = {SNX_VPAD_PAGE, SNX_GAMEPAD_PAGE, "Save states", "Stats",
-                                                        "Exit"};
+        static const char* const main_items[M_COUNT] = {SNX_VPAD_PAGE, SNX_GAMEPAD_PAGE, "Save states", "Stats"};
         snprintf(text, size, "%s", main_items[i]);
-        if (i != M_EXIT) snprintf(value, vsize, ">");
+        snprintf(value, vsize, ">");
         return;
     }
     if (page == PAGE_BUTTONS) {
@@ -304,7 +303,6 @@ static int act(int i, int step) {
     }
     if (page == PAGE_MAIN) {
         if (step) return OVERLAY_NONE;
-        if (i == M_EXIT) return OVERLAY_EXIT;
         page_open(i == M_PADS ? PAGE_PADS : i == M_STATES ? PAGE_STATES : PAGE_CONTROLS);
         return OVERLAY_NONE;
     }
@@ -918,7 +916,7 @@ static void menu_dialog(Dialog* d, char (*text)[OVERLAY_COLS_MAX + 1], char (*va
     d->shown = n - top < VISIBLE ? n - top : VISIBLE;
     for (r = 0; r < d->shown; ++r) {
         static const unsigned main_icons[M_COUNT] = {GUI_ICON_POINTER, GUI_ICON_GAMEPAD_2, GUI_ICON_SAVE,
-                                                     GUI_ICON_ACTIVITY, GUI_ICON_LOG_OUT};
+                                                     GUI_ICON_ACTIVITY};
         label(top + r, text[r], sizeof *text, value[r], sizeof *value);
         d->label[r] = text[r];
         d->icon[r] = page == PAGE_MAIN ? main_icons[top + r] : GUI_ICON_NONE;

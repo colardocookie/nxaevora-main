@@ -63,12 +63,13 @@ void game_resume(void) {
     LOG("pause: the game goes on after %.2f s paused\n", (double)(plat_ns() - g_pause.since) / 1e9);
 }
 int game_paused(void) { return __atomic_load_n(&g_pause.depth, __ATOMIC_ACQUIRE) > 0; }
+int game_player_paused(void) { return __atomic_load_n(&g_pause.player, __ATOMIC_ACQUIRE) != 0; }
 void game_pause_toggle(void) {
-    if (g_pause.player) {
-        g_pause.player = 0;
+    if (__atomic_load_n(&g_pause.player, __ATOMIC_ACQUIRE)) {
+        __atomic_store_n(&g_pause.player, 0, __ATOMIC_RELEASE);
         game_resume();
     } else if (!game_pause())
-        g_pause.player = 1;
+        __atomic_store_n(&g_pause.player, 1, __ATOMIC_RELEASE);
 }
 
 /* a 64-bit word mixed into h: a multiply and a shift per word, so a few GiB hash in about a second */
