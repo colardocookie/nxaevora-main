@@ -43,7 +43,7 @@ If you would like to contribute, please read the [CONTRIBUTING.md](CONTRIBUTING.
 
 NXAevora is currently in alpha and is not yet suitable for general use.
 
-Azunel, the project owner and one of its main developers, is currently developing the native path, creating the launcher, and refactoring the code, while colardocookie is implementing patches related to improving game quality (such as accurate dynamic FPS and research into motion vectors).
+Azunel, the project owner and one of its main developers, is currently developing the native path, creating the launcher, and refactoring the code, while colardocookie is implementing patches related to improving game quality (such as accurate dynamic FPS, and temporal anti-aliasing and AI upscaling built on the game's motion vectors).
 
 Windows x64 is currently the primary development target, with Linux x64 development planned for the beta stage or later. MacOS, Android, and iOS are not being considered and will not be included in the future roadmap.
 

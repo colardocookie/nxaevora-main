@@ -19,6 +19,7 @@
 * [Setup](#setup)
 * [Settings / input](#settings--input)
   * [On-screen controls](#on-screen-controls)
+* [Anti-aliasing and upscaling (Arceus)](#anti-aliasing-and-upscaling-arceus)
 
 Setup: [BUILD](BUILD.md). Checkout CWD; own game files.
 For the keyboard-controlled SDL3 menu and file drops, see [GUI](GUI.md).
@@ -837,3 +838,28 @@ in `logs/` beside it, named by when each was last written (`2026-10-28_14-05-33.
 1024, default 16; [Debug](DEVELOPMENT.md)) the log keeps the run's start and its last lines, with a line saying how
 much went between them, and the game's picture says so once.
 Scripts/disasm/shaders: [DEVELOPMENT](DEVELOPMENT.md).
+
+## Anti-aliasing and upscaling (Arceus)
+
+Temporal anti-aliasing (TAA) and the upscalers are experimental. Environment variables turn them on, not `Game.ini`
+settings, and they work in Pokemon Legends: Arceus only. Set the variables before you start the game.
+
+| Variable | Values | Default | Effect |
+| --- | --- | --- | --- |
+| `SNX_ARCEUS_TEMPORAL` | `taa` | unset | `taa` turns on temporal anti-aliasing. Any other value turns it off |
+| `SNX_ARCEUS_UPSCALER` | `fsr`, `xess`, `dlss`, `spatial` | off | Gives the frame to FSR, XeSS or DLSS, or to the spatial hand-over, in place of the TAA resolve. It needs `SNX_ARCEUS_TEMPORAL=taa`. `0`, `off` and unset all mean off |
+| `SNX_ARCEUS_SCENE_SCALE` | `1/2`, `3/5`, `2/3`, `3/4`, `4/5` | unset | Renders the scene below native size. An upscaler brings it back to native size. Without one, the game stretches it, which gives a softer picture. It needs the fixed resolution, which is on by default. Unset is native size |
+
+The libraries are not in this repository. They go beside the program: `amd_fidelityfx_loader_vk.dll` and
+`amd_fidelityfx_upscaler_vk.dll` for FSR, `libxess.dll` for XeSS, and the optional module `snx_upscaler_dlss.dll`,
+which is built apart from the program, for DLSS. FSR and XeSS run on Windows only. The other variables, the log
+lines and the limits are in [ai-upscaling.md](../../docs/dev/engine/ai-upscaling.md) and
+[temporal-anti-aliasing.md](../../docs/dev/engine/temporal-anti-aliasing.md).
+
+For example, in PowerShell on Windows:
+
+```powershell
+$env:SNX_ARCEUS_TEMPORAL = "taa"
+$env:SNX_ARCEUS_UPSCALER = "fsr"
+$env:SNX_ARCEUS_SCENE_SCALE = "2/3"
+```
