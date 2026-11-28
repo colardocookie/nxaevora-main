@@ -392,15 +392,15 @@ int main(void) {
     overlay_toggle();
     assert(overlay_shown());
     /* letters half the screen's height at most, in whole steps, in the middle: a phone held wide, a small window. The
-       page is as tall as its items (five here, under three rows of head, over a blank one), at the scale of the
+       page is as tall as its items (four here, under three rows of head, over a blank one), at the scale of the
        tallest page, and as wide as three quarters of the picture hold, between 40 and 72 columns */
     overlay_place(SW, SH, &px, &py, &s);
     C = overlay_cols(SW, s);
-    assert(s == 2 && C == OVERLAY_COLS_MAX && px == (SW - C * 16) / 2 && py == (SH - 9 * 32) / 2);
+    assert(s == 2 && C == OVERLAY_COLS_MAX && px == (SW - C * 16) / 2 && py == (SH - 8 * 32) / 2);
     assert(overlay_cols(1280, 2) == 60 && overlay_cols(500, 1) == 46 && overlay_cols(400, 1) == OVERLAY_COLS &&
            overlay_cols(3840, 4) == OVERLAY_COLS_MAX);
     overlay_place(500, 152, &x, &y, &sc);
-    assert(sc == 1 && x == (500 - 46 * 8) / 2 && y == 4);
+    assert(sc == 1 && x == (500 - 46 * 8) / 2 && y == 12);
     /* a phone's display scale: the Poco F8 (408 dpi, 2510x1156) and the Pixel 9 (420 dpi) at 3x, where half the
        picture gave 2x; a 4K picture at 100% keeps the 4x half of it gives */
     overlay_set_display_scale(408.0f / 160);
@@ -416,14 +416,14 @@ int main(void) {
     /* the first page: the title on a band of ink, the items under it, the focused one on a band; the page hides the
        game, whose text would show through it */
     draw();
-    assert(list.q[0].w == (float)(C * 16) && list.q[0].h == 9 * 32 && list.q[1].rgba == ink && list.q[1].h == 32);
+    assert(list.q[0].w == (float)(C * 16) && list.q[0].h == 8 * 32 && list.q[1].rgba == ink && list.q[1].h == 32);
     assert(list.q[0].rgba >> 24 == 0xFFu);
     assert(text_at(C - 2, 3, ">") && text_at(C - 2, 4, ">")); /* a page under each */
     /* each item its marker, its icon in two cells and one, its name */
     assert(text_at(1, 0, "SCARLETNX  /  MENU") && text_at(1, 3, "\xFE") && icon_at(3, 3, GUI_ICON_POINTER) &&
            text_at(6, 3, "On-screen controls") && icon_at(3, 4, GUI_ICON_GAMEPAD_2) && text_at(6, 4, "Controllers") &&
            icon_at(3, 5, GUI_ICON_SAVE) && text_at(6, 5, "Save states") && icon_at(3, 6, GUI_ICON_ACTIVITY) &&
-           text_at(6, 6, "Stats") && icon_at(3, 7, GUI_ICON_LOG_OUT) && text_at(1, 7, "\xFE") && text_at(6, 7, "Exit"));
+           text_at(6, 6, "Stats"));
     assert(!icon_at(3, 3, GUI_ICON_SAVE) && !text_at(1, 3, "\xFE On-screen controls"));
     /* Stats: a tap steps the level up and keeps it in the game's .ini, as F12 does */
     assert(text_at(C - 4, 6, "Off") && !g_settings.stats);
@@ -442,13 +442,19 @@ int main(void) {
     assert(g_settings.stats == STATS_LEVEL_DETAILED);
     overlay_side(1);
     assert(g_settings.stats == STATS_LEVEL_OFF);
-    /* a tap on Exit exits; on the title, nothing; outside the panel, it closes */
-    assert(tap(4, 3) == OVERLAY_EXIT && tap(-3, 3) == OVERLAY_NONE);
+    /* a tap past the last item does nothing; on the title, nothing; outside the panel, it closes */
+    assert(tap(4, 3) == OVERLAY_NONE && tap(-3, 3) == OVERLAY_NONE);
     assert(overlay_tap(5.0f, 5.0f, SW, SH) == OVERLAY_CLOSE);
-    /* the focus goes round, from Exit to the first item and back over the top; Back from here closes */
+    /* the focus goes round, from the last item to the first and back over the top; the first item opens its page */
     overlay_move(1);
-    overlay_move(-6);
-    assert(overlay_select() == OVERLAY_EXIT && overlay_back() == OVERLAY_CLOSE);
+    overlay_move(-1);
+    overlay_move(1);
+    assert(overlay_select() == OVERLAY_NONE);
+    draw();
+    assert(text_at(1, 0, "SCARLETNX  /  CONTROLS"));
+    assert(overlay_back() == OVERLAY_NONE);
+    assert(overlay_back() == OVERLAY_CLOSE); /* Back on the first page closes the menu */
+    assert(overlay_shown()); /* overlay_back leaves the menu open on MENU for the checks below */
 
     /* the controls' page: each setting shown with its value, changed and kept */
     assert(tap(0, 3) == OVERLAY_NONE);
@@ -536,6 +542,7 @@ int main(void) {
        nothing */
     {
         static const i32 still[4], down[4] = {0, -20000, 0, 0}, left[4] = {-20000, 0, 0, 0};
+        int marker;
         assert(overlay_pad(1ull << 15) == OVERLAY_NONE && overlay_pad(1ull << 19) == OVERLAY_NONE);
         assert(overlay_pad(1ull << 13) == OVERLAY_NONE && overlay_pad(1ull << 2) == OVERLAY_NONE); /* X */
         assert(overlay_pad(1ull << 0) == OVERLAY_NONE);                                            /* Controllers */
@@ -550,11 +557,13 @@ int main(void) {
         assert(overlay_controls(0, still, 1000) == OVERLAY_NONE); /* the focus back on Controllers */
         overlay_move(1);                                          /* Save states */
         assert(overlay_controls(0, down, 1000) == OVERLAY_NONE);  /* to Stats */
-        assert(overlay_controls(0, still, 1000) == OVERLAY_NONE); /* let go */
-        assert(overlay_controls(0, down, 1000) == OVERLAY_NONE);  /* to Exit */
         assert(overlay_controls(0, down, 1000 + SNX_OVERLAY_REPEAT_DELAY - 1) == OVERLAY_NONE);
-        assert(overlay_controls(1ull << 0, down, 1000 + SNX_OVERLAY_REPEAT_DELAY - 1) == OVERLAY_EXIT); /* not yet */
-        assert(overlay_controls(0, down, 1000 + SNX_OVERLAY_REPEAT_DELAY) == OVERLAY_NONE); /* round to the top */
+        draw();
+        marker = glyph_at(1, 6, 0xFE);
+        /* the focus did not move before the delay: its marker is the light one on Stats */
+        assert(marker >= 0 && list.q[marker].rgba == LIGHT_RGBA);
+        /* the last item wraps to the first: a page opens on it */
+        assert(overlay_controls(0, down, 1000 + SNX_OVERLAY_REPEAT_DELAY) == OVERLAY_NONE);
         assert(overlay_controls(1ull << 0, down, 1001 + SNX_OVERLAY_REPEAT_DELAY) == OVERLAY_NONE); /* a page */
         draw();
         assert(text_at(1, 0, "SCARLETNX  /  CONTROLS"));

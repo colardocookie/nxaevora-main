@@ -1257,7 +1257,7 @@ void DialogClose() {
     if (DialogFade* fade = FindDialogFade(g_dialog_pair_id)) fade->closing = true;
 }
 
-bool DialogBegin(const char* id, const char* header) {
+bool DialogBegin(const char* id, const char* header, float content_width_px) {
     const Theme& theme = CurrentTheme();
     const ImGuiID key = ImGui::GetID(id);
     DialogFade* fade = FindDialogFade(key);
@@ -1276,6 +1276,10 @@ bool DialogBegin(const char* id, const char* header) {
     const ImVec2 center(viewport->Pos.x + viewport->Size.x * 0.5f,
                         viewport->Pos.y + viewport->Size.y * 0.5f);
     ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    // The first auto-resize frame wraps the body text at the window width of the
+    // frame before it, which is empty. Fix the content width, so the wrap and the
+    // height do not change after the first frame.
+    if (content_width_px > 0.0f) ImGui::SetNextWindowContentSize(ImVec2(content_width_px, 0.0f));
     // The scrim color is captured at Begin (imgui.cpp:8277), so scale its alpha
     // here to fade the dim background with the dialog.
     const ImVec4 dim = ImGui::GetStyleColorVec4(ImGuiCol_ModalWindowDimBg);

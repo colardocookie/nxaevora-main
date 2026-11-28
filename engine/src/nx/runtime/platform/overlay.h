@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* The game's menu: a gamepad's Home, the on-screen Home or F2 opens it over the game, in the
    menu's look (src/gui, the YoRHa theme), drawn by the renderer as quads (ui.h). The same on every platform: the
-   on-screen controls' options (vpad.h), the touch screen's, and Exit */
+   on-screen controls' options (vpad.h) and the touch screen's */
 #ifndef SNX_OVERLAY_H
 #define SNX_OVERLAY_H
 #include "nx/runtime/platform/ui.h"
@@ -15,7 +15,6 @@
 enum {
     OVERLAY_NONE,
     OVERLAY_CLOSE,
-    OVERLAY_EXIT,
     OVERLAY_EDIT,
     OVERLAY_SAVE,
     OVERLAY_LOAD,
@@ -23,6 +22,12 @@ enum {
     OVERLAY_KEYBOARD,
     OVERLAY_TYPE
 };
+
+/* The engine menu's actions that the frontend's thread must do: its frame draws on the renderer's thread, where the
+   game's pause and g_quit do not belong. Each press waits here, and video_poll (the frontend's thread) does it with
+   the menu's other actions. Two presses of Pause are two toggles */
+enum { OVERLAY_ACTION_PAUSE, OVERLAY_ACTION_EXIT };
+void overlay_action_request(int action);
 
 /* whether it is open, for the renderer's thread too */
 int overlay_shown(void);

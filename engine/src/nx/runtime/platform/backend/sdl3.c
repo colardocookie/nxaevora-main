@@ -6,6 +6,7 @@
 #include "nx/runtime/main.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/pause.h"
+#include "nx/runtime/clock.h"
 #include "nx/runtime/state.h"
 #include "nx/hle/hle.h" /* g_hle.hid: the players and the touch screen hid samples */
 #include "nx/hle/services/hid.h"
@@ -16,6 +17,7 @@
 #include "nx/runtime/platform/backend/imgui_sdl.h"
 #include "nx/runtime/platform/backend/keybind.h"
 #include "nx/gpu/vk/engine_menu.h"
+#include "nx/gpu/vk/engine_menu_game.h"
 #include "nx/runtime/platform/prepare_screen.h"
 #include "nx/gpu/vk/imgui_input.h"
 #include "nx/runtime/platform/log.h"
@@ -971,6 +973,44 @@ static void title_paused(int paused) {
     snprintf(title, sizeof title, "%.*s%s", (int)n, t, paused ? mark : "");
     SDL_SetWindowTitle(g_win, title);
 }
+/* the player's pause as the Pause key does it: pause.h's toggle and the window title's mark */
+static void pause_key(void) {
+    game_pause_toggle();
+    title_paused(game_paused());
+}
+/* The engine menu's actions, from its frame on the renderer's thread (overlay.h): they wait here and video_poll (the
+   frontend's thread) does them, where the game's pause and g_quit belong. A count for Pause, so two presses are two
+   toggles */
+static int g_menu_pause_requests, g_menu_exit_request;
+void overlay_action_request(int action) {
+    if (action == OVERLAY_ACTION_PAUSE)
+        __atomic_add_fetch(&g_menu_pause_requests, 1, __ATOMIC_RELEASE);
+    else if (action == OVERLAY_ACTION_EXIT)
+        __atomic_store_n(&g_menu_exit_request, 1, __ATOMIC_RELEASE);
+}
+static void overlay_actions_apply(void) {
+    int toggles = __atomic_exchange_n(&g_menu_pause_requests, 0, __ATOMIC_ACQUIRE);
+    if (__atomic_exchange_n(&g_menu_exit_request, 0, __ATOMIC_ACQUIRE)) {
+        g_quit = 1;
+        return;
+    }
+    while (toggles-- > 0) pause_key();
+}
+/* The Game page's C surface (engine_menu_game.h): the runtime's calls that the C++ page cannot make through
+   their own headers, whose cpu.h is C only */
+void EngineMenuGameCardLoad(EngineMenuGameCard* out) {
+    SnxGameInfo game = {0};
+    snx_game_info(&game);
+    snprintf(out->title, sizeof out->title, "%s", game.title);
+    snprintf(out->version, sizeof out->version, "%s", game.version);
+    snprintf(out->content, sizeof out->content, "%s", game.content);
+    out->title_id = game.title_id;
+}
+unsigned long long EngineMenuGameElapsedNs(void) { return (unsigned long long)guest_ns(); }
+int EngineMenuGamePlayerPaused(void) { return game_player_paused(); }
+void EngineMenuGameAction(int action) {
+    overlay_action_request(action == ENGINE_MENU_GAME_PAUSE ? OVERLAY_ACTION_PAUSE : OVERLAY_ACTION_EXIT);
+}
 static void hotkey(SDL_Keycode k) {
     switch (k) {
         case SDLK_F1: {
@@ -1029,8 +1069,7 @@ static void hotkey(SDL_Keycode k) {
 #endif
         case SDLK_F11: set_fullscreen(!g_fullscreen); break;
         case SDLK_PAUSE:
-            game_pause_toggle();
-            title_paused(game_paused());
+            pause_key();
             break;
     }
 }
@@ -1088,7 +1127,6 @@ static void game_menu_press(void) {
         menu_unavailable();
 }
 static void overlay_do(int action) {
-    if (action == OVERLAY_EXIT) g_quit = 1;
     if (action == OVERLAY_TYPE) g_typing.again = 1; /* a tap on the box's line: the system's keyboard again */
     if (action == OVERLAY_CLOSE) menu_open(0);
     /* the frontend's loop does them (state_poll), the menu closed first for a load: the game it goes back to shows */
@@ -1634,6 +1672,7 @@ void video_poll(void) {
        gives the box's line) is in this poll's state */
     int menu_had = overlay_shown() || vpad_editing() || overlay_keyboard_shown() || engine_menu_active();
     window_changes_apply();
+    overlay_actions_apply();
     while (!g_opt_headless && SDL_PollEvent(&e)) {
         alt_track(&e);
         if (keycap_event(&e)) continue;

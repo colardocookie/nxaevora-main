@@ -392,6 +392,18 @@ static void addons_line(char* out, size_t size) {
     if (count > 4) snprintf(out + n, size - n, " and %u more DLCs", (unsigned)(count - 4));
 }
 
+/* The engine menu's Game card: the values that do not change during a run. title_id 0 means that the module names no
+   ID, which the page shows as unknown */
+void snx_game_info(SnxGameInfo* out) {
+    const char* title;
+    if (!out) return;
+    title = g_mod && g_mod->title && g_mod->title[0] ? g_mod->title : g_exename;
+    snprintf(out->title, sizeof out->title, "%s", title);
+    am_display_version(out->version);
+    addons_line(out->content, sizeof out->content);
+    out->title_id = g_hle.kernel.title_id;
+}
+
 /* nothing is moved: a game an older version laid out beside the others (its folder named otherwise) runs where it
    is, each start saying where its folder goes */
 static void say_old_layout(void) {
